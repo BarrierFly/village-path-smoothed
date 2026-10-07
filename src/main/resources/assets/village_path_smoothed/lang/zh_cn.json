@@ -9,5 +9,5 @@
   "vps.config.waterCrossing": "过水段脚手架",
   "vps.config.done": "保存并关闭",
   "vps.createWorld.enabled": "村路平滑化：启用",
-  "vps.createWorld.enabled.tooltip": "世界生成时用台阶方块平滑村庄道路。开关按世界独立保存（<世界>/village_path_smoothed.json）；已有世界保留各自的设置。"
+  "vps.createWorld.enabled.tooltip": "世界生成时用台阶方块平滑村庄道路。开关只作用于正在创建的这个世界（按世界独立保存）；已有世界保留各自的设置。"
 }

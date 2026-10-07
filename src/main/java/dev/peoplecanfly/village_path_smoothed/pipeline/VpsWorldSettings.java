@@ -23,38 +23,71 @@ import java.util.WeakHashMap;
 /**
  * Per-world settings, stored as {@code <world>/village_path_smoothed.json}
  * next to level.dat. The file is created lazily on the world's first chunk
- * generation and seeded from the create-world-screen choice (singleplayer) or
- * the global default; from then on the world keeps its own switch, independent
- * of the global config and of other worlds.
+ * generation and seeded from the world chosen on the create-world screen
+ * (singleplayer) or the global default; from then on the world keeps its own
+ * switch, independent of the global config and of other worlds.
  */
 public final class VpsWorldSettings {
 	private static final String FILE_NAME = VillagePathSmoothed.MOD_ID + ".json";
 	private static final Gson GSON = new GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create();
 	/** One MinecraftServer instance per running world; weak keys drop closed servers. */
 	private static final Map<MinecraftServer, VpsWorldSettings> CACHE = Collections.synchronizedMap(new WeakHashMap<>());
-	/**
-	 * Client side: the choice made on the create-world screen. It applies to
-	 * worlds created afterwards (sticky for the session); null means untouched.
-	 */
-	private static volatile Boolean pendingEnabled;
+
+	/** The world the create-world screen is about to create, armed when "Create" is pressed. */
+	private record PendingChoice(String worldName, boolean enabled) {
+	}
+
+	/** Client side: the last value picked on the create-world-screen toggle (for the button's own state). */
+	private static volatile Boolean lastToggleEnabled;
+	/** The armed choice for the world currently being created; consumed once at its first chunk generation. */
+	private static volatile PendingChoice pendingForCreation;
 
 	public boolean enabled = true;
 
 	public VpsWorldSettings() {
 	}
 
+	/** Client side: the create-world-screen toggle changed its value. */
 	public static void setPendingEnabled(Boolean value) {
-		pendingEnabled = value;
+		lastToggleEnabled = value;
 	}
 
+	/** Client side: the last value picked on the create-world-screen toggle, or null when untouched. */
 	public static Boolean getPendingEnabled() {
-		return pendingEnabled;
+		return lastToggleEnabled;
+	}
+
+	/**
+	 * Client side: the "Create" button was pressed on the create-world screen,
+	 * so {@code worldName} is the world being created. If the user picked a
+	 * toggle value, it is armed for exactly this world and consumed at its
+	 * first chunk generation; untouched toggles arm nothing.
+	 */
+	public static void armForCreation(String worldName) {
+		Boolean enabled = lastToggleEnabled;
+		if (enabled != null && worldName != null) {
+			pendingForCreation = new PendingChoice(worldName, enabled);
+		}
 	}
 
 	/** The enabled state a freshly created world starts with. */
-	public static boolean defaultForNewWorld() {
-		Boolean pending = pendingEnabled;
-		return pending != null ? pending : VillagePathSmoothedConfig.get().enabled;
+	private static boolean defaultForNewWorld(MinecraftServer server) {
+		PendingChoice choice = pendingForCreation;
+		if (choice != null && choice.worldName.equals(levelName(server))) {
+			pendingForCreation = null; // one-shot: applies to the world being created only
+			return choice.enabled;
+		}
+		return VillagePathSmoothedConfig.get().enabled;
+	}
+
+	private static String levelName(MinecraftServer server) {
+		try {
+			return server.overworld().getLevelData() instanceof net.minecraft.world.level.storage.ServerLevelData data
+					? data.getLevelName()
+					: "";
+		} catch (Throwable t) {
+			return "";
+		}
 	}
 
 	/** Cached per-server read used by the worldgen hook. */
@@ -91,7 +124,7 @@ public final class VpsWorldSettings {
 			}
 		}
 		VpsWorldSettings settings = new VpsWorldSettings();
-		settings.enabled = defaultForNewWorld();
+		settings.enabled = defaultForNewWorld(server);
 		write(path, settings);
 		return settings;
 	}

@@ -49,7 +49,7 @@ public final class VpsCommands {
 				//#endif
 				.then(Commands.literal("config")
 						.then(Commands.literal("show").executes(context -> {
-							context.getSource().sendSystemMessage(Component.literal(configSummary()));
+							context.getSource().sendSystemMessage(Component.literal(configSummary(context.getSource().getServer())));
 							return 1;
 						}))
 						.then(Commands.literal("reload").executes(context -> {
@@ -146,9 +146,12 @@ public final class VpsCommands {
 				+ " (" + VpsWorldSettings.fileOf(server) + ")";
 	}
 
-	private static String configSummary() {
+	private static String configSummary(MinecraftServer server) {
 		VillagePathSmoothedConfig config = VillagePathSmoothedConfig.get();
-		return "[VPS] enabled=" + config.enabled
+		// note: the global "enabled" is only the seed default for worlds without
+		// their own switch; the per-world switch is authoritative (/vps world)
+		return "[VPS] global default enabled=" + config.enabled
+				+ ", this world enabled=" + (server == null ? "?" : VpsWorldSettings.isEnabled(server))
 				+ ", roadSmoothing=" + config.roadSmoothing.enabled + " (" + config.roadSmoothing.objective + ", window=" + config.roadSmoothing.dpWindowHalfUnits
 				+ ", penalty=" + config.roadSmoothing.stepViolationPenalty + ", cut=" + config.roadSmoothing.allowCutIntoTerrain + ")"
 				+ ", kerb=" + config.kerb.enabled + " (> " + config.kerb.minDropHeight + " blocks, savanna="

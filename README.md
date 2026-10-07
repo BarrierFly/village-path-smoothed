@@ -16,13 +16,16 @@ water use scaffolding, and dangerous edges get leaf railings.
 - Server-side worldgen mod: install it on the server (or in singleplayer),
   clients do **not** need it. / 服务端世界生成 mod：装在服务端或单人游戏即可，客户端无需安装。
 - **Create World toggle / 创建世界界面开关** — the Create World screen shows a
-  "Village Path Smoothed: Enabled" switch. It sets the enabled state for worlds
-  you create: each world stores its own switch in
-  `<world>/village_path_smoothed.json` (written on the world's first chunk
-  generation), and existing worlds keep their own setting. / 创建世界界面左下角
-  有"村路平滑化：启用"开关，设定"你要创建的世界"的初始状态：每个世界把开关独立
-  保存在 `<世界>/village_path_smoothed.json`（首次生成区块时写入），已有世界
-  不受影响。
+  "Village Path Smoothed: Enabled" switch. Pressing "Create" binds the toggle
+  value to the world being created (matched by world name): that world's own
+  switch is written to `<world>/village_path_smoothed.json` on its first chunk
+  generation. Existing worlds and worlds created without touching the toggle
+  keep their own setting / fall back to the global default. The per-world
+  switch is authoritative; the global config only seeds new worlds. /
+  创建世界界面左下角有"村路平滑化：启用"开关：点击"创建"时，开关值绑定到正在
+  创建的世界（按世界名匹配），该世界首次生成区块时把开关写入自己的
+  `<世界>/village_path_smoothed.json`。已有世界、以及创建时没动过开关的世界，
+  沿用各自设置或全局默认值。**世界开关优先**，全局配置只负责播种新世界。
 - Works at world creation only (like vanilla worldgen); existing chunks keep
   their vanilla roads. / 只在生成新区块时生效，已生成的区块不会回改。
 
@@ -75,7 +78,7 @@ ModMenu is installed) but optional. / 无必装依赖；装有 ModMenu 时会出
 
 | Option | Default | Meaning |
 |---|---|---|
-| `enabled` (global) | `true` | default enabled state for worlds that don't have their own switch yet; every world's own switch lives in `<world>/village_path_smoothed.json`, change it in-game with `/vps world on\|off` |
+| `enabled` (global) | `true` | seed default only - worlds created while the create-screen toggle was untouched start with this; every world's own switch lives in `<world>/village_path_smoothed.json` and overrides it, change in-game with `/vps world on\|off` |
 | `roadSmoothing.objective` | `MIN_DEVIATION` | `SHORTEST_CATCHUP` hugs the terrain and catches up as fast as legal steps allow; `HYBRID` blends both (`hybridWeightDeviation`) |
 | `roadSmoothing.allowCutIntoTerrain` | `true` | lets the road dig into slopes (sunken roads) |
 | `roadSmoothing.stepViolationPenalty` | `32` | soft-constraint penalty per half block of excess drop (cliff escape hatch) |
@@ -139,6 +142,13 @@ cuts, kerbs, railings and scaffolding.
    generator, so roads can differ from the carved/decorated terrain by a block
    or two in rare places (ravine edges, tree-covered ground); the writer fills
    or cuts the column so the road always stands on solid ground.
+6. The per-world switch only affects chunks generated after it changes: an
+   enable/disable boundary leaves one side vanilla and the other smoothed, and
+   already-generated villages are never rewritten.
+7. The per-world settings file (`<world>/village_path_smoothed.json`) is
+   exercised only at runtime, not by the automated tests; if the world folder
+   is not writable the file is never created and the world simply follows the
+   global default on every start.
 
 ## Credits / 致谢
 

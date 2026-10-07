@@ -45,14 +45,11 @@ public final class VpsPipeline {
 			ChunkPos chunkPos
 	) {
 		VillagePathSmoothedConfig config = VillagePathSmoothedConfig.get();
-		if (!config.enabled) {
-			return;
-		}
 		if (start == null || !start.isValid()) {
 			return;
 		}
-		// per-world switch: each world keeps its own enabled flag in
-		// <world>/village_path_smoothed.json (cached per MinecraftServer)
+		// the per-world switch is authoritative; the global config "enabled" only
+		// seeds the default for worlds without their own file (VpsWorldSettings)
 		MinecraftServer server = serverOf(level);
 		if (server == null || !VpsWorldSettings.isEnabled(server)) {
 			return;
@@ -82,6 +79,8 @@ public final class VpsPipeline {
 		RoadWriter.write(solution.network, ctx, chunkBB, config);
 	}
 
+	private static volatile boolean warnedServerLookup;
+
 	private static MinecraftServer serverOf(WorldGenLevel level) {
 		try {
 			if (level instanceof net.minecraft.server.level.WorldGenRegion region) {
@@ -89,6 +88,10 @@ public final class VpsPipeline {
 			}
 			return level.getServer();
 		} catch (Throwable t) {
+			if (!warnedServerLookup) {
+				warnedServerLookup = true;
+				VillagePathSmoothed.LOGGER.warn("[VPS] could not resolve the owning server; the per-world switch is unavailable and roads stay vanilla", t);
+			}
 			return null;
 		}
 	}

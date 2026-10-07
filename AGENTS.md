@@ -87,11 +87,13 @@ Rules:
 - The per-world enabled switch is a JSON file in the world folder:
   `MinecraftServer#getWorldPath(LevelResource.ROOT)` + `village_path_smoothed.json`
   (this API is identical in all six supported versions, unlike SavedData whose
-  API changed four times). The create-world toggle only sets the *pending*
-  choice (`VpsWorldSettings#setPendingEnabled`) consumed at first chunk
-  generation; the global config `enabled` is the default for untouched worlds.
-  The per-server flag is cached in a WeakHashMap - do not read the file per
-  chunk.
+  API changed four times). It is the AUTHORITATIVE gate; the global config
+  `enabled` only seeds worlds without their own file. The create-world-screen
+  toggle binds to the world being created: MixinCreateWorldScreen arms
+  `VpsWorldSettings#armForCreation(uiState.getName())` in `onCreate` and the
+  armed choice is consumed once at that world's first chunk generation
+  (matched by `ServerLevelData#getLevelName()`). The per-server flag is cached
+  in a WeakHashMap - do not read the file per chunk.
 
 ## Code style
 

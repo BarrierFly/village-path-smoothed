@@ -9,5 +9,5 @@
   "vps.config.waterCrossing": "Scaffolding water crossings",
   "vps.config.done": "Save & Close",
   "vps.createWorld.enabled": "Village Path Smoothed: Enabled",
-  "vps.createWorld.enabled.tooltip": "Smooth village roads with slab steps during world generation. The switch is saved per world (<world>/village_path_smoothed.json); existing worlds keep their own setting."
+  "vps.createWorld.enabled.tooltip": "Smooth village roads with slab steps during world generation. The switch applies to the world being created (saved per world); existing worlds keep their own setting."
 }

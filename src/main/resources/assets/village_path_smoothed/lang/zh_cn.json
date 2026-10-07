@@ -1,6 +1,6 @@
 {
   "vps.config.title": "村路平滑化",
-  "vps.config.enabled": "启用本模组",
+  "vps.config.enabled": "默认对新世界启用",
   "vps.config.roadSmoothing": "道路平滑化",
   "vps.config.objective": "剖面目标函数",
   "vps.config.allowCut": "允许下挖地形",
@@ -9,5 +9,5 @@
   "vps.config.waterCrossing": "过水段脚手架",
   "vps.config.done": "保存并关闭",
   "vps.createWorld.enabled": "村路平滑化：启用",
-  "vps.createWorld.enabled.tooltip": "世界生成时用台阶方块平滑村庄道路。对新生成的区块生效（服务端或单人游戏）。"
+  "vps.createWorld.enabled.tooltip": "世界生成时用台阶方块平滑村庄道路。开关按世界独立保存（<世界>/village_path_smoothed.json）；已有世界保留各自的设置。"
 }

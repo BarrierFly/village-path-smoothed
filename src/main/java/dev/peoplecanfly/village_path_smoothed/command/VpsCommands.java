@@ -14,11 +14,13 @@ import dev.peoplecanfly.village_path_smoothed.pipeline.RoadCollector;
 import dev.peoplecanfly.village_path_smoothed.pipeline.RoadNetwork;
 import dev.peoplecanfly.village_path_smoothed.pipeline.RoadSmoother;
 import dev.peoplecanfly.village_path_smoothed.pipeline.VpsPipeline;
+import dev.peoplecanfly.village_path_smoothed.pipeline.VpsWorldSettings;
 import dev.peoplecanfly.village_path_smoothed.terrain.VpsGenContext;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.ChunkPos;
@@ -59,6 +61,13 @@ public final class VpsCommands {
 					context.getSource().sendSystemMessage(Component.literal(statsSummary()));
 					return 1;
 				}))
+				.then(Commands.literal("world")
+						.then(Commands.literal("show").executes(context -> {
+							context.getSource().sendSystemMessage(Component.literal(worldSummary(context.getSource().getServer())));
+							return 1;
+						}))
+						.then(Commands.literal("on").executes(context -> setWorldEnabled(context.getSource(), true)))
+						.then(Commands.literal("off").executes(context -> setWorldEnabled(context.getSource(), false))))
 				.then(Commands.literal("dump")
 						.executes(context -> dump(context.getSource(), 2))
 						.then(Commands.argument("radius", IntegerArgumentType.integer(1, 8)).executes(context ->
@@ -120,6 +129,21 @@ public final class VpsCommands {
 			source.sendSystemMessage(Component.literal("[VPS] dump of " + villages + " village(s):\n" + report));
 		}
 		return villages;
+	}
+
+	private static int setWorldEnabled(CommandSourceStack source, boolean enabled) {
+		MinecraftServer server = source.getServer();
+		VpsWorldSettings settings = VpsWorldSettings.get(server);
+		settings.enabled = enabled;
+		VpsWorldSettings.save(server, settings);
+		source.sendSystemMessage(Component.literal("[VPS] village path smoothing " + (enabled ? "enabled" : "disabled")
+				+ " for this world (" + VpsWorldSettings.fileOf(server) + "); applies to chunks generated from now on"));
+		return 1;
+	}
+
+	private static String worldSummary(MinecraftServer server) {
+		return "[VPS] this world: enabled=" + VpsWorldSettings.isEnabled(server)
+				+ " (" + VpsWorldSettings.fileOf(server) + ")";
 	}
 
 	private static String configSummary() {

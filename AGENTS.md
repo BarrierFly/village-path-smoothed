@@ -84,6 +84,14 @@ Rules:
 - Client mixins (CreateWorldScreen toggle) live in the mixin config's
   **"client"** section and must never be listed under "mixins" - the
   CreateWorldScreen class does not exist on a dedicated server.
+- The per-world enabled switch is a JSON file in the world folder:
+  `MinecraftServer#getWorldPath(LevelResource.ROOT)` + `village_path_smoothed.json`
+  (this API is identical in all six supported versions, unlike SavedData whose
+  API changed four times). The create-world toggle only sets the *pending*
+  choice (`VpsWorldSettings#setPendingEnabled`) consumed at first chunk
+  generation; the global config `enabled` is the default for untouched worlds.
+  The per-server flag is cached in a WeakHashMap - do not read the file per
+  chunk.
 
 ## Code style
 

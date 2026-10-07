@@ -16,10 +16,13 @@ water use scaffolding, and dangerous edges get leaf railings.
 - Server-side worldgen mod: install it on the server (or in singleplayer),
   clients do **not** need it. / 服务端世界生成 mod：装在服务端或单人游戏即可，客户端无需安装。
 - **Create World toggle / 创建世界界面开关** — the Create World screen shows a
-  "Village Path Smoothed: Enabled" switch that flips the mod's `enabled` config
-  entry, so a world can be created with the smoothing turned off (or re-enabled)
-  without touching the mods list. / 创建世界界面左下角有"村路平滑化：启用"开关，
-  切换的是全局配置的 `enabled` 项，无需进出 mods 列表即可控制本世界生成时是否平滑。
+  "Village Path Smoothed: Enabled" switch. It sets the enabled state for worlds
+  you create: each world stores its own switch in
+  `<world>/village_path_smoothed.json` (written on the world's first chunk
+  generation), and existing worlds keep their own setting. / 创建世界界面左下角
+  有"村路平滑化：启用"开关，设定"你要创建的世界"的初始状态：每个世界把开关独立
+  保存在 `<世界>/village_path_smoothed.json`（首次生成区块时写入），已有世界
+  不受影响。
 - Works at world creation only (like vanilla worldgen); existing chunks keep
   their vanilla roads. / 只在生成新区块时生效，已生成的区块不会回改。
 
@@ -72,6 +75,7 @@ ModMenu is installed) but optional. / 无必装依赖；装有 ModMenu 时会出
 
 | Option | Default | Meaning |
 |---|---|---|
+| `enabled` (global) | `true` | default enabled state for worlds that don't have their own switch yet; every world's own switch lives in `<world>/village_path_smoothed.json`, change it in-game with `/vps world on\|off` |
 | `roadSmoothing.objective` | `MIN_DEVIATION` | `SHORTEST_CATCHUP` hugs the terrain and catches up as fast as legal steps allow; `HYBRID` blends both (`hybridWeightDeviation`) |
 | `roadSmoothing.allowCutIntoTerrain` | `true` | lets the road dig into slopes (sunken roads) |
 | `roadSmoothing.stepViolationPenalty` | `32` | soft-constraint penalty per half block of excess drop (cliff escape hatch) |
@@ -86,6 +90,7 @@ ModMenu is installed) but optional. / 无必装依赖；装有 ModMenu 时会出
 
 ## Commands / 命令
 
+- `/vps world on|off|show` — enable / disable / inspect road smoothing for the world the executor is in (per-world switch)
 - `/vps config show|reload` — print / reload the config
 - `/vps stats` — villages solved, average solve time, blocks placed
 - `/vps dump [radius]` — rebuild + re-solve the road network of villages near

@@ -11,6 +11,7 @@ import dev.peoplecanfly.village_path_smoothed.compat.VpsCompat;
 import dev.peoplecanfly.village_path_smoothed.duck.StructureStartVpsAccess;
 import dev.peoplecanfly.village_path_smoothed.terrain.VpsGenContext;
 import net.minecraft.util.RandomSource;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.WorldGenLevel;
 import net.minecraft.world.level.chunk.ChunkGenerator;
@@ -50,6 +51,12 @@ public final class VpsPipeline {
 		if (start == null || !start.isValid()) {
 			return;
 		}
+		// per-world switch: each world keeps its own enabled flag in
+		// <world>/village_path_smoothed.json (cached per MinecraftServer)
+		MinecraftServer server = serverOf(level);
+		if (server == null || !VpsWorldSettings.isEnabled(server)) {
+			return;
+		}
 		boolean isVanillaVillage = VpsCompat.isVanillaVillageStructure(level, start.getStructure());
 		if (!isVanillaVillage && !RoadCollector.hasCustomRegex(config)) {
 			return; // fast path: other structures cost nothing
@@ -73,6 +80,17 @@ public final class VpsPipeline {
 
 		VpsGenContext ctx = VpsGenContext.capture(level, generator, chunkPos);
 		RoadWriter.write(solution.network, ctx, chunkBB, config);
+	}
+
+	private static MinecraftServer serverOf(WorldGenLevel level) {
+		try {
+			if (level instanceof net.minecraft.server.level.WorldGenRegion region) {
+				return region.getLevel().getServer();
+			}
+			return level.getServer();
+		} catch (Throwable t) {
+			return null;
+		}
 	}
 
 	private static VpsVillageSolution solveVillage(StructureStart start, WorldGenLevel level, ChunkGenerator generator, VillagePathSmoothedConfig config) {

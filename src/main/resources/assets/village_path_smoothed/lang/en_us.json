@@ -1,6 +1,6 @@
 {
   "vps.config.title": "Village Path Smoothed",
-  "vps.config.enabled": "Mod enabled",
+  "vps.config.enabled": "Enabled by default for new worlds",
   "vps.config.roadSmoothing": "Road smoothing",
   "vps.config.objective": "Profile objective",
   "vps.config.allowCut": "Allow cutting into terrain",
@@ -9,5 +9,5 @@
   "vps.config.waterCrossing": "Scaffolding water crossings",
   "vps.config.done": "Save & Close",
   "vps.createWorld.enabled": "Village Path Smoothed: Enabled",
-  "vps.createWorld.enabled.tooltip": "Smooth village roads with slab steps during world generation. Applies to new chunks being generated (server or singleplayer)."
+  "vps.createWorld.enabled.tooltip": "Smooth village roads with slab steps during world generation. The switch is saved per world (<world>/village_path_smoothed.json); existing worlds keep their own setting."
 }

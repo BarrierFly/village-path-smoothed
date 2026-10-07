@@ -5,8 +5,7 @@
 
 package dev.peoplecanfly.village_path_smoothed.mixin;
 
-import dev.peoplecanfly.village_path_smoothed.VillagePathSmoothed;
-import dev.peoplecanfly.village_path_smoothed.VillagePathSmoothedConfig;
+import dev.peoplecanfly.village_path_smoothed.pipeline.VpsWorldSettings;
 import net.minecraft.client.gui.components.CycleButton;
 import net.minecraft.client.gui.components.Tooltip;
 import net.minecraft.client.gui.screens.Screen;
@@ -19,10 +18,11 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
  * Adds a "Village Path Smoothed: enabled" toggle to the Create World screen.
- * The toggle flips the mod's global {@code enabled} config entry (and saves
- * it), which decides whether road smoothing runs during world generation -
- * so it takes effect for the world being created without touching the mods
- * list. Client-side only; lives in the mixin config's "client" section.
+ * The toggle sets the *pending* per-world enabled choice: a world created
+ * afterwards starts with this value written into its own
+ * {@code <world>/village_path_smoothed.json} on first chunk generation, so the
+ * switch belongs to the world being created, not to the global config.
+ * Client-side only; lives in the mixin config's "client" section.
  */
 @Mixin(CreateWorldScreen.class)
 public abstract class MixinCreateWorldScreen extends Screen {
@@ -32,14 +32,11 @@ public abstract class MixinCreateWorldScreen extends Screen {
 
 	@Inject(method = "init", at = @At("RETURN"))
 	private void village_path_smoothed$addToggle(CallbackInfo ci) {
-		VillagePathSmoothedConfig config = VillagePathSmoothedConfig.get();
-		CycleButton<Boolean> toggle = CycleButton.onOffBuilder(config.enabled)
+		Boolean pending = VpsWorldSettings.getPendingEnabled();
+		boolean initial = pending != null ? pending : VpsWorldSettings.defaultForNewWorld();
+		CycleButton<Boolean> toggle = CycleButton.onOffBuilder(initial)
 				.create(8, this.height - 58, 170, 20, Component.translatable("vps.createWorld.enabled"),
-						(button, value) -> {
-							VillagePathSmoothedConfig.get().enabled = value;
-							VillagePathSmoothedConfig.save();
-							VillagePathSmoothed.LOGGER.info("[VPS] mod {} from the create-world screen", value ? "enabled" : "disabled");
-						});
+						(button, value) -> VpsWorldSettings.setPendingEnabled(value));
 		toggle.setTooltip(Tooltip.create(Component.translatable("vps.createWorld.enabled.tooltip")));
 		this.addRenderableWidget(toggle);
 	}

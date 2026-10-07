@@ -1,0 +1,11 @@
+{
+  "vps.config.title": "Village Path Smoothed",
+  "vps.config.enabled": "Mod enabled",
+  "vps.config.roadSmoothing": "Road smoothing",
+  "vps.config.objective": "Profile objective",
+  "vps.config.allowCut": "Allow cutting into terrain",
+  "vps.config.kerb": "Kerbs (terrain above road)",
+  "vps.config.railing": "Leaf railings (terrain below road)",
+  "vps.config.waterCrossing": "Scaffolding water crossings",
+  "vps.config.done": "Save & Close"
+}

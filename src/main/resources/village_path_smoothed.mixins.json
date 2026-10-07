@@ -1,0 +1,21 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "dev.peoplecanfly.village_path_smoothed.mixin",
+  "compatibilityLevel": "{{COMPATIBILITY_LEVEL}}",
+  "mixins": [
+    "MixinStructureStart",
+    "MixinSinglePoolElement",
+    "MixinPoolElementStructurePiece",
+    "MixinStructureTemplate",
+    "MixinCommands"
+  ],
+  "client": [
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  },
+  "overwrites": {
+    "requireAnnotations": true
+  }
+}

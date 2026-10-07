@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "id": "${id}",
+  "version": "${version}",
+
+  "name": "${name}",
+  "description": "Smooths vanilla village roads with slab steps (max half-block drop), plus kerbs, leaf railings and scaffolding water crossings. / 使用台阶方块平滑原版村庄道路（顺向与横向落差不超过半格），并附带头部包边、树叶护栏与过水脚手架。",
+  "authors": [
+    "peoplecanfly"
+  ],
+  "contact": {
+    "homepage": "https://modrinth.com",
+    "sources": "https://github.com/peoplecanfly/village-path-smoothed"
+  },
+  "license": "WTFPL",
+
+  "icon": "icon.png",
+
+  "environment": "*",
+  "entrypoints": {
+    "main": [
+      "dev.peoplecanfly.village_path_smoothed.VillagePathSmoothed"
+    ],
+    "modmenu": [
+      "dev.peoplecanfly.village_path_smoothed.compat.modmenu.VpsModMenuApi"
+    ]
+  },
+  "mixins": [
+    "village_path_smoothed.mixins.json"
+  ],
+
+  "depends": {
+    "fabricloader": ">=0.15.0",
+    "minecraft": "${minecraft_dependency}"
+  },
+  "suggests": {
+    "modmenu": "*"
+  }
+}

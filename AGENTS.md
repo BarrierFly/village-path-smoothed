@@ -15,6 +15,7 @@ src/main/java/dev/peoplecanfly/village_path_smoothed/
 ├── VillagePathSmoothed(.java)      # entrypoint: logging + config load only
 ├── VillagePathSmoothedConfig.java  # Gson POJO config, no external library
 ├── mixin/       # wiring ONLY - no algorithms here
+│   ├── MixinCreateWorldScreen           # client-only: enabled toggle on the create-world screen
 │   ├── MixinStructureStart              # the single worldgen hook (placeInChunk RETURN)
 │   ├── MixinSinglePoolElement           # @Accessor("template")
 │   ├── MixinPoolElementStructurePiece   # @Accessor("structureTemplateManager")
@@ -80,6 +81,9 @@ Rules:
   never move them.
 - `/vps` is registered by mixin into `Commands#<init>` because the mod
   deliberately does not depend on fabric-api.
+- Client mixins (CreateWorldScreen toggle) live in the mixin config's
+  **"client"** section and must never be listed under "mixins" - the
+  CreateWorldScreen class does not exist on a dedicated server.
 
 ## Code style
 

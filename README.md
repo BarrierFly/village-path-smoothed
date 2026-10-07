@@ -15,6 +15,11 @@ water use scaffolding, and dangerous edges get leaf railings.
 
 - Server-side worldgen mod: install it on the server (or in singleplayer),
   clients do **not** need it. / 服务端世界生成 mod：装在服务端或单人游戏即可，客户端无需安装。
+- **Create World toggle / 创建世界界面开关** — the Create World screen shows a
+  "Village Path Smoothed: Enabled" switch that flips the mod's `enabled` config
+  entry, so a world can be created with the smoothing turned off (or re-enabled)
+  without touching the mods list. / 创建世界界面左下角有"村路平滑化：启用"开关，
+  切换的是全局配置的 `enabled` 项，无需进出 mods 列表即可控制本世界生成时是否平滑。
 - Works at world creation only (like vanilla worldgen); existing chunks keep
   their vanilla roads. / 只在生成新区块时生效，已生成的区块不会回改。
 

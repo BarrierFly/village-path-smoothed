@@ -33,6 +33,7 @@ public final class VpsPipeline {
 	public static final AtomicLong KERBS_PLACED = new AtomicLong();
 	public static final AtomicLong RAILINGS_PLACED = new AtomicLong();
 	public static final AtomicLong SCAFFOLDS_PLACED = new AtomicLong();
+	public static final AtomicLong DEBUG_VILLAGER_BRAIN_SKIPS = new AtomicLong();
 
 	private VpsPipeline() {
 	}

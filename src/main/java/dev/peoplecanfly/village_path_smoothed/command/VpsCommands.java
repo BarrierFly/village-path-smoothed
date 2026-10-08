@@ -72,7 +72,25 @@ public final class VpsCommands {
 				.then(Commands.literal("dump")
 						.executes(context -> dump(context.getSource(), 2))
 						.then(Commands.argument("radius", IntegerArgumentType.integer(1, 8)).executes(context ->
-								dump(context.getSource(), IntegerArgumentType.getInteger(context, "radius")))));
+								dump(context.getSource(), IntegerArgumentType.getInteger(context, "radius")))))
+				.then(Commands.literal("debug")
+						.then(Commands.literal("villagerbrain")
+								.then(Commands.literal("on").executes(context -> setVillagerBrainDebug(context.getSource(), true)))
+								.then(Commands.literal("off").executes(context -> setVillagerBrainDebug(context.getSource(), false)))
+								.executes(context -> {
+									boolean on = VillagePathSmoothedConfig.get().debug.disableVillagerBrains;
+									context.getSource().sendSystemMessage(Component.literal("[VPS] villager brain disabled: " + on
+											+ " (brain ticks skipped so far: " + VpsPipeline.DEBUG_VILLAGER_BRAIN_SKIPS.get() + ")"));
+									return 1;
+								})));
+	}
+
+	private static int setVillagerBrainDebug(CommandSourceStack source, boolean disabled) {
+		VillagePathSmoothedConfig.get().debug.disableVillagerBrains = disabled;
+		VillagePathSmoothedConfig.save();
+		source.sendSystemMessage(Component.literal("[VPS] villager brain " + (disabled ? "DISABLED (debug)" : "enabled")
+				+ " - applies to every villager tick from now on"));
+		return 1;
 	}
 
 	private static int dump(CommandSourceStack source, int radius) {
@@ -166,7 +184,7 @@ public final class VpsCommands {
 		long nanos = VpsPipeline.SOLVE_NANOS.get();
 		return String.format(
 				"[VPS] villages solved: %d (%.2f ms avg), road cells written: %d, kerbs: %d, railings: %d, scaffolds: %d"
-						+ ", probe skips: %d, floor-garbage probes: %d, clamped writes: %d",
+						+ ", probe skips: %d, floor-garbage probes: %d, clamped writes: %d, re-anchored writes: %d",
 				solved,
 				solved > 0 ? nanos / 1_000_000.0 / solved : 0.0,
 				VpsPipeline.ROAD_CELLS_WRITTEN.get(),
@@ -175,6 +193,7 @@ public final class VpsCommands {
 				VpsPipeline.SCAFFOLDS_PLACED.get(),
 				RoadCollector.PROBE_SKIPPED_CELLS.get(),
 				VpsGenContext.FLOOR_GARBAGE_HITS.get(),
-				RoadWriter.CLAMPED_WRITES.get());
+				RoadWriter.CLAMPED_WRITES.get(),
+				RoadWriter.REANCHORED_WRITES.get());
 	}
 }

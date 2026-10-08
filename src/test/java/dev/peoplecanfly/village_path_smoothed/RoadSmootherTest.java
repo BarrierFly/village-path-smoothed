@@ -10,6 +10,7 @@ import dev.peoplecanfly.village_path_smoothed.pipeline.RoadCell;
 import dev.peoplecanfly.village_path_smoothed.pipeline.RoadNetwork;
 import dev.peoplecanfly.village_path_smoothed.pipeline.RoadSmoother;
 import dev.peoplecanfly.village_path_smoothed.pipeline.RoadWritePolicy;
+import dev.peoplecanfly.village_path_smoothed.terrain.BeardCompensation;
 import dev.peoplecanfly.village_path_smoothed.terrain.HeightSanity;
 import org.junit.Test;
 
@@ -281,5 +282,28 @@ public class RoadSmootherTest {
 		assertFalse(RoadWritePolicy.tunnelRoof(60, 75, 74, 8)); // cleared everything
 		assertFalse(RoadWritePolicy.tunnelRoof(60, 75, 74, -1)); // unlimited never roofs
 		assertFalse(RoadWritePolicy.tunnelRoof(60, 60, 59, 8)); // nothing above the road
+	}
+
+	@Test
+	public void beardCompensationOnlyRaisesNearBuildings() {
+		int[][] boxes = {{100, 110, 200, 210}}; // one building footprint 11x11
+		// inside the footprint and within the radius: compensated
+		assertTrue(BeardCompensation.isNearBuilding(boxes, 105, 205, 4));
+		assertTrue(BeardCompensation.isNearBuilding(boxes, 99, 205, 4)); // 1 west of the wall
+		assertTrue(BeardCompensation.isNearBuilding(boxes, 96, 205, 4)); // exactly at the radius
+		assertFalse(BeardCompensation.isNearBuilding(boxes, 95, 205, 4)); // radius+1: outside
+		assertFalse(BeardCompensation.isNearBuilding(boxes, 105, 195, 4));
+		// diagonal counts by Chebyshev distance: (96,204) sits at (4,4) = on the
+		// radius corner, (95,199) at (5,1) = outside
+		assertTrue(BeardCompensation.isNearBuilding(boxes, 96, 204, 4));
+		assertFalse(BeardCompensation.isNearBuilding(boxes, 95, 199, 4));
+		// no boxes / disabled radius: never
+		assertFalse(BeardCompensation.isNearBuilding(null, 105, 205, 4));
+		assertFalse(BeardCompensation.isNearBuilding(boxes, 105, 205, -1));
+		// compensation only raises, never lowers
+		assertEquals(66, BeardCompensation.compensate(65, true, 1));
+		assertEquals(65, BeardCompensation.compensate(65, false, 1));
+		assertEquals(65, BeardCompensation.compensate(65, true, 0));
+		assertEquals(65, BeardCompensation.compensate(65, true, -1));
 	}
 }

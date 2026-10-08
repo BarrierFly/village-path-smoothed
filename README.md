@@ -87,6 +87,8 @@ ModMenu is installed) but optional. / 无必装依赖；装有 ModMenu 时会出
 | `roadSmoothing.roadSurfaceDetection` | `TEMPLATE_Y0_SOLID` | `TEMPLATE_Y0_ROAD_MATERIAL` only accepts the style's own road block |
 | `roadSmoothing.maxFillLayers` | `3` | max consecutive fill layers when the road sits above the ground; beyond it the cell becomes a bridge deck instead (`< 0` = unlimited) |
 | `roadSmoothing.maxClearLayers` | `-1` | max layers cleared above the road when it sits below the ground; beyond it the cell tunnels and the kerb material lines the roof (`< 0` = unlimited) |
+| `roadSmoothing.beardCompensation` | `1` | blocks added to the noise-probed height next to buildings: vanilla raises ("beards") terrain toward building bases but the raw noise probe does not know that, which used to sink road segments there by ~1 block (`< 0` disables) |
+| `roadSmoothing.beardRadius` | `4` | horizontal radius of that beard zone around building footprints |
 | `kerb.minDropHeight` | `1` | "terrain more than N blocks above the road" triggers a kerb |
 | `kerb.replaceableBlocks` | `["#minecraft:dirt"]` | blocks the kerb may replace; add e.g. `minecraft:sand` for desert walls |
 | `waterCrossing.enabled` | `true` | scaffolding bridges; disable to keep vanilla planks |
@@ -96,9 +98,12 @@ ModMenu is installed) but optional. / 无必装依赖；装有 ModMenu 时会出
 
 - `/vps world on|off|show` — enable / disable / inspect road smoothing for the world the executor is in (per-world switch)
 - `/vps config show|reload` — print / reload the config
-- `/vps stats` — villages solved, average solve time, blocks placed
+- `/vps stats` — villages solved, average solve time, blocks placed, probe/write diagnostics
 - `/vps dump [radius]` — rebuild + re-solve the road network of villages near
   you and print cell/arm/region counts (diagnostics)
+- `/vps debug villagerbrain [on|off]` — debug: toggle whether villagers skip
+  their brain tick (they stand still while you inspect generated roads); state
+  is saved to the global config and applies from the next tick
 
 ## How it works / 原理
 

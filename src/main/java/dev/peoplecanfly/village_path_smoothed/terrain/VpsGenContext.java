@@ -16,6 +16,7 @@ import net.minecraft.world.level.levelgen.RandomState;
 import net.minecraft.world.level.block.state.BlockState;
 
 import dev.peoplecanfly.village_path_smoothed.VillagePathSmoothed;
+import dev.peoplecanfly.village_path_smoothed.VillagePathSmoothedConfig;
 
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -39,15 +40,22 @@ public final class VpsGenContext {
 	public final ChunkGenerator generator;
 	public final RandomState randomState;
 	public final ChunkPos center;
+	/** {minX, maxX, minZ, maxZ} of RIGID piece boxes (beard sources), used to compensate the noise probe next to buildings. */
+	private int[][] beardBoxes;
 
-	private VpsGenContext(WorldGenLevel level, ChunkGenerator generator, RandomState randomState, ChunkPos center) {
+	private VpsGenContext(WorldGenLevel level, ChunkGenerator generator, RandomState randomState, ChunkPos center, int[][] beardBoxes) {
 		this.level = level;
 		this.generator = generator;
 		this.randomState = randomState;
 		this.center = center;
+		this.beardBoxes = beardBoxes;
 	}
 
 	public static VpsGenContext capture(WorldGenLevel level, ChunkGenerator generator, ChunkPos center) {
+		return capture(level, generator, center, null);
+	}
+
+	public static VpsGenContext capture(WorldGenLevel level, ChunkGenerator generator, ChunkPos center, int[][] beardBoxes) {
 		RandomState randomState = null;
 		try {
 			if (level instanceof WorldGenRegion region) {
@@ -56,7 +64,12 @@ public final class VpsGenContext {
 		} catch (Throwable t) {
 			VillagePathSmoothed.LOGGER.warn("[VPS] Could not capture RandomState; noise fallback heights disabled", t);
 		}
-		return new VpsGenContext(level, generator, randomState, center);
+		return new VpsGenContext(level, generator, randomState, center, beardBoxes);
+	}
+
+	/** Late-sets the beard source boxes once the collector has walked the pieces. */
+	public void setBeardBoxes(int[][] boxes) {
+		this.beardBoxes = boxes;
 	}
 
 	public int getMinY() {
@@ -127,17 +140,37 @@ public final class VpsGenContext {
 	}
 
 	/**
-	 * Best available height for a column. Real height inside +/-1 chunks,
-	 * noise height outside; falls back to whatever works.
+	 * Noise-based height with structure-beard compensation. Returns
+	 * {@link #NOISE_UNAVAILABLE} when no RandomState is available.
+	 *
+	 * The raw {@code getBaseHeight} evaluates noise with a no-op beardifier,
+	 * while real terrain next to RIGID pieces (buildings) is bearded upward by
+	 * roughly one block; without the compensation road segments anchored on
+	 * the raw noise sink by that block next to buildings (too small for a
+	 * kerb: bare dirt walls, report "parts of roads sit 1 block low"). Only
+	 * raises, never lowers; disabled with beardCompensation < 0.
 	 */
-	public int surfaceTopY(int x, int z) {
+	public int noiseSurfaceTopY(int x, int z, VillagePathSmoothedConfig config) {
+		int raw = noiseSurfaceTopY(x, z);
+		if (raw == NOISE_UNAVAILABLE || this.beardBoxes == null || config.roadSmoothing.beardCompensation <= 0) {
+			return raw;
+		}
+		boolean near = BeardCompensation.isNearBuilding(this.beardBoxes, x, z, config.roadSmoothing.beardRadius);
+		return BeardCompensation.compensate(raw, near, config.roadSmoothing.beardCompensation);
+	}
+
+	/**
+	 * Best available height for a column. Real height inside +/-1 chunks,
+	 * compensated noise height outside; falls back to whatever works.
+	 */
+	public int surfaceTopY(int x, int z, VillagePathSmoothedConfig config) {
 		if (hasRealHeight(x, z)) {
 			try {
 				int real = realSurfaceTopY(x, z);
 				// the noise probe is not free, so only pay for the cross-check
 				// when the real value sits suspiciously close to the floor
 				if (real - this.getMinY() <= HeightSanity.FLOOR_GARBAGE_MARGIN) {
-					int noise = noiseSurfaceTopY(x, z);
+					int noise = noiseSurfaceTopY(x, z, config);
 					if (HeightSanity.shouldDistrustRealHeight(real, noise, this.getMinY())) {
 						FLOOR_GARBAGE_HITS.incrementAndGet();
 						warnFloorGarbage(x, z, real, noise);
@@ -149,7 +182,7 @@ public final class VpsGenContext {
 				// fall through to the noise probe
 			}
 		}
-		int noise = noiseSurfaceTopY(x, z);
+		int noise = noiseSurfaceTopY(x, z, config);
 		if (noise != NOISE_UNAVAILABLE) {
 			return noise;
 		}

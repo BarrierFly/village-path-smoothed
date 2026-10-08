@@ -38,7 +38,10 @@ public final class RoadWriter {
 
 	/** Aggregated diagnostic: cells clamped to a dimension bound instead of being written at the solved height. */
 	public static final AtomicLong CLAMPED_WRITES = new AtomicLong();
+	/** Aggregated diagnostic: cells re-anchored onto the real surface at write time. */
+	public static final AtomicLong REANCHORED_WRITES = new AtomicLong();
 	private static volatile boolean warnedClampedWrites;
+	private static volatile boolean warnedReanchoredWrites;
 
 	private RoadWriter() {
 	}
@@ -85,6 +88,29 @@ public final class RoadWriter {
 		} else {
 			roadTopBlockY = (p - 1) / 2;
 			slab = true;
+		}
+		// ---- write-time reconciliation against the real surface (report:
+		// "parts of roads sit 1 block low"). The solve anchors cells outside
+		// the readable window on the (beard-compensated) noise height; when a
+		// column's real surface deviates from the solved walk surface by more
+		// than 2 blocks the profile cannot be honoured without a visible bare
+		// cliff - re-anchor the road onto the real surface instead of digging a
+		// trench. A 1-block deviation stays: it is indistinguishable per-cell
+		// from the intended sunken-road gradient (root fix is the beard
+		// compensation on the noise anchor, not this net)
+		int walkSurface = (p + 1) / 2;
+		if (config.roadSmoothing.enabled && Math.abs(walkSurface - topY) > 2) {
+			// keep the solved parity: whole-block roads snap flush (road block
+			// at topY-1, walk at topY); slab roads snap to a bottom slab at
+			// topY-1 (walk at topY-0.5), never floating a slab above ground
+			p = (p & 1) == 0 ? 2 * topY : 2 * topY - 1;
+			roadTopBlockY = (p - 1) / 2;
+			slab = true;
+			REANCHORED_WRITES.incrementAndGet();
+			if (!warnedReanchoredWrites) {
+				warnedReanchoredWrites = true;
+				VillagePathSmoothed.LOGGER.warn("[VPS] road cell at {} {} re-anchored onto the real surface (solved walk surface {} vs real {}); the noise anchor was likely off - check roadSmoothing.beardCompensation", x, z, walkSurface, topY);
+			}
 		}
 		roadTopBlockY = Math.max(ctx.getMinY(), Math.min(ctx.getMaxY(), roadTopBlockY));
 		// Report 2.3/5-④: silent clamping was garbage-in-garbage-out with zero

@@ -54,6 +54,20 @@ public final class RoadCollector {
 		Map<Long, RoadCell> cellsByPos = new HashMap<>();
 		int pieceCount = 0;
 
+		// RIGID piece boxes are the beard sources: vanilla raises the noise
+		// terrain toward their bases, so the noise probe must be compensated
+		// near them (BeardifierMarker is a no-op inside getBaseHeight)
+		List<int[]> beardBoxes = new ArrayList<>();
+		for (StructurePiece piece : start.getPieces()) {
+			if (piece instanceof PoolElementStructurePiece poolPiece
+					&& poolPiece.getElement() instanceof SinglePoolElement
+					&& poolPiece.getElement().getProjection() == net.minecraft.world.level.levelgen.structure.pools.StructureTemplatePool.Projection.RIGID) {
+				BoundingBox box = piece.getBoundingBox();
+				beardBoxes.add(new int[]{box.minX(), box.maxX(), box.minZ(), box.maxZ()});
+			}
+		}
+		ctx.setBeardBoxes(beardBoxes.toArray(new int[0][]));
+
 		for (StructurePiece piece : start.getPieces()) {
 			if (!(piece instanceof PoolElementStructurePiece poolPiece)) {
 				continue;
@@ -152,7 +166,7 @@ public final class RoadCollector {
 			int surfaceTopY;
 			boolean anchor = false;
 			try {
-				surfaceTopY = ctx.surfaceTopY(x, z);
+				surfaceTopY = ctx.surfaceTopY(x, z, config);
 			} catch (Throwable t) {
 				VillagePathSmoothed.LOGGER.warn("[VPS] height probe failed at {} {} while collecting", x, z, t);
 				PROBE_SKIPPED_CELLS.incrementAndGet();

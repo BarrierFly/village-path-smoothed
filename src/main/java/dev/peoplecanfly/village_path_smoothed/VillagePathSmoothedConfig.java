@@ -38,6 +38,7 @@ public final class VillagePathSmoothedConfig {
 	public Railing railing = new Railing();
 	public WaterCrossing waterCrossing = new WaterCrossing();
 	public Diagnostics diagnostics = new Diagnostics();
+	public Debug debug = new Debug();
 
 	public static class RoadSmoothing {
 		public boolean enabled = true;
@@ -58,6 +59,10 @@ public final class VillagePathSmoothedConfig {
 		public int icmRounds = 4;
 		public boolean allowCutIntoTerrain = true;
 		public String fillMaterial = "STYLE_ROAD";
+		/** Blocks added to the noise-probed height next to RIGID pieces (buildings): vanilla beards terrain toward the building base, the raw noise probe does not know that (< 0 disables). */
+		public int beardCompensation = 1;
+		/** Horizontal radius (Chebyshev, blocks) of the beard zone around building footprints. */
+		public int beardRadius = 4;
 		public String roadPiecesRegex = "^minecraft:village/([a-z_]+)/(streets|terminators)/";
 		public RoadSurfaceDetection roadSurfaceDetection = RoadSurfaceDetection.TEMPLATE_Y0_SOLID;
 	}
@@ -99,6 +104,12 @@ public final class VillagePathSmoothedConfig {
 		public String logLevel = "INFO";
 		public boolean dumpRoadNetwork = false;
 		public int maxRoadCellsPerVillage = 20000;
+	}
+
+	/** Runtime debug switches, all togglable in-game via /vps debug (no restart). */
+	public static class Debug {
+		/** Debug: villagers skip their brain tick (stand still, trading still works). */
+		public boolean disableVillagerBrains = false;
 	}
 
 	public static class BlockByStyle {

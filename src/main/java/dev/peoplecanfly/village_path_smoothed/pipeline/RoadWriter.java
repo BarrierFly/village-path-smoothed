@@ -20,6 +20,7 @@ import net.minecraft.world.level.levelgen.structure.BoundingBox;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Rewrites road cells inside one chunk's writable area (plan sections 5.4-5.6).
@@ -31,6 +32,10 @@ import java.util.List;
  */
 public final class RoadWriter {
 	private static final int WRITE_FLAGS = Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE;
+
+	/** Aggregated diagnostic: cells clamped to a dimension bound instead of being written at the solved height. */
+	public static final AtomicLong CLAMPED_WRITES = new AtomicLong();
+	private static volatile boolean warnedClampedWrites;
 
 	private RoadWriter() {
 	}
@@ -79,6 +84,17 @@ public final class RoadWriter {
 			slab = true;
 		}
 		roadTopBlockY = Math.max(ctx.getMinY(), Math.min(ctx.getMaxY(), roadTopBlockY));
+		// Report 2.3/5-④: silent clamping was garbage-in-garbage-out with zero
+		// log clues. The probe-side garbage filters (VpsGenContext/RoadCollector)
+		// should keep this near zero now; counting + a throttled warn keeps any
+		// residual case diagnosable
+		if (roadTopBlockY <= ctx.getMinY() || roadTopBlockY >= ctx.getMaxY()) {
+			CLAMPED_WRITES.incrementAndGet();
+			if (!warnedClampedWrites) {
+				warnedClampedWrites = true;
+				VillagePathSmoothed.LOGGER.warn("[VPS] road cell at {} {} clamps to a dimension bound (y={}); this normally means a garbage height survived the probe filters", x, z, roadTopBlockY);
+			}
+		}
 
 		if (config.roadSmoothing.enabled) {
 			Block roadBlock = materials.roadBlock;

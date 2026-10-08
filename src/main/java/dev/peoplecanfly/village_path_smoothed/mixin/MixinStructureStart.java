@@ -29,8 +29,10 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  */
 @Mixin(StructureStart.class)
 public abstract class MixinStructureStart implements StructureStartVpsAccess {
+	// volatile: the double-checked-lock read below runs outside any lock and
+	// another worker thread must see a fully published RoadNetwork (report 4.2 #4)
 	@Unique
-	private VpsVillageSolution village_path_smoothed$solution;
+	private volatile VpsVillageSolution village_path_smoothed$solution;
 
 	@Inject(method = "placeInChunk", at = @At("RETURN"))
 	private void village_path_smoothed$onPlaceInChunkTail(

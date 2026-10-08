@@ -10,12 +10,15 @@ import dev.peoplecanfly.village_path_smoothed.VillagePathSmoothedConfig;
 import dev.peoplecanfly.village_path_smoothed.compat.VpsCompat;
 import dev.peoplecanfly.village_path_smoothed.terrain.VpsGenContext;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.tags.BlockTags;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.LeavesBlock;
 import net.minecraft.world.level.block.ScaffoldingBlock;
+import net.minecraft.world.level.block.SlabBlock;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.SlabType;
 import net.minecraft.world.level.levelgen.structure.BoundingBox;
 
 import java.util.ArrayList;
@@ -107,7 +110,27 @@ public final class RoadWriter {
 				}
 			}
 
-			// fill support below the road block up to the vanilla surface
+			// fill support below the road block up to the vanilla surface; when
+			// the fill exceeds maxFillLayers the column becomes a bridge deck
+			// instead (whole-block road: the single road block; slab road: the
+			// road slab rides on an upside-down top slab of the same material).
+			// The deck stays at the SOLVED height so the half-step constraint to
+			// neighbouring cells is preserved
+			int fillLayers = roadTopBlockY - topY;
+			if (RoadWritePolicy.bridgeDeck(fillLayers, config.roadSmoothing.maxFillLayers)) {
+				if (slab) {
+					setBlock(ctx, x, roadTopBlockY - 1, z, materials.slabBlock
+							.defaultBlockState()
+							.setValue(SlabBlock.TYPE, SlabType.TOP));
+				}
+				BlockState roadState = slab
+						? materials.slabBlock.defaultBlockState()
+						: roadBlock.defaultBlockState();
+				setBlock(ctx, x, roadTopBlockY, z, roadState);
+				VpsPipeline.ROAD_CELLS_WRITTEN.incrementAndGet();
+				applyKerbsAndRailings(net, cell, ctx, config, materials, kerbExtras, roadTopBlockY);
+				return;
+			}
 			for (int y = topY - 1; y < roadTopBlockY; y++) {
 				setBlock(ctx, x, y, z, roadBlock.defaultBlockState());
 			}
@@ -118,9 +141,17 @@ public final class RoadWriter {
 			setBlock(ctx, x, roadTopBlockY, z, roadState);
 			// clear whatever the vanilla generation left above the road block
 			// (old road block, grass patch holes, planks) - this also restores the
-			// grass patch holes (Q12) because the road block is written over them
-			for (int y = roadTopBlockY + 1; y <= topY - 1; y++) {
+			// grass patch holes (Q12) because the road block is written over them;
+			// with a clear cap the remaining terrain becomes a tunnel roof lined
+			// with the kerb material
+			int clearTop = RoadWritePolicy.clearTopY(roadTopBlockY, topY, config.roadSmoothing.maxClearLayers);
+			for (int y = roadTopBlockY + 1; y <= clearTop; y++) {
 				setBlock(ctx, x, y, z, Blocks.AIR.defaultBlockState());
+			}
+			if (RoadWritePolicy.tunnelRoof(roadTopBlockY, topY, clearTop, config.roadSmoothing.maxClearLayers)) {
+				// line the tunnel roof with the style's kerb material (report:
+				// "包边覆盖隧道顶"; the side kerb below keeps replacing #dirt only)
+				setBlock(ctx, x, clearTop + 1, z, materials.kerbBlock.defaultBlockState());
 			}
 		}
 		VpsPipeline.ROAD_CELLS_WRITTEN.incrementAndGet();
@@ -191,11 +222,19 @@ public final class RoadWriter {
 		int wt = topY - 1; // vanilla puts the planks at the water surface
 		BlockPos belowPos = new BlockPos(x, wt - 1, z);
 		BlockState below = ctx.blockState(x, wt - 1, z);
-		boolean supported = below.isCollisionShapeFullBlock(ctx.level, belowPos);
+		// vanilla ScaffoldingBlock#getDistance counts a column as supported when
+		// the block below has a sturdy UP face - NOT when it is a full collision
+		// cube, so slabs or snow-covered grass count as support too; our writer
+		// must use the identical criterion or the first tick will recompute a
+		// different distance than we placed (bottom-of-village drift)
+		boolean supported = below.isFaceSturdy(ctx.level, belowPos, Direction.UP);
 		int distance = supported
 				? Math.max(0, Math.min(7, config.waterCrossing.distanceWhenSupported))
 				: Math.max(0, Math.min(7, config.waterCrossing.distanceWhenUnsupported));
-		boolean bottom = below.is(Blocks.SCAFFOLDING);
+		// vanilla isBottom: distance > 0 && the block below is NOT scaffolding,
+		// i.e. a hanging scaffold reads bottom=true (the old check here was
+		// inverted: it flagged scaffolds resting on another scaffold)
+		boolean bottom = distance > 0 && !below.is(Blocks.SCAFFOLDING);
 		boolean waterlogged = ctx.blockState(x, wt, z).is(Blocks.WATER) || ctx.level.getFluidState(new BlockPos(x, wt, z)).is(net.minecraft.tags.FluidTags.WATER);
 		BlockState state = Blocks.SCAFFOLDING.defaultBlockState()
 				.setValue(ScaffoldingBlock.DISTANCE, distance)

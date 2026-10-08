@@ -85,6 +85,8 @@ ModMenu is installed) but optional. / 无必装依赖；装有 ModMenu 时会出
 | `roadSmoothing.dpWindowHalfUnits` | `16` | per-cell candidate half window in half blocks (auto-shrunk for wide slices) |
 | `roadSmoothing.maxExactSectionWidth` | `4` | slice width solved by the exact DP; wider areas use iterative minimisation |
 | `roadSmoothing.roadSurfaceDetection` | `TEMPLATE_Y0_SOLID` | `TEMPLATE_Y0_ROAD_MATERIAL` only accepts the style's own road block |
+| `roadSmoothing.maxFillLayers` | `3` | max consecutive fill layers when the road sits above the ground; beyond it the cell becomes a bridge deck instead (`< 0` = unlimited) |
+| `roadSmoothing.maxClearLayers` | `-1` | max layers cleared above the road when it sits below the ground; beyond it the cell tunnels and the kerb material lines the roof (`< 0` = unlimited) |
 | `kerb.minDropHeight` | `1` | "terrain more than N blocks above the road" triggers a kerb |
 | `kerb.replaceableBlocks` | `["#minecraft:dirt"]` | blocks the kerb may replace; add e.g. `minecraft:sand` for desert walls |
 | `waterCrossing.enabled` | `true` | scaffolding bridges; disable to keep vanilla planks |

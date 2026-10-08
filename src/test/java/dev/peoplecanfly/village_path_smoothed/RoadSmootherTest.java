@@ -9,6 +9,7 @@ import dev.peoplecanfly.village_path_smoothed.VillagePathSmoothedConfig.Objectiv
 import dev.peoplecanfly.village_path_smoothed.pipeline.RoadCell;
 import dev.peoplecanfly.village_path_smoothed.pipeline.RoadNetwork;
 import dev.peoplecanfly.village_path_smoothed.pipeline.RoadSmoother;
+import dev.peoplecanfly.village_path_smoothed.pipeline.RoadWritePolicy;
 import dev.peoplecanfly.village_path_smoothed.terrain.HeightSanity;
 import org.junit.Test;
 
@@ -258,5 +259,27 @@ public class RoadSmootherTest {
 		RoadNetwork netA = RoadNetwork.build(cellsA, 4);
 		RoadSmoother.solve(netA, params(Objective.SHORTEST_CATCHUP));
 		assertViolationsAtMost(netA, 3);
+	}
+
+	@Test
+	public void fillAndClearCapsDecideBridgeDeckAndTunnelRoof() {
+		// bridge deck only beyond the cap; negative cap means never
+		assertTrue(RoadWritePolicy.bridgeDeck(4, 3));
+		assertTrue(RoadWritePolicy.bridgeDeck(100, 3));
+		assertFalse(RoadWritePolicy.bridgeDeck(3, 3)); // exactly at the cap: still landfill
+		assertFalse(RoadWritePolicy.bridgeDeck(1, 3));
+		assertFalse(RoadWritePolicy.bridgeDeck(1000, -1)); // unlimited
+
+		// clear cap bounds the clear loop; negative cap clears up to the surface
+		assertEquals(68, RoadWritePolicy.clearTopY(60, 75, 8)); // 60+8 < 74
+		assertEquals(74, RoadWritePolicy.clearTopY(60, 75, 100)); // cap above surface: surface wins
+		assertEquals(74, RoadWritePolicy.clearTopY(60, 75, -1)); // unlimited
+		assertEquals(59, RoadWritePolicy.clearTopY(60, 60, 8)); // nothing to clear
+
+		// tunnel roof only when capped clearing leaves terrain overhead
+		assertTrue(RoadWritePolicy.tunnelRoof(60, 75, 68, 8));
+		assertFalse(RoadWritePolicy.tunnelRoof(60, 75, 74, 8)); // cleared everything
+		assertFalse(RoadWritePolicy.tunnelRoof(60, 75, 74, -1)); // unlimited never roofs
+		assertFalse(RoadWritePolicy.tunnelRoof(60, 60, 59, 8)); // nothing above the road
 	}
 }

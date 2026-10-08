@@ -41,6 +41,10 @@ public final class VillagePathSmoothedConfig {
 
 	public static class RoadSmoothing {
 		public boolean enabled = true;
+		/** Max consecutive fill layers when the road sits above the ground; beyond it the cell becomes a bridge deck (< 0 = unlimited). */
+		public int maxFillLayers = 3;
+		/** Max layers cleared above the road when it sits below the ground; beyond it the cell tunnels and the kerb lines the roof (< 0 = unlimited). */
+		public int maxClearLayers = -1;
 		public Objective objective = Objective.MIN_DEVIATION;
 		/** Weight w1 of the HYBRID objective (w2 = 1). */
 		public double hybridWeightDeviation = 8.0;

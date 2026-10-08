@@ -66,7 +66,7 @@ public final class VpsPipeline {
 			synchronized (start) {
 				solution = access.village_path_smoothed$getSolution();
 				if (solution == null) {
-					solution = solveVillage(start, level, generator, config);
+					solution = solveVillage(start, level, generator, chunkPos, config);
 					access.village_path_smoothed$setSolution(solution);
 				}
 			}
@@ -96,9 +96,19 @@ public final class VpsPipeline {
 		}
 	}
 
-	private static VpsVillageSolution solveVillage(StructureStart start, WorldGenLevel level, ChunkGenerator generator, VillagePathSmoothedConfig config) {
+	private static VpsVillageSolution solveVillage(StructureStart start, WorldGenLevel level, ChunkGenerator generator, ChunkPos triggerChunk, VillagePathSmoothedConfig config) {
 		long begin = System.nanoTime();
-		VpsGenContext ctx = VpsGenContext.capture(level, generator, start.getChunkPos());
+		// Analysis report section 3.1 / fix 1: the real-heightmap reliability
+		// window is guaranteed by the vanilla chunk pyramid only +/-1 chunks
+		// around the chunk currently being generated (FEATURES needs CARVERS at
+		// distance 1, only STRUCTURE_STARTS at distance 2..8), so the probe
+		// center must be the triggering chunk - NOT the village start chunk.
+		// The start chunk's neighbourhood may still be STRUCTURE_STARTS-only
+		// air whose lazily primed heightmaps read as the dimension floor; that
+		// garbage baseline used to sink whole roads. Noise heights outside the
+		// window are a pure function of x/z, so the single cached solve stays
+		// consistent regardless of which chunk of the village triggers it.
+		VpsGenContext ctx = VpsGenContext.capture(level, generator, triggerChunk);
 		RoadNetwork network = RoadCollector.collect(start, ctx, config);
 		if (config.roadSmoothing.enabled) {
 			RoadSmoother.solve(network, paramsFor(config));
@@ -110,8 +120,16 @@ public final class VpsPipeline {
 		SOLVE_NANOS.addAndGet(nanos);
 		VILLAGES_SOLVED.incrementAndGet();
 		if (config.diagnostics.dumpRoadNetwork) {
-			VillagePathSmoothed.LOGGER.info("[VPS] solved village at {} in {} us: {} cells, {} arms, {} regions",
-					start.getChunkPos(), nanos / 1000, network.cells.size(), network.arms.size(), network.regions.size());
+			// baseP min/avg make a garbage baseline visible at a glance (report 5-④)
+			long baseSum = 0;
+			int baseMin = Integer.MAX_VALUE;
+			for (RoadCell cell : network.cells) {
+				baseSum += cell.baseP;
+				baseMin = Math.min(baseMin, cell.baseP);
+			}
+			int baseAvg = network.cells.isEmpty() ? 0 : (int) (baseSum / network.cells.size());
+			VillagePathSmoothed.LOGGER.info("[VPS] solved village at {} in {} us: {} cells, {} arms, {} regions, baseP min/avg {}/{}",
+					start.getChunkPos(), nanos / 1000, network.cells.size(), network.arms.size(), network.regions.size(), baseMin, baseAvg);
 		}
 		return solution;
 	}

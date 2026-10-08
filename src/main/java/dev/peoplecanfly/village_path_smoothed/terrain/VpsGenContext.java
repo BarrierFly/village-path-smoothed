@@ -17,6 +17,8 @@ import net.minecraft.world.level.block.state.BlockState;
 
 import dev.peoplecanfly.village_path_smoothed.VillagePathSmoothed;
 
+import java.util.concurrent.atomic.AtomicLong;
+
 /**
  * Terrain access during world generation.
  *
@@ -92,17 +94,36 @@ public final class VpsGenContext {
 		return this.level.getHeight(Heightmap.Types.WORLD_SURFACE_WG, x, z);
 	}
 
-	/** Noise-based height; returns -1 when no RandomState is available. */
+	/** Noise-based height; returns {@link #NOISE_UNAVAILABLE} when no RandomState is available. */
 	public int noiseSurfaceTopY(int x, int z) {
 		if (this.randomState == null) {
-			return -1;
+			return NOISE_UNAVAILABLE;
 		}
 		try {
 			return this.generator.getBaseHeight(x, z, Heightmap.Types.WORLD_SURFACE_WG, this.level, this.randomState);
 		} catch (Throwable t) {
 			VillagePathSmoothed.LOGGER.debug("[VPS] noise height probe failed at {} {}", x, z, t);
-			return -1;
+			return NOISE_UNAVAILABLE;
 		}
+	}
+
+	/**
+	 * Number of probes where the real heightmap was distrusted as a floor value
+	 * (see {@link HeightSanity#shouldDistrustRealHeight}).
+	 */
+	public static final AtomicLong FLOOR_GARBAGE_HITS = new AtomicLong();
+	/** Sentinel for "no noise height": Integer.MIN_VALUE cannot collide with a legitimate first-air-above-surface height (unlike the old -1 sentinel, which is a real height in min_y=-64 worlds). */
+	public static final int NOISE_UNAVAILABLE = Integer.MIN_VALUE;
+	private static volatile long lastFloorGarbageWarnNanos;
+
+	private static void warnFloorGarbage(int x, int z, int real, int noise) {
+		long now = System.nanoTime();
+		if (now - lastFloorGarbageWarnNanos < 30_000_000_000L) {
+			return;
+		}
+		lastFloorGarbageWarnNanos = now;
+		VillagePathSmoothed.LOGGER.warn("[VPS] heightmap probe at {} {} returned {} (within {} of the dimension floor), which looks like a lazily-primed empty chunk; using the noise height {} instead",
+				x, z, real, HeightSanity.FLOOR_GARBAGE_MARGIN, noise);
 	}
 
 	/**
@@ -112,13 +133,24 @@ public final class VpsGenContext {
 	public int surfaceTopY(int x, int z) {
 		if (hasRealHeight(x, z)) {
 			try {
-				return realSurfaceTopY(x, z);
+				int real = realSurfaceTopY(x, z);
+				// the noise probe is not free, so only pay for the cross-check
+				// when the real value sits suspiciously close to the floor
+				if (real - this.getMinY() <= HeightSanity.FLOOR_GARBAGE_MARGIN) {
+					int noise = noiseSurfaceTopY(x, z);
+					if (HeightSanity.shouldDistrustRealHeight(real, noise, this.getMinY())) {
+						FLOOR_GARBAGE_HITS.incrementAndGet();
+						warnFloorGarbage(x, z, real, noise);
+						return noise;
+					}
+				}
+				return real;
 			} catch (Throwable t) {
 				// fall through to the noise probe
 			}
 		}
 		int noise = noiseSurfaceTopY(x, z);
-		if (noise >= 0) {
+		if (noise != NOISE_UNAVAILABLE) {
 			return noise;
 		}
 		return realSurfaceTopY(x, z); // may throw; caller treats that as fatal for this chunk

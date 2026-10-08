@@ -11,6 +11,7 @@ import dev.peoplecanfly.village_path_smoothed.compat.VpsCompat;
 import dev.peoplecanfly.village_path_smoothed.duck.PoolElementStructurePieceVpsAccess;
 import dev.peoplecanfly.village_path_smoothed.duck.SinglePoolElementVpsAccess;
 import dev.peoplecanfly.village_path_smoothed.duck.StructureTemplateVpsAccess;
+import dev.peoplecanfly.village_path_smoothed.terrain.HeightSanity;
 import dev.peoplecanfly.village_path_smoothed.terrain.VpsGenContext;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.block.Block;
@@ -29,6 +30,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Pattern;
 
 /**
@@ -40,6 +42,9 @@ import java.util.regex.Pattern;
  * other structures, and the template+piece transform is fully deterministic.
  */
 public final class RoadCollector {
+	/** Cells dropped because their height probe failed or read a floor-level garbage value; they stay vanilla. */
+	public static final AtomicLong PROBE_SKIPPED_CELLS = new AtomicLong();
+
 	private RoadCollector() {
 	}
 
@@ -150,13 +155,33 @@ public final class RoadCollector {
 				surfaceTopY = ctx.surfaceTopY(x, z);
 			} catch (Throwable t) {
 				VillagePathSmoothed.LOGGER.warn("[VPS] height probe failed at {} {} while collecting", x, z, t);
+				PROBE_SKIPPED_CELLS.incrementAndGet();
+				continue;
+			}
+			// Analysis report section 5-2: a probe exactly at the dimension floor
+			// is the signature of a lazily-primed all-air chunk (firstAvailable =
+			// min_y). VpsGenContext already cross-checks floor-adjacent reads
+			// against the noise height; what still arrives here at the exact
+			// floor has no better source to confirm it, and no legitimate village
+			// terrain sits at the dimension floor, so dropping the cell keeps the
+			// vanilla road instead of building into the void. A genuinely low
+			// world (superflat) sits ABOVE the floor and is unaffected.
+			if (HeightSanity.isExactFloorProbe(surfaceTopY, ctx.getMinY())) {
+				PROBE_SKIPPED_CELLS.incrementAndGet();
+				VillagePathSmoothed.LOGGER.warn("[VPS] floor-level probe at {} {} ({}); looks like an empty chunk, dropping this road cell to keep it vanilla", x, z, surfaceTopY);
 				continue;
 			}
 			if (ctx.hasRealHeight(x, z)) {
-				// over-water cells are fixed anchors (vanilla put planks there)
-				BlockState vanilla = ctx.blockState(x, surfaceTopY - 1, z);
-				if (RoadMaterialTable.isPlanks(vanilla) || vanilla.is(Blocks.WATER)) {
-					anchor = true;
+				// over-water cells are fixed anchors (vanilla put planks there);
+				// the block read is guarded like the probe above: an unreadable
+				// chunk must cost one cell, not the whole village solve (report 5-2)
+				try {
+					BlockState vanilla = ctx.blockState(x, surfaceTopY - 1, z);
+					if (RoadMaterialTable.isPlanks(vanilla) || vanilla.is(Blocks.WATER)) {
+						anchor = true;
+					}
+				} catch (Throwable t) {
+					VillagePathSmoothed.LOGGER.debug("[VPS] anchor check failed at {} {}; treating the cell as non-anchor", x, z, t);
 				}
 			}
 			cellsByPos.put(key, new RoadCell(x, z, style, 2 * surfaceTopY, anchor));

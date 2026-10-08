@@ -75,6 +75,10 @@ public final class VpsWorldSettings {
 		PendingChoice choice = pendingForCreation;
 		if (choice != null && choice.worldName.equals(levelName(server))) {
 			pendingForCreation = null; // one-shot: applies to the world being created only
+			// report 4.1 #1: consume the remembered toggle together with the
+			// pending choice, otherwise the next world created without touching
+			// the toggle inherits this world's choice via the button state
+			lastToggleEnabled = null;
 			return choice.enabled;
 		}
 		return VillagePathSmoothedConfig.get().enabled;

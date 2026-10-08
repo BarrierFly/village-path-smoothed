@@ -806,6 +806,9 @@ public final class RoadSmoother {
 	 * </ul>
 	 */
 	private static final class CostModel {
+		/** Deviations beyond this many half units all cost the same (overflow guard, report 2.1/5-⑤). */
+		private static final int EXCESS_SATURATION = 1 << 12;
+
 		private final Objective objective;
 		private final int penalty;
 		private final int hybridW1;
@@ -819,17 +822,52 @@ public final class RoadSmoother {
 			this.penalty = Math.max(0, p.stepViolationPenalty());
 			this.hybridW1 = Math.max(1, p.hybridWeightScaled());
 			long stepScale = objective == Objective.HYBRID ? hybridW2 : 1;
-			this.s2 = Math.max(1, edgeCount * 4L * window * stepScale + 1);
-			this.sDev = Math.max(1, cellCount * 4L * window + 1);
+			long w = Math.max(1, window);
+			long s2v = Math.max(1, Math.max(1, edgeCount) * 4L * w * stepScale + 1);
+			long sDevV = Math.max(1, Math.max(1, cellCount) * 4L * w + 1);
+			long s1v = Math.max(1, Math.max(1, cellCount) + 1);
+			// Report 2.1/5-⑤: the lexicographic products (penalty|hybridW1) *
+			// excess * [s1 *] sDev * s2 can wrap around for cap-sized components.
+			// Deviations are saturated at EXCESS_SATURATION and the scales are
+			// clamped so the SUMMED worst case over all cells+edges of the
+			// component stays below Long.MAX_VALUE/8 (the DP accumulates every
+			// per-cell and per-edge term). The finest scale (s2) is squeezed
+			// first: flattening it only blurs the lowest lexicographic rank, the
+			// coarse ranks survive as long as mathematically possible. Ordinary
+			// sizes never hit the clamp, so the classic scales are kept verbatim.
+			long items = Math.max(1, (long) Math.max(1, cellCount) + Math.max(0, edgeCount));
+			long top = ((long) Math.max(1, Math.max(this.penalty, this.hybridW1)) + hybridW2 + 2) * EXCESS_SATURATION;
+			long room = (Long.MAX_VALUE / 8) / Math.max(1, satMul(items, top));
+			long coarseAbove = objective == Objective.SHORTEST_CATCHUP ? satMul(s1v, sDevV) : 1;
+			if (satMul(coarseAbove, s2v) > room) {
+				s2v = Math.max(1, room / Math.max(1, coarseAbove));
+				if (objective == Objective.SHORTEST_CATCHUP && satMul(s1v, sDevV) > room) {
+					sDevV = Math.max(1, room / Math.max(1, s1v));
+					if (satMul(s1v, sDevV) > room) {
+						s1v = Math.max(1, room / Math.max(1, sDevV));
+					}
+				}
+			}
+			this.s2 = s2v;
+			this.sDev = sDevV;
 			// SHORTEST_CATCHUP lexicographic order: (step-violation penalty,
 			// deviating cells, sum|P-P0|, sum|dP|) - the penalty sits on top so
 			// legal profiles always win and jumps only appear when no legal
 			// profile fits the geometry
-			this.s1 = Math.max(1, cellCount + 1);
+			this.s1 = s1v;
+		}
+
+		/** Multiplication saturated at Long.MAX_VALUE (non-negative operands only). */
+		private static long satMul(long a, long b) {
+			if (a <= 0 || b <= 0) {
+				return 0;
+			}
+			long r = a * b;
+			return r / b == a ? r : Long.MAX_VALUE;
 		}
 
 		long cellCost(RoadCell cell, int value) {
-			int dev = Math.abs(value - cell.baseP);
+			int dev = Math.min(Math.abs(value - cell.baseP), EXCESS_SATURATION);
 			switch (objective) {
 				case MIN_DEVIATION:
 					return dev * s2;
@@ -866,7 +904,7 @@ public final class RoadSmoother {
 		}
 
 		private long edgeCost(int a, int b) {
-			int delta = Math.abs(a - b);
+			int delta = Math.min(Math.abs(a - b), EXCESS_SATURATION);
 			int excess = Math.max(0, delta - 1);
 			switch (objective) {
 				case MIN_DEVIATION:

@@ -9,6 +9,7 @@ import dev.peoplecanfly.village_path_smoothed.VillagePathSmoothedConfig.Objectiv
 import dev.peoplecanfly.village_path_smoothed.pipeline.RoadCell;
 import dev.peoplecanfly.village_path_smoothed.pipeline.RoadNetwork;
 import dev.peoplecanfly.village_path_smoothed.pipeline.RoadSmoother;
+import dev.peoplecanfly.village_path_smoothed.terrain.HeightSanity;
 import org.junit.Test;
 
 import java.util.ArrayList;
@@ -16,6 +17,7 @@ import java.util.List;
 import java.util.function.IntUnaryOperator;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 /**
@@ -204,5 +206,57 @@ public class RoadSmootherTest {
 		assertEquals(1, net.arms.size());
 		RoadSmoother.solve(net, params(Objective.MIN_DEVIATION));
 		assertAdjacentConstraint(net, false);
+	}
+
+	@Test
+	public void floorLevelProbesAreDistrustedOnlyWhenNoiseDisagrees() {
+		// report 5-2: the empty-chunk signature is a probe exactly at the
+		// dimension floor; genuinely low worlds (superflat) sit above it
+		int minY = -64;
+		assertTrue(HeightSanity.isExactFloorProbe(minY, minY));
+		assertTrue(HeightSanity.isExactFloorProbe(minY - 1, minY));
+		assertFalse(HeightSanity.isExactFloorProbe(minY + 1, minY));
+
+		// real probe at the floor while noise disagrees: distrust the real value
+		assertTrue(HeightSanity.shouldDistrustRealHeight(minY, minY + 40, minY));
+		// no noise height available: never distrust (Integer.MIN_VALUE sentinel)
+		assertFalse(HeightSanity.shouldDistrustRealHeight(minY, Integer.MIN_VALUE, minY));
+		// noise agrees with a low-but-legit surface (not above it): trust it
+		assertFalse(HeightSanity.shouldDistrustRealHeight(minY + 5, minY + 5, minY));
+		// a legitimate negative noise height in a min_y=-64 world is NOT the
+		// "unavailable" sentinel (the old -1 sentinel WAS this real height)
+		assertTrue(HeightSanity.shouldDistrustRealHeight(minY, -24, minY));
+		// noise lower than the real read (e.g. carved ground below canopy): trust the real one
+		assertFalse(HeightSanity.shouldDistrustRealHeight(minY + 60, minY + 40, minY));
+	}
+
+	@Test
+	public void extremeBaseHeightsDoNotWrapTheCostModel() {
+		// report 5-5: cap-sized base differences used to overflow the
+		// lexicographic long packing (penalty*excess*s1*sDev*s2); deviations
+		// now saturate, so the solver still produces the cliff pattern instead
+		// of garbage driven by wrapped costs
+		List<RoadCell> cells = new ArrayList<>();
+		for (int z = 0; z < 24; z++) {
+			int topY = z < 12 ? 1_000_000 : -1_000_000;
+			for (int x = 0; x < 3; x++) {
+				cells.add(new RoadCell(x, z, "plains", 2 * topY, false));
+			}
+		}
+		RoadNetwork net = RoadNetwork.build(cells, 4);
+		RoadSmoother.solve(net, params(Objective.MIN_DEVIATION));
+		// each of the 3 columns takes exactly one jump edge across the cliff
+		assertViolationsAtMost(net, 3);
+
+		List<RoadCell> cellsA = new ArrayList<>();
+		for (int z = 0; z < 24; z++) {
+			int topY = z < 12 ? 1_000_000 : -1_000_000;
+			for (int x = 0; x < 3; x++) {
+				cellsA.add(new RoadCell(x, z, "plains", 2 * topY, false));
+			}
+		}
+		RoadNetwork netA = RoadNetwork.build(cellsA, 4);
+		RoadSmoother.solve(netA, params(Objective.SHORTEST_CATCHUP));
+		assertViolationsAtMost(netA, 3);
 	}
 }

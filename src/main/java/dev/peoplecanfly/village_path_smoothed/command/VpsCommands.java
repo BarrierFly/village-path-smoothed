@@ -13,6 +13,7 @@ import dev.peoplecanfly.village_path_smoothed.compat.VpsCompat;
 import dev.peoplecanfly.village_path_smoothed.pipeline.RoadCollector;
 import dev.peoplecanfly.village_path_smoothed.pipeline.RoadNetwork;
 import dev.peoplecanfly.village_path_smoothed.pipeline.RoadSmoother;
+import dev.peoplecanfly.village_path_smoothed.pipeline.RoadWriter;
 import dev.peoplecanfly.village_path_smoothed.pipeline.VpsPipeline;
 import dev.peoplecanfly.village_path_smoothed.pipeline.VpsWorldSettings;
 import dev.peoplecanfly.village_path_smoothed.terrain.VpsGenContext;
@@ -164,12 +165,16 @@ public final class VpsCommands {
 		long solved = VpsPipeline.VILLAGES_SOLVED.get();
 		long nanos = VpsPipeline.SOLVE_NANOS.get();
 		return String.format(
-				"[VPS] villages solved: %d (%.2f ms avg), road cells written: %d, kerbs: %d, railings: %d, scaffolds: %d",
+				"[VPS] villages solved: %d (%.2f ms avg), road cells written: %d, kerbs: %d, railings: %d, scaffolds: %d"
+						+ ", probe skips: %d, floor-garbage probes: %d, clamped writes: %d",
 				solved,
 				solved > 0 ? nanos / 1_000_000.0 / solved : 0.0,
 				VpsPipeline.ROAD_CELLS_WRITTEN.get(),
 				VpsPipeline.KERBS_PLACED.get(),
 				VpsPipeline.RAILINGS_PLACED.get(),
-				VpsPipeline.SCAFFOLDS_PLACED.get());
+				VpsPipeline.SCAFFOLDS_PLACED.get(),
+				RoadCollector.PROBE_SKIPPED_CELLS.get(),
+				VpsGenContext.FLOOR_GARBAGE_HITS.get(),
+				RoadWriter.CLAMPED_WRITES.get());
 	}
 }

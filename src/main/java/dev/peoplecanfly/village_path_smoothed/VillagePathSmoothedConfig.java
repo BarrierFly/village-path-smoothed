@@ -31,10 +31,6 @@ public final class VillagePathSmoothedConfig {
 		TEMPLATE_Y0_SOLID, TEMPLATE_Y0_ROAD_MATERIAL
 	}
 
-	public enum RailingPlacement {
-		CORNER, EVERY_CELL
-	}
-
 	public boolean enabled = true;
 
 	public RoadSmoothing roadSmoothing = new RoadSmoothing();
@@ -45,9 +41,6 @@ public final class VillagePathSmoothedConfig {
 
 	public static class RoadSmoothing {
 		public boolean enabled = true;
-		/** Max allowed drop between two adjacent road cells, in blocks. Only 0.5 is meaningful today. */
-		public double maxStepForward = 0.5;
-		public double maxStepLateral = 0.5;
 		public Objective objective = Objective.MIN_DEVIATION;
 		/** Weight w1 of the HYBRID objective (w2 = 1). */
 		public double hybridWeightDeviation = 8.0;
@@ -63,16 +56,12 @@ public final class VillagePathSmoothedConfig {
 		public String fillMaterial = "STYLE_ROAD";
 		public String roadPiecesRegex = "^minecraft:village/([a-z_]+)/(streets|terminators)/";
 		public RoadSurfaceDetection roadSurfaceDetection = RoadSurfaceDetection.TEMPLATE_Y0_SOLID;
-		public boolean overwriteVanillaGrassPatches = true;
-		public boolean processZombieVariants = true;
 	}
 
 	public static class Kerb {
 		public boolean enabled = true;
 		/** "Terrain more than 1 block above the road" triggers a kerb. */
 		public int minDropHeight = 1;
-		/** How many blocks outward to check for a height difference. */
-		public int lookAheadBlocks = 1;
 		/** Extra block ids (besides #minecraft:dirt) treated as replaceable by kerbs. */
 		public List<String> replaceableBlocks = Arrays.asList("#minecraft:dirt");
 		public BlockByStyle blockByStyle = new BlockByStyle(
@@ -87,7 +76,6 @@ public final class VillagePathSmoothedConfig {
 	public static class Railing {
 		public boolean enabled = true;
 		public int minDropHeight = 1;
-		public RailingPlacement placement = RailingPlacement.CORNER;
 		public BlockByStyle leavesByStyle = new BlockByStyle(
 				"minecraft:oak_leaves",
 				"minecraft:acacia_leaves",
@@ -99,7 +87,6 @@ public final class VillagePathSmoothedConfig {
 
 	public static class WaterCrossing {
 		public boolean enabled = true;
-		public String block = "minecraft:scaffolding";
 		public int distanceWhenSupported = 0;
 		public int distanceWhenUnsupported = 1;
 	}

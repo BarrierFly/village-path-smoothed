@@ -87,7 +87,6 @@ ModMenu is installed) but optional. / 无必装依赖；装有 ModMenu 时会出
 | `roadSmoothing.roadSurfaceDetection` | `TEMPLATE_Y0_SOLID` | `TEMPLATE_Y0_ROAD_MATERIAL` only accepts the style's own road block |
 | `kerb.minDropHeight` | `1` | "terrain more than N blocks above the road" triggers a kerb |
 | `kerb.replaceableBlocks` | `["#minecraft:dirt"]` | blocks the kerb may replace; add e.g. `minecraft:sand` for desert walls |
-| `railing.placement` | `CORNER` | `EVERY_CELL` is reserved |
 | `waterCrossing.enabled` | `true` | scaffolding bridges; disable to keep vanilla planks |
 | `diagnostics.dumpRoadNetwork` | `false` | log one line per solved village |
 

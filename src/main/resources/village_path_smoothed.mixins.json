@@ -5,6 +5,9 @@
   "compatibilityLevel": "{{COMPATIBILITY_LEVEL}}",
   "mixins": [
     "MixinStructureStart",
+    "MixinStructureGenerate",
+    "MixinStructureManager",
+    "MixinChunkGenerator",
     "MixinSinglePoolElement",
     "MixinPoolElementStructurePiece",
     "MixinStructureTemplate",

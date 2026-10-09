@@ -37,25 +37,40 @@ water use scaffolding, and dangerous edges get leaf railings.
    - `dirt_path` roads use **mud brick slabs**, the desert `smooth_sandstone`
      road uses **smooth sandstone slabs**; slabs are always bottom slabs and
      only appear where a half-step is needed;
-   - terrain-following objective (default `MIN_DEVIATION`): minimises the total
-     fill/cut, preferring long gentle grades with few steps;
+   - smooth-first objective (default `SMOOTH_FIRST`): a strict lexicographic
+     order *cliff penalty > total step count > deviation from the noise
+     terrain*, so roads stay smooth and pay the fill/cut instead of stepping;
    - continuous 1-block-per-cell slopes produce *sunken roads*: the path cuts
      into the slope at half-block pace and the kerbs (below) hold the walls;
-   - cliffs that are geometrically impossible for half-steps get one short,
-     vanilla-style jump instead of a giant landfill (soft-constraint penalty).
-2. **Kerbs / 路肩包边** — where the terrain rises more than 1 block above the
-   road, the dirt wall on the road side is replaced with a village-style stone
-   (plains/snowy/taiga `cobblestone`, desert `smooth_sandstone`,
-   savanna `terracotta`) from the road surface all the way up to the terrain
-   top, for every block that belongs to the vanilla `#minecraft:dirt` tag.
-3. **Leaf railings / 树叶护栏** — where the terrain drops more than 1 block
-   below the road, persistent leaves (plains `oak`, desert/savanna `acacia`,
-   snowy/taiga `spruce`) are placed on the road edge at walk-surface height, at
-   the two corner points of every cross section.
-4. **Scaffolding water crossings / 过水段脚手架** — the vanilla plank bridges
-   become `scaffolding` with `waterlogged=true`, `distance=0` when the block
+   - long grades that cannot be carried by fill/cut become **bridge decks**
+     (fill cap) or **lined tunnels** (clear cap) instead of being shattered
+     into per-cell steps; cliffs that are geometrically impossible for
+     half-steps get one short, vanilla-style jump (soft-constraint penalty).
+2. **Buildings follow the road / 建筑随路** — before the village's bounding box
+   is frozen, each RIGID building component is shifted vertically so its base
+   meets the median adjacent road walk surface (up to `maxBuildingShift`). The
+   shift is applied to the whole rigid component at once and its jigsaw
+   junctions are synced, so bearding stays around the building; the shift is a
+   pure function of the seed. Floating/buried components are only counted
+   (`/vps stats`), never repaired (`buildingGuard`).
+3. **Kerbs / 路肩包边** — where the side terrain is **at least 2 whole blocks**
+   above the road, the dirt wall on the road side is replaced with a
+   village-style stone (plains/snowy/taiga `cobblestone`, desert
+   `smooth_sandstone`, savanna `terracotta`) from the road surface all the way
+   up to the terrain top, for every block that belongs to the vanilla
+   `#minecraft:dirt` tag.
+4. **Leaf railings and walls / 树叶护栏与矮墙** — where the terrain is **at
+   least 2 whole blocks** below the road, persistent leaves (plains `oak`,
+   desert/savanna `acacia`, snowy/taiga `spruce`) are placed on the road edge at
+   walk-surface height. Where the road is elevated by `kerb.wallMinDropHeight`
+   blocks or more, a kerb-material wall is placed on the side column at road
+   level so the edge is not just a row of floating leaves.
+5. **Scaffolding water crossings / 过水段脚手架** — vanilla plank bridges (and
+   any column with water at or just below the road block) become `scaffolding`
+   with `waterlogged=true` when water is present, `distance=0` when the block
    below fully supports it and `distance=1` otherwise, `bottom` per the block
-   below, exactly as requested.
+   below. The three paths (water at the road block / water below / dry planks)
+   are counted separately in `/vps stats`.
 
 ## Supported versions / 支持版本
 
@@ -79,17 +94,21 @@ ModMenu is installed) but optional. / 无必装依赖；装有 ModMenu 时会出
 | Option | Default | Meaning |
 |---|---|---|
 | `enabled` (global) | `true` | seed default only - worlds created while the create-screen toggle was untouched start with this; every world's own switch lives in `<world>/village_path_smoothed.json` and overrides it, change in-game with `/vps world on\|off` |
-| `roadSmoothing.objective` | `MIN_DEVIATION` | `SHORTEST_CATCHUP` hugs the terrain and catches up as fast as legal steps allow; `HYBRID` blends both (`hybridWeightDeviation`) |
+| `roadSmoothing.objective` | `SMOOTH_FIRST` | `SMOOTH_FIRST` = strict lexicographic *cliff penalty > total steps > deviation*; `MIN_DEVIATION` weighs deviation and steps together; `SHORTEST_CATCHUP` hugs the terrain and catches up as fast as legal steps allow; `HYBRID` blends both (`hybridWeightDeviation`) |
+| `roadSmoothing.roadShapeStage` | `T1_5` | `T1_5` solves the profile (and shifts buildings) during structure assembly; `T5` is the legacy feature-placement solve with no building move (fallback / A-B comparison) |
+| `roadSmoothing.maxBuildingShift` | `32` | cap on the building component vertical shift in blocks (`0` = unlimited, only the world height clamps) |
+| `roadSmoothing.buildingGuard` | `true` | diagnostic only: count floating/buried moved components (`/vps stats`); never repairs and never reverts a shift |
+| `roadSmoothing.beardCompensation` | `1` | legacy: blocks added to the noise probe next to buildings. With `roadShapeStage=T1_5` the buildings follow the road instead, so this is only a residual correction of the noise reference (`< 0` disables) |
+| `roadSmoothing.beardRadius` | `4` | legacy: horizontal radius of that beard zone around building footprints |
 | `roadSmoothing.allowCutIntoTerrain` | `true` | lets the road dig into slopes (sunken roads) |
 | `roadSmoothing.stepViolationPenalty` | `32` | soft-constraint penalty per half block of excess drop (cliff escape hatch) |
 | `roadSmoothing.dpWindowHalfUnits` | `16` | per-cell candidate half window in half blocks (auto-shrunk for wide slices) |
 | `roadSmoothing.maxExactSectionWidth` | `4` | slice width solved by the exact DP; wider areas use iterative minimisation |
 | `roadSmoothing.roadSurfaceDetection` | `TEMPLATE_Y0_SOLID` | `TEMPLATE_Y0_ROAD_MATERIAL` only accepts the style's own road block |
-| `roadSmoothing.maxFillLayers` | `3` | max consecutive fill layers when the road sits above the ground; beyond it the cell becomes a bridge deck instead (`< 0` = unlimited) |
-| `roadSmoothing.maxClearLayers` | `-1` | max layers cleared above the road when it sits below the ground; beyond it the cell tunnels and the kerb material lines the roof (`< 0` = unlimited) |
-| `roadSmoothing.beardCompensation` | `1` | blocks added to the noise-probed height next to buildings: vanilla raises ("beards") terrain toward building bases but the raw noise probe does not know that, which used to sink road segments there by ~1 block (`< 0` disables) |
-| `roadSmoothing.beardRadius` | `4` | horizontal radius of that beard zone around building footprints |
-| `kerb.minDropHeight` | `1` | "terrain more than N blocks above the road" triggers a kerb |
+| `roadSmoothing.maxFillLayers` | `8` | max consecutive fill layers when the road sits above the ground; beyond it the cell becomes a bridge deck instead (`< 0` = unlimited) |
+| `roadSmoothing.maxClearLayers` | `6` | max layers cleared above the road when it sits below the ground; beyond it the cell tunnels and the kerb material lines the roof (`< 0` = unlimited) |
+| `kerb.minDropHeight` | `1` | "side terrain at least N+1 whole blocks above the road" triggers a kerb (walk surfaces compared in half-block units) |
+| `kerb.wallMinDropHeight` | `3` | side terrain dropping at least this many blocks below the road gets a kerb-material wall at road level (`0` = always, `< 0` = never) |
 | `kerb.replaceableBlocks` | `["#minecraft:dirt"]` | blocks the kerb may replace; add e.g. `minecraft:sand` for desert walls |
 | `waterCrossing.enabled` | `true` | scaffolding bridges; disable to keep vanilla planks |
 | `diagnostics.dumpRoadNetwork` | `false` | log one line per solved village |
@@ -109,24 +128,33 @@ ModMenu is installed) but optional. / 无必装依赖；装有 ModMenu 时会出
 
 Vanilla streets use the `terrain_matching` projection: a `GravityProcessor`
 drops every template column onto the heightmap independently, which is why the
-road jumps a full block whenever the terrain does. This mod hooks
-`StructureStart#placeInChunk`, rebuilds the *road mask* from the street piece
-templates (never from scanning the world - the vanilla street processor
-randomly punches grass holes into the road), probes the terrain (real
-heightmaps within ±1 chunks, noise base height elsewhere), decomposes the mask
-into thin **arms** (exact slice DP) and wide **regions** (platform init +
-row/column iterative minimisation), solves a height profile where adjacent
-cells differ by at most half a block, caches the solved profile on the
-structure start, and rewrites the cells of the current chunk with slabs, fills,
-cuts, kerbs, railings and scaffolding.
+road jumps a full block whenever the terrain does. This mod runs a **T1.5
+forward decision** while the village pieces are assembled (inside
+`Structure#generate`, before the bounding box is frozen): it rebuilds the *road
+mask* from the street piece templates (never from scanning the world - the
+vanilla street processor randomly punches grass holes into the road), probes the
+**noise** terrain (a pure function of x/z, so the decision is deterministic),
+decomposes the mask into thin **arms** (exact slice DP) and wide **regions**
+(platform init + row/column iterative minimisation), solves a height profile
+where adjacent cells differ by at most half a block, then shifts every RIGID
+building component onto the solved profile (syncing jigsaw junctions, clamping
+to the world height and guarding against overlaps). The solution is cached on
+the structure start; at feature placement the current chunk's road cells are
+rewritten with slabs, fills, cuts, kerbs, railings, walls and scaffolding, and
+a diagnostic guard counts floating/buried buildings. With
+`roadShapeStage=T5` the mod falls back to solving at feature placement with the
+real heightmap and no building move.
 
 原版街道用 `terrain_matching` 投影，每列独立贴到高度图上，于是地形一跳路面就
-跳。本 mod 在 `StructureStart#placeInChunk` 末尾介入：从街道模板重建"路面掩膜"
-（而不是扫描世界里的 `dirt_path`——原版处理器会随机把路面挖成草方块洞），
-探测地形（本区块 ±1 用真实高度图、其余用噪声高度），把掩膜分解为窄**臂**
-（精确切片 DP）与宽**域**（平台初始化 + 行列迭代优化），求出相邻格落差 ≤ 半格
-的剖面并缓存到结构实例上，最后只把落在本区块内的格子重写为台阶/填方/挖方，
-并做包边、护栏与脚手架。
+跳。本 mod 在村庄拼装期（`Structure#generate` 内、包围盒冻结前）做一次
+**T1.5 前移决策**：从街道模板重建"路面掩膜"（而不是扫描世界里的 `dirt_path`
+——原版处理器会随机把路面挖成草方块洞），探测**噪声**地形（x/z 的纯函数，
+因此决策确定），把掩膜分解为窄**臂**（精确切片 DP）与宽**域**（平台初始化 +
+行列迭代优化），求出相邻格落差 ≤ 半格的剖面，再把每个 RIGID 建筑刚性分量整体
+平移到剖面上（同步 jigsaw junction、世界高度钳制、重叠守卫）。解缓存到结构实例；
+到落位期只重写本区块内的路格（台阶/填方/挖方/包边/护栏/矮墙/脚手架），并由诊断
+守卫统计悬空/深埋建筑。`roadShapeStage=T5` 时退回落位期用真实高度图求解且不平移
+建筑。
 
 ## Known issues / 已知问题
 
@@ -144,14 +172,19 @@ cuts, kerbs, railings and scaffolding.
 4. **Cliffs get a vanilla-style jump** — where the terrain drops too fast for
    half steps, the road takes the shortest jump allowed by the soft constraint
    instead of building giant landfills.
-5. Heights outside the current chunk's ±1 neighbourhood come from the noise
-   generator, so roads can differ from the carved/decorated terrain by a block
-   or two in rare places (ravine edges, tree-covered ground); the writer fills
-   or cuts the column so the road always stands on solid ground.
-6. The per-world switch only affects chunks generated after it changes: an
+5. **Buildings may float or sink** — the whole point of "buildings follow the
+   road" is that a building on a slope is lifted or lowered with the road; on
+   extreme terrain a component can end up floating a few blocks or buried
+   (`/vps stats` counts them, `buildingGuard`). This is accepted by design (the
+   road profile wins); set `roadShapeStage=T5` to disable the shift entirely.
+6. Long grades are carried by fill/cut up to `maxFillLayers` / `maxClearLayers`
+   (bridge decks / lined tunnels); a cell whose target is beyond even that is
+   snapped back onto the real surface with the correct parity (counted as
+   `fallback re-anchors`).
+7. The per-world switch only affects chunks generated after it changes: an
    enable/disable boundary leaves one side vanilla and the other smoothed, and
    already-generated villages are never rewritten.
-7. The per-world settings file (`<world>/village_path_smoothed.json`) is
+8. The per-world settings file (`<world>/village_path_smoothed.json`) is
    exercised only at runtime, not by the automated tests; if the world folder
    is not writable the file is never created and the world simply follows the
    global default on every start.

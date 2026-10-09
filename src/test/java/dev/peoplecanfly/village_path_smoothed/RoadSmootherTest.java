@@ -12,6 +12,7 @@ import dev.peoplecanfly.village_path_smoothed.pipeline.RoadSmoother;
 import dev.peoplecanfly.village_path_smoothed.pipeline.RoadWritePolicy;
 import dev.peoplecanfly.village_path_smoothed.terrain.BeardCompensation;
 import dev.peoplecanfly.village_path_smoothed.terrain.HeightSanity;
+import dev.peoplecanfly.village_path_smoothed.terrain.WaterCrossings;
 import org.junit.Test;
 
 import java.util.ArrayList;
@@ -305,5 +306,102 @@ public class RoadSmootherTest {
 		assertEquals(65, BeardCompensation.compensate(65, false, 1));
 		assertEquals(65, BeardCompensation.compensate(65, true, 0));
 		assertEquals(65, BeardCompensation.compensate(65, true, -1));
+	}
+
+	@Test
+	public void waterCrossingPredicateCoversBothBranches() {
+		// A2: the old code only recognised the plank branch; both water
+		// positions must count as a crossing
+		assertTrue(WaterCrossings.isCrossing(true, false)); // water at the road block (planks replaced it)
+		assertTrue(WaterCrossings.isCrossing(false, true)); // planks floating on the water below
+		assertTrue(WaterCrossings.isCrossing(true, true));
+		assertFalse(WaterCrossings.isCrossing(false, false));
+	}
+
+	@Test
+	public void dropCriteriaUseHalfBlockWalkSurfaces() {
+		// A1: whole road block at Y=64 -> walk surface 65.0 = 130 half units;
+		// bottom slab at Y=64 -> walk surface 64.5 = 129
+		assertEquals(130, RoadWritePolicy.roadWalkSurface2(64, false));
+		assertEquals(129, RoadWritePolicy.roadWalkSurface2(64, true));
+
+		int roadWhole = RoadWritePolicy.roadWalkSurface2(64, false); // 130
+		int roadSlab = RoadWritePolicy.roadWalkSurface2(64, true);   // 129
+
+		// kerb: side walk surface at least 2 whole blocks above the road
+		assertFalse(RoadWritePolicy.kerbApplies(2 * 65, roadWhole, 1)); // 1 above: no
+		assertTrue(RoadWritePolicy.kerbApplies(2 * 67, roadWhole, 1));  // 2 above: yes
+		assertTrue(RoadWritePolicy.kerbApplies(2 * 67, roadSlab, 1));   // slab: 2.5 above
+
+		// railing: road at least 2 whole blocks above the side
+		assertFalse(RoadWritePolicy.railingApplies(2 * 64, roadWhole, 1)); // 1 below: no
+		assertTrue(RoadWritePolicy.railingApplies(2 * 63, roadWhole, 1));  // 2 below: yes
+
+		// wall: side drops at least wallMinDropHeight (default 3) below the road
+		assertFalse(RoadWritePolicy.wallApplies(2 * 63, roadWhole, 3)); // 2 below: no
+		assertTrue(RoadWritePolicy.wallApplies(2 * 62, roadWhole, 3));  // 3 below: yes
+		assertFalse(RoadWritePolicy.wallApplies(2 * 50, roadWhole, -1)); // disabled
+	}
+
+	private static long totalSteps(RoadNetwork net) {
+		long steps = 0;
+		for (int i = 0; i < net.cells.size(); i++) {
+			for (int dir = 0; dir < 4; dir++) {
+				int j = net.neighbors[i][dir];
+				if (j > i) {
+					steps += Math.abs(net.cells.get(i).solvedP - net.cells.get(j).solvedP);
+				}
+			}
+		}
+		return steps;
+	}
+
+	@Test
+	public void smoothFirstMinimisesTotalStepsOverDeviation() {
+		// A7: SMOOTH_FIRST puts the total step count strictly above the
+		// deviation, so on the same terrain it must not produce more steps than
+		// the legacy MIN_DEVIATION objective (which weighs deviation and steps
+		// in the same rank)
+		IntUnaryOperator terrain = z -> 64 + z / 3 + ((z % 5) == 0 ? 1 : 0);
+		RoadNetwork minDev = straightRoad(60, terrain, "plains");
+		RoadNetwork smooth = straightRoad(60, terrain, "plains");
+		RoadSmoother.solve(minDev, params(Objective.MIN_DEVIATION));
+		RoadSmoother.solve(smooth, params(Objective.SMOOTH_FIRST));
+		long stepsMinDev = totalSteps(minDev);
+		long stepsSmooth = totalSteps(smooth);
+		assertTrue("SMOOTH_FIRST steps " + stepsSmooth + " should be <= MIN_DEVIATION steps " + stepsMinDev, stepsSmooth <= stepsMinDev);
+		// the cliff penalty stays on top: no soft violations on a legal profile
+		assertAdjacentConstraint(smooth, false);
+	}
+
+	@Test
+	public void smoothFirstDoesNotWrapTheCostModel() {
+		// extreme base heights must not overflow the SMOOTH_FIRST packing either
+		List<RoadCell> cells = new ArrayList<>();
+		for (int z = 0; z < 24; z++) {
+			int topY = z < 12 ? 1_000_000 : -1_000_000;
+			for (int x = 0; x < 3; x++) {
+				cells.add(new RoadCell(x, z, "plains", 2 * topY, false));
+			}
+		}
+		RoadNetwork net = RoadNetwork.build(cells, 4);
+		RoadSmoother.solve(net, params(Objective.SMOOTH_FIRST));
+		assertViolationsAtMost(net, 3);
+	}
+
+	@Test
+	public void fallbackReanchorUsesCorrectParityAndBudget() {
+		int topY = 64;
+		// fill cap 8, clear cap 6: a target more than 10 blocks above/below is over budget
+		assertFalse(RoadWritePolicy.overBudget(2 * topY, topY, 8, 6));
+		assertFalse(RoadWritePolicy.overBudget(2 * topY + 2 * 10, topY, 8, 6)); // exactly cap+2: still affordable
+		assertTrue(RoadWritePolicy.overBudget(2 * topY + 2 * 11, topY, 8, 6));  // 11 above: over
+		assertTrue(RoadWritePolicy.overBudget(2 * topY - 2 * 9, topY, 8, 6));   // 9 below: over (clear cap 6)
+		// unlimited direction never triggers
+		assertFalse(RoadWritePolicy.overBudget(2 * topY + 1000, topY, -1, 6));
+		assertFalse(RoadWritePolicy.overBudget(2 * topY - 1000, topY, 8, -1));
+		// parity: even P -> whole block, odd P -> bottom slab
+		assertFalse(RoadWritePolicy.fallbackSlab(2 * topY));
+		assertTrue(RoadWritePolicy.fallbackSlab(2 * topY - 1));
 	}
 }

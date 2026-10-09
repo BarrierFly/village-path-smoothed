@@ -35,7 +35,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * matching vanilla GravityProcessor's reading; the vanilla road block sits at
  * surfaceTopY - 1 and the walk surface is surfaceTopY.
  */
-public final class VpsGenContext {
+public final class VpsGenContext implements VpsProbe {
 	public final WorldGenLevel level;
 	public final ChunkGenerator generator;
 	public final RandomState randomState;
@@ -117,6 +117,26 @@ public final class VpsGenContext {
 		} catch (Throwable t) {
 			VillagePathSmoothed.LOGGER.debug("[VPS] noise height probe failed at {} {}", x, z, t);
 			return NOISE_UNAVAILABLE;
+		}
+	}
+
+	/**
+	 * Noise water level probe: the ocean-floor height (terrain below the water)
+	 * versus the world-surface height (which includes the water). When the
+	 * surface is above the floor there is a water column at this x/z. Used as
+	 * the out-of-window approximation for the water-crossing anchor detection
+	 * (A2/F9); returns false when no RandomState is available.
+	 */
+	public boolean noiseHasWaterColumn(int x, int z) {
+		if (this.randomState == null) {
+			return false;
+		}
+		try {
+			int floor = this.generator.getBaseHeight(x, z, Heightmap.Types.OCEAN_FLOOR_WG, this.level, this.randomState);
+			int surface = this.generator.getBaseHeight(x, z, Heightmap.Types.WORLD_SURFACE_WG, this.level, this.randomState);
+			return surface > floor;
+		} catch (Throwable t) {
+			return false;
 		}
 	}
 

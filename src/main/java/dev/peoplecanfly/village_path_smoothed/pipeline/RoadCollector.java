@@ -13,6 +13,8 @@ import dev.peoplecanfly.village_path_smoothed.duck.SinglePoolElementVpsAccess;
 import dev.peoplecanfly.village_path_smoothed.duck.StructureTemplateVpsAccess;
 import dev.peoplecanfly.village_path_smoothed.terrain.HeightSanity;
 import dev.peoplecanfly.village_path_smoothed.terrain.VpsGenContext;
+import dev.peoplecanfly.village_path_smoothed.terrain.VpsProbe;
+import dev.peoplecanfly.village_path_smoothed.terrain.WaterCrossings;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
@@ -48,7 +50,7 @@ public final class RoadCollector {
 	private RoadCollector() {
 	}
 
-	public static RoadNetwork collect(StructureStart start, VpsGenContext ctx, VillagePathSmoothedConfig config) {
+	public static RoadNetwork collect(StructureStart start, VpsProbe ctx, VillagePathSmoothedConfig config) {
 		Pattern pattern = patternFor(config);
 		StructureTemplateManager templateManager = null;
 		Map<Long, RoadCell> cellsByPos = new HashMap<>();
@@ -119,7 +121,7 @@ public final class RoadCollector {
 			String location,
 			String style,
 			StructureTemplateManager templateManager,
-			VpsGenContext ctx,
+			VpsProbe ctx,
 			VillagePathSmoothedConfig config,
 			Map<Long, RoadCell> cellsByPos
 	) {
@@ -172,6 +174,11 @@ public final class RoadCollector {
 				PROBE_SKIPPED_CELLS.incrementAndGet();
 				continue;
 			}
+			if (surfaceTopY == VpsGenContext.NOISE_UNAVAILABLE) {
+				// pure-noise probe with no RandomState: no usable height at all
+				PROBE_SKIPPED_CELLS.incrementAndGet();
+				continue;
+			}
 			// Analysis report section 5-2: a probe exactly at the dimension floor
 			// is the signature of a lazily-primed all-air chunk (firstAvailable =
 			// min_y). VpsGenContext already cross-checks floor-adjacent reads
@@ -186,17 +193,24 @@ public final class RoadCollector {
 				continue;
 			}
 			if (ctx.hasRealHeight(x, z)) {
-				// over-water cells are fixed anchors (vanilla put planks there);
-				// the block read is guarded like the probe above: an unreadable
-				// chunk must cost one cell, not the whole village solve (report 5-2)
+				// over-water cells are fixed anchors; the same fluid predicate
+				// as the writer (A2) is used here: water at the vanilla road
+				// block height OR one below it. The block read is guarded like
+				// the probe above: an unreadable chunk must cost one cell, not
+				// the whole village solve (report 5-2)
 				try {
-					BlockState vanilla = ctx.blockState(x, surfaceTopY - 1, z);
-					if (RoadMaterialTable.isPlanks(vanilla) || vanilla.is(Blocks.WATER)) {
+					boolean waterAtWt = ctx.blockState(x, surfaceTopY - 1, z).is(Blocks.WATER);
+					boolean waterBelow = ctx.blockState(x, surfaceTopY - 2, z).is(Blocks.WATER);
+					if (WaterCrossings.isCrossing(waterAtWt, waterBelow)) {
 						anchor = true;
 					}
 				} catch (Throwable t) {
 					VillagePathSmoothed.LOGGER.debug("[VPS] anchor check failed at {} {}; treating the cell as non-anchor", x, z, t);
 				}
+			} else {
+				// outside the readable window: approximate the crossing from the
+				// noise water column (surface above ocean floor)
+				anchor = ctx.noiseHasWaterColumn(x, z);
 			}
 			cellsByPos.put(key, new RoadCell(x, z, style, 2 * surfaceTopY, anchor));
 		}

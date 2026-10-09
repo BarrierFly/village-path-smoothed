@@ -24,7 +24,7 @@ public final class VillagePathSmoothedConfig {
 	public static final List<String> VILLAGE_STYLES = Arrays.asList("plains", "desert", "savanna", "snowy", "taiga");
 
 	public enum Objective {
-		MIN_DEVIATION, SHORTEST_CATCHUP, HYBRID
+		MIN_DEVIATION, SHORTEST_CATCHUP, HYBRID, SMOOTH_FIRST
 	}
 
 	public enum RoadSurfaceDetection {
@@ -43,10 +43,16 @@ public final class VillagePathSmoothedConfig {
 	public static class RoadSmoothing {
 		public boolean enabled = true;
 		/** Max consecutive fill layers when the road sits above the ground; beyond it the cell becomes a bridge deck (< 0 = unlimited). */
-		public int maxFillLayers = 3;
+		public int maxFillLayers = 8;
 		/** Max layers cleared above the road when it sits below the ground; beyond it the cell tunnels and the kerb lines the roof (< 0 = unlimited). */
-		public int maxClearLayers = -1;
-		public Objective objective = Objective.MIN_DEVIATION;
+		public int maxClearLayers = 6;
+		public Objective objective = Objective.SMOOTH_FIRST;
+		/** T1.5 forward decision: solve the road profile (and shift RIGID building components) during structure assembly; T5 = legacy solve at feature placement (no building move). */
+		public RoadShapeStage roadShapeStage = RoadShapeStage.T1_5;
+		/** Cap on the building component vertical shift in whole blocks (0 = unlimited, only the world height clamps). */
+		public int maxBuildingShift = 32;
+		/** Diagnostic only: count floating/buried building components at write time; never repairs and never reverts a shift. */
+		public boolean buildingGuard = true;
 		/** Weight w1 of the HYBRID objective (w2 = 1). */
 		public double hybridWeightDeviation = 8.0;
 		/** Soft-constraint penalty per half-block of |dP| above 1 (cliff escape hatch). */
@@ -67,10 +73,16 @@ public final class VillagePathSmoothedConfig {
 		public RoadSurfaceDetection roadSurfaceDetection = RoadSurfaceDetection.TEMPLATE_Y0_SOLID;
 	}
 
+	public enum RoadShapeStage {
+		T1_5, T5
+	}
+
 	public static class Kerb {
 		public boolean enabled = true;
-		/** "Terrain more than 1 block above the road" triggers a kerb. */
+		/** "Terrain more than N blocks above the road" triggers a kerb. */
 		public int minDropHeight = 1;
+		/** Elevated-road wall: when the side terrain drops at least this many blocks below the road, a kerb-material wall is placed at the road block level on the side column (0 = always, < 0 = never). */
+		public int wallMinDropHeight = 3;
 		/** Extra block ids (besides #minecraft:dirt) treated as replaceable by kerbs. */
 		public List<String> replaceableBlocks = Arrays.asList("#minecraft:dirt");
 		public BlockByStyle blockByStyle = new BlockByStyle(

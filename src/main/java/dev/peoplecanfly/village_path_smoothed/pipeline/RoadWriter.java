@@ -9,6 +9,7 @@ import dev.peoplecanfly.village_path_smoothed.VillagePathSmoothed;
 import dev.peoplecanfly.village_path_smoothed.VillagePathSmoothedConfig;
 import dev.peoplecanfly.village_path_smoothed.compat.VpsCompat;
 import dev.peoplecanfly.village_path_smoothed.terrain.VpsGenContext;
+import dev.peoplecanfly.village_path_smoothed.terrain.WaterCrossings;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.tags.BlockTags;
@@ -38,10 +39,12 @@ public final class RoadWriter {
 
 	/** Aggregated diagnostic: cells clamped to a dimension bound instead of being written at the solved height. */
 	public static final AtomicLong CLAMPED_WRITES = new AtomicLong();
-	/** Aggregated diagnostic: cells re-anchored onto the real surface at write time. */
-	public static final AtomicLong REANCHORED_WRITES = new AtomicLong();
+	/** Aggregated diagnostic: cells whose target walk surface is beyond any affordable fill/cut and were snapped back onto the real surface with the correct parity. */
+	public static final AtomicLong FALLBACK_REANCHORS = new AtomicLong();
+	/** Aggregated diagnostic: cells whose fill/cut exceeded the configured cap (bridge deck / tunnel). */
+	public static final AtomicLong OVER_BUDGET_CELLS = new AtomicLong();
 	private static volatile boolean warnedClampedWrites;
-	private static volatile boolean warnedReanchoredWrites;
+	private static volatile boolean warnedFallbackReanchors;
 
 	private RoadWriter() {
 	}
@@ -70,9 +73,22 @@ public final class RoadWriter {
 
 		// ---- water crossing: scaffolding instead of the vanilla planks (5.6)
 		if (config.waterCrossing.enabled) {
-			BlockState vanilla = ctx.blockState(x, topY - 1, z);
-			if (RoadMaterialTable.isPlanks(vanilla) || vanilla.is(Blocks.WATER)) {
-				placeScaffolding(cell, ctx, x, z, topY, config);
+			int wt = topY - 1; // vanilla puts the planks at the water surface
+			boolean waterAtWt = isWater(ctx, x, wt, z);
+			boolean waterBelow = isWater(ctx, x, wt - 1, z);
+			boolean crossing = WaterCrossings.isCrossing(waterAtWt, waterBelow);
+			// entry also keeps the vanilla plank bridges (dry planks are counted
+			// separately so /vps stats can characterise the real distribution)
+			BlockState vanilla = ctx.blockState(x, wt, z);
+			if (crossing || RoadMaterialTable.isPlanks(vanilla)) {
+				if (waterAtWt) {
+					VpsPipeline.SCAFFOLD_WATER_SELF.incrementAndGet();
+				} else if (waterBelow) {
+					VpsPipeline.SCAFFOLD_WATER_BELOW.incrementAndGet();
+				} else {
+					VpsPipeline.SCAFFOLD_DRY.incrementAndGet();
+				}
+				placeScaffolding(cell, ctx, x, z, topY, crossing, config);
 				VpsPipeline.SCAFFOLDS_PLACED.incrementAndGet();
 				return;
 			}
@@ -89,27 +105,22 @@ public final class RoadWriter {
 			roadTopBlockY = (p - 1) / 2;
 			slab = true;
 		}
-		// ---- write-time reconciliation against the real surface (report:
-		// "parts of roads sit 1 block low"). The solve anchors cells outside
-		// the readable window on the (beard-compensated) noise height; when a
-		// column's real surface deviates from the solved walk surface by more
-		// than 2 blocks the profile cannot be honoured without a visible bare
-		// cliff - re-anchor the road onto the real surface instead of digging a
-		// trench. A 1-block deviation stays: it is indistinguishable per-cell
-		// from the intended sunken-road gradient (root fix is the beard
-		// compensation on the noise anchor, not this net)
-		int walkSurface = (p + 1) / 2;
-		if (config.roadSmoothing.enabled && Math.abs(walkSurface - topY) > 2) {
-			// keep the solved parity: whole-block roads snap flush (road block
-			// at topY-1, walk at topY); slab roads snap to a bottom slab at
-			// topY-1 (walk at topY-0.5), never floating a slab above ground
-			p = (p & 1) == 0 ? 2 * topY : 2 * topY - 1;
-			roadTopBlockY = (p - 1) / 2;
-			slab = true;
-			REANCHORED_WRITES.incrementAndGet();
-			if (!warnedReanchoredWrites) {
-				warnedReanchoredWrites = true;
-				VillagePathSmoothed.LOGGER.warn("[VPS] road cell at {} {} re-anchored onto the real surface (solved walk surface {} vs real {}); the noise anchor was likely off - check roadSmoothing.beardCompensation", x, z, walkSurface, topY);
+		// ---- fallback re-anchor (A5): only when the target is beyond every
+		// affordable fill/cut (no terrain shaping exists any more, so long
+		// grades are carried by the fill/cut budget; a cell that no budget can
+		// reach snaps back onto the real surface with the CORRECT parity).
+		// Even P -> whole block at topY-1 (walk at topY); odd P -> bottom slab
+		// at topY-1 (walk at topY-0.5). This is the safety net for hidden
+		// carvers / badly distorted noise, and keeps "never dig a trench, never
+		// float a slab" true.
+		if (config.roadSmoothing.enabled
+				&& RoadWritePolicy.overBudget(p, topY, config.roadSmoothing.maxFillLayers, config.roadSmoothing.maxClearLayers)) {
+			slab = RoadWritePolicy.fallbackSlab(p);
+			roadTopBlockY = topY - 1;
+			FALLBACK_REANCHORS.incrementAndGet();
+			if (!warnedFallbackReanchors) {
+				warnedFallbackReanchors = true;
+				VillagePathSmoothed.LOGGER.warn("[VPS] road cell at {} {} re-anchored: solved walk surface {} is beyond the fill/cut budget (real surface {}); the noise anchor was likely off", x, z, p / 2.0, topY);
 			}
 		}
 		roadTopBlockY = Math.max(ctx.getMinY(), Math.min(ctx.getMaxY(), roadTopBlockY));
@@ -144,6 +155,7 @@ public final class RoadWriter {
 			// neighbouring cells is preserved
 			int fillLayers = roadTopBlockY - topY;
 			if (RoadWritePolicy.bridgeDeck(fillLayers, config.roadSmoothing.maxFillLayers)) {
+				OVER_BUDGET_CELLS.incrementAndGet();
 				if (slab) {
 					setBlock(ctx, x, roadTopBlockY - 1, z, materials.slabBlock
 							.defaultBlockState()
@@ -154,7 +166,7 @@ public final class RoadWriter {
 						: roadBlock.defaultBlockState();
 				setBlock(ctx, x, roadTopBlockY, z, roadState);
 				VpsPipeline.ROAD_CELLS_WRITTEN.incrementAndGet();
-				applyKerbsAndRailings(net, cell, ctx, config, materials, kerbExtras, roadTopBlockY);
+				applyKerbsAndRailings(net, cell, ctx, config, materials, kerbExtras, roadTopBlockY, slab);
 				return;
 			}
 			for (int y = topY - 1; y < roadTopBlockY; y++) {
@@ -175,6 +187,7 @@ public final class RoadWriter {
 				setBlock(ctx, x, y, z, Blocks.AIR.defaultBlockState());
 			}
 			if (RoadWritePolicy.tunnelRoof(roadTopBlockY, topY, clearTop, config.roadSmoothing.maxClearLayers)) {
+				OVER_BUDGET_CELLS.incrementAndGet();
 				// line the tunnel roof with the style's kerb material (report:
 				// "包边覆盖隧道顶"; the side kerb below keeps replacing #dirt only)
 				setBlock(ctx, x, clearTop + 1, z, materials.kerbBlock.defaultBlockState());
@@ -183,12 +196,16 @@ public final class RoadWriter {
 		VpsPipeline.ROAD_CELLS_WRITTEN.incrementAndGet();
 
 		// ---- kerbs and railings on side edges (5.5)
-		applyKerbsAndRailings(net, cell, ctx, config, materials, kerbExtras, roadTopBlockY);
+		applyKerbsAndRailings(net, cell, ctx, config, materials, kerbExtras, roadTopBlockY, slab);
 	}
 
 	private static void applyKerbsAndRailings(RoadNetwork net, RoadCell cell, VpsGenContext ctx, VillagePathSmoothedConfig config,
-			RoadMaterialTable.StyleMaterials materials, List<Block> kerbExtras, int roadTopBlockY) {
-		int walkSurfaceY = roadTopBlockY + 1; // S; top face of the road block
+			RoadMaterialTable.StyleMaterials materials, List<Block> kerbExtras, int roadTopBlockY, boolean slab) {
+		// walk surfaces in half-block units: a slab walk surface is 0.5 above
+		// the block Y, a whole block is 1.0 (A1: the old code compared
+		// "roadTopBlockY + 1" which is 0.5 too high for slabs and off by one
+		// whole block for the kerb/railing thresholds)
+		int sRoad2 = RoadWritePolicy.roadWalkSurface2(roadTopBlockY, slab);
 		int[] dx = {-1, 1, 0, 0};
 		int[] dz = {0, 0, -1, 1};
 		for (int dir = 0; dir < 4; dir++) {
@@ -203,16 +220,30 @@ public final class RoadWriter {
 			} catch (Throwable t) {
 				continue;
 			}
-			// side surface minus road surface in whole blocks of drop
-			int blocks = (outTopY - 1) - walkSurfaceY;
+			int sSide2 = 2 * outTopY;
 
-			if (config.kerb.enabled && blocks > config.kerb.minDropHeight) {
+			if (config.kerb.enabled && RoadWritePolicy.kerbApplies(sSide2, sRoad2, config.kerb.minDropHeight)) {
 				placeKerb(ctx, outX, outZ, roadTopBlockY, outTopY, materials, kerbExtras);
 			}
-			if (config.railing.enabled && blocks < -config.railing.minDropHeight) {
-				placeRailing(ctx, outX, outZ, walkSurfaceY, materials);
+			if (config.railing.enabled && RoadWritePolicy.railingApplies(sSide2, sRoad2, config.railing.minDropHeight)) {
+				placeRailing(ctx, outX, outZ, roadTopBlockY + 1, materials);
+			}
+			// elevated road: a solid wall at the road block level on the side
+			// column so the sides are not just a row of floating leaves (A1)
+			if (config.kerb.enabled && RoadWritePolicy.wallApplies(sSide2, sRoad2, config.kerb.wallMinDropHeight)) {
+				placeWall(ctx, outX, outZ, roadTopBlockY, materials);
 			}
 		}
+	}
+
+	/** Elevated-road edge wall: one kerb-material block at the road block level on the side column. */
+	private static void placeWall(VpsGenContext ctx, int x, int z, int y, RoadMaterialTable.StyleMaterials materials) {
+		BlockState existing = ctx.blockState(x, y, z);
+		if (!existing.isAir() && !existing.canBeReplaced()) {
+			return;
+		}
+		setBlock(ctx, x, y, z, materials.kerbBlock.defaultBlockState());
+		VpsPipeline.WALLS_PLACED.incrementAndGet();
 	}
 
 	/** Replaces dirt-tag blocks on the side column from the road block up to the side surface (Q07/Q08: no upper limit). */
@@ -244,7 +275,7 @@ public final class RoadWriter {
 		VpsPipeline.RAILINGS_PLACED.incrementAndGet();
 	}
 
-	private static void placeScaffolding(RoadCell cell, VpsGenContext ctx, int x, int z, int topY, VillagePathSmoothedConfig config) {
+	private static void placeScaffolding(RoadCell cell, VpsGenContext ctx, int x, int z, int topY, boolean waterlogged, VillagePathSmoothedConfig config) {
 		int wt = topY - 1; // vanilla puts the planks at the water surface
 		BlockPos belowPos = new BlockPos(x, wt - 1, z);
 		BlockState below = ctx.blockState(x, wt - 1, z);
@@ -261,12 +292,19 @@ public final class RoadWriter {
 		// i.e. a hanging scaffold reads bottom=true (the old check here was
 		// inverted: it flagged scaffolds resting on another scaffold)
 		boolean bottom = distance > 0 && !below.is(Blocks.SCAFFOLDING);
-		boolean waterlogged = ctx.blockState(x, wt, z).is(Blocks.WATER) || ctx.level.getFluidState(new BlockPos(x, wt, z)).is(net.minecraft.tags.FluidTags.WATER);
 		BlockState state = Blocks.SCAFFOLDING.defaultBlockState()
 				.setValue(ScaffoldingBlock.DISTANCE, distance)
 				.setValue(ScaffoldingBlock.BOTTOM, bottom)
 				.setValue(ScaffoldingBlock.WATERLOGGED, waterlogged);
 		setBlock(ctx, x, wt, z, state);
+	}
+
+	/** True when the column has water at this exact Y (block or fluid state). */
+	private static boolean isWater(VpsGenContext ctx, int x, int y, int z) {
+		if (ctx.blockState(x, y, z).is(Blocks.WATER)) {
+			return true;
+		}
+		return ctx.level.getFluidState(new BlockPos(x, y, z)).is(net.minecraft.tags.FluidTags.WATER);
 	}
 
 	private static void setBlock(VpsGenContext ctx, int x, int y, int z, BlockState state) {

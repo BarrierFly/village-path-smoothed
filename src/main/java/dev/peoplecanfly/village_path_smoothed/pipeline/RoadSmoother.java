@@ -33,8 +33,6 @@ import java.util.Map;
 public final class RoadSmoother {
 	/** Upper bound on enumerated states per slice before the DP window shrinks. */
 	private static final int STATE_BUDGET = 30_000;
-	/** Hard cap on the per-cell candidate half-window; larger fills/cuts never beat the step penalty anyway. */
-	private static final int WINDOW_HARD_CAP = 8;
 
 	public record SolveParams(
 			Objective objective,
@@ -143,27 +141,42 @@ public final class RoadSmoother {
 			chaseBack[s] = s == sliceCount - 1 ? sliceRef[s] : clampToStep(sliceRef[s], chaseBack[s + 1]);
 		}
 		int margin = Math.max(0, Math.min(p.windowHalf(), 4));
+		int margin0 = margin;
 		int maxBand = 0;
 		int[] bandLo = new int[net.cells.size()];
 		int[] bandHi = new int[net.cells.size()];
+		int[] baseLo = new int[net.cells.size()];
+		int[] baseHi = new int[net.cells.size()];
 		boolean[] hasBand = new boolean[net.cells.size()];
 		for (int s = 0; s < sliceCount; s++) {
 			for (int cellIdx : slices.get(s)) {
 				RoadCell cell = net.cells.get(cellIdx);
 				int lo = Math.min(chaseFwd[s], Math.min(chaseBack[s], cell.baseP)) - margin;
 				int hi = Math.max(chaseFwd[s], Math.max(chaseBack[s], cell.baseP)) + margin;
+				baseLo[cellIdx] = lo;
+				baseHi[cellIdx] = hi;
 				bandLo[cellIdx] = lo;
 				bandHi[cellIdx] = hi;
 				hasBand[cellIdx] = true;
 				maxBand = Math.max(maxBand, hi - lo + 1);
 			}
 		}
+		// A3: actually narrow the candidate band as the margin shrinks. The old
+		// loop kept the full band but subtracted 2*margin from the width estimate
+		// (so the estimate GREW as the margin fell) and never touched
+		// bandLo/bandHi - candidatesFor then still used the un-narrowed band, so
+		// the exact arm DP never ran on wide arms. Shrink symmetrically from the
+		// margin0 band, keeping at least one value per cell.
 		while (margin > 0 && powOf(maxBand, maxSliceWidth) > STATE_BUDGET) {
 			margin--;
+			int shrink = margin0 - margin;
 			maxBand = 0;
 			for (int s = 0; s < sliceCount; s++) {
 				for (int cellIdx : slices.get(s)) {
-					maxBand = Math.max(maxBand, bandHi[cellIdx] - bandLo[cellIdx] + 1 - 2 * margin);
+					int s2 = Math.min(shrink, (baseHi[cellIdx] - baseLo[cellIdx]) / 2);
+					bandLo[cellIdx] = baseLo[cellIdx] + s2;
+					bandHi[cellIdx] = baseHi[cellIdx] - s2;
+					maxBand = Math.max(maxBand, bandHi[cellIdx] - bandLo[cellIdx] + 1);
 				}
 			}
 		}
@@ -527,7 +540,7 @@ public final class RoadSmoother {
 	}
 
 	private static int chooseWindow(int width, int maxWindow) {
-		int m = Math.max(1, Math.min(maxWindow, WINDOW_HARD_CAP));
+		int m = Math.max(1, maxWindow);
 		while (m > 1 && powOf(2 * m + 1, width) > STATE_BUDGET) {
 			m--;
 		}
@@ -697,7 +710,7 @@ public final class RoadSmoother {
 		if (n == 0) {
 			return;
 		}
-		CostModel cost = new CostModel(p, n, n + 4, Math.min(p.windowHalf(), WINDOW_HARD_CAP));
+		CostModel cost = new CostModel(p, n, n + 4, Math.max(1, p.windowHalf()));
 		int[][] candidates = new int[n][];
 		long[][] cellCosts = new long[n][];
 		for (int i = 0; i < n; i++) {
@@ -760,7 +773,7 @@ public final class RoadSmoother {
 		if (cell.anchor) {
 			return new int[]{cell.baseP};
 		}
-		int window = Math.min(p.windowHalf(), WINDOW_HARD_CAP);
+		int window = Math.max(1, p.windowHalf());
 		int lo = p.allowCut() ? cell.baseP - window : cell.baseP;
 		int hi = cell.baseP + window;
 		int perpA = rowsAlongX ? RoadNetwork.DIR_NORTH : RoadNetwork.DIR_WEST;
@@ -800,10 +813,15 @@ public final class RoadSmoother {
 	 * Lexicographic cost packed into a single long, decomposable into per-cell
 	 * and per-edge terms:
 	 * <ul>
+	 *   <li>SMOOTH_FIRST (default): primary = penalty*sum(excess), secondary = sum|dP|, tertiary = sum|P-P0|</li>
 	 *   <li>MIN_DEVIATION: primary = sum|P-P0| + penalty*sum(excess), secondary = sum|dP|</li>
 	 *   <li>SHORTEST_CATCHUP: primary = deviating cells, secondary = sum|P-P0| + penalty*sum(excess), tertiary = sum|dP|</li>
 	 *   <li>HYBRID: primary = w1*sum|P-P0| + penalty*sum(excess), secondary = w2*sum|dP|</li>
 	 * </ul>
+	 * SMOOTH_FIRST keeps the three ranks strictly separated (cliff penalty above
+	 * total step count above total deviation), which is what P1 "roads smooth
+	 * first" means; the legacy MIN_DEVIATION adds deviation and steps in the
+	 * same rank.
 	 */
 	private static final class CostModel {
 		/** Deviations beyond this many half units all cost the same (overflow guard, report 2.1/5-⑤). */
@@ -816,6 +834,10 @@ public final class RoadSmoother {
 		private final long s2;
 		private final long s1;
 		private final long sDev;
+		/** SMOOTH_FIRST scales: sLow = deviation rank, sMid = step rank, sTop = cliff penalty rank. */
+		private final long sLow;
+		private final long sMid;
+		private final long sTop;
 
 		CostModel(SolveParams p, int cellCount, int edgeCount, int window) {
 			this.objective = p.objective();
@@ -855,6 +877,26 @@ public final class RoadSmoother {
 			// legal profiles always win and jumps only appear when no legal
 			// profile fits the geometry
 			this.s1 = s1v;
+
+			// SMOOTH_FIRST scales (strict lexicographic, overflow-clamped):
+			// sLow: deviation rank (1 unit); sMid: step rank (> max total dev);
+			// sTop: cliff penalty rank (> max total step). Clamped to room so the
+			// component worst case stays under Long.MAX_VALUE/8; on huge
+			// components the ranks blur gracefully instead of wrapping.
+			long sLowV = 1;
+			long sMidV = satAdd(satMul(Math.max(1, cellCount), EXCESS_SATURATION), 1);
+			long sTopV = satAdd(satDiv(satMul(Math.max(1, edgeCount), satMul(EXCESS_SATURATION, sMidV)), Math.max(1, this.penalty)), 1);
+			long perItem = satMul(Math.max(1, this.penalty), EXCESS_SATURATION);
+			long roomSmooth = (Long.MAX_VALUE / 8) / Math.max(1, satMul(items, Math.max(1, perItem)));
+			if (sTopV > roomSmooth) {
+				sTopV = Math.max(1, roomSmooth);
+			}
+			if (sMidV > sTopV) {
+				sMidV = sTopV;
+			}
+			this.sLow = sLowV;
+			this.sMid = sMidV;
+			this.sTop = sTopV;
 		}
 
 		/** Multiplication saturated at Long.MAX_VALUE (non-negative operands only). */
@@ -866,6 +908,20 @@ public final class RoadSmoother {
 			return r / b == a ? r : Long.MAX_VALUE;
 		}
 
+		/** Addition saturated at Long.MAX_VALUE (non-negative operands only). */
+		private static long satAdd(long a, long b) {
+			long r = a + b;
+			return r < 0 ? Long.MAX_VALUE : r;
+		}
+
+		/** Division (non-negative operands; zero divisor returns the numerator). */
+		private static long satDiv(long a, long b) {
+			if (b <= 0) {
+				return a;
+			}
+			return a / b;
+		}
+
 		long cellCost(RoadCell cell, int value) {
 			int dev = Math.min(Math.abs(value - cell.baseP), EXCESS_SATURATION);
 			switch (objective) {
@@ -873,6 +929,8 @@ public final class RoadSmoother {
 					return dev * s2;
 				case SHORTEST_CATCHUP:
 					return (dev != 0 ? 1L : 0L) * s1 * sDev * s2 + dev * s2;
+				case SMOOTH_FIRST:
+					return dev * sLow;
 				default:
 					return (long) hybridW1 * dev * s2;
 			}
@@ -913,6 +971,10 @@ public final class RoadSmoother {
 					// penalty layer must use the same top-layer scale as the
 					// deviating-cell term in cellCost
 					return (long) penalty * excess * s1 * sDev * s2 + delta;
+				case SMOOTH_FIRST:
+					// strict ranks: cliff penalty on top, total steps in the
+					// middle, total deviation at the bottom
+					return (long) penalty * excess * sTop + (long) delta * sMid;
 				default:
 					return (long) penalty * excess * s2 + (long) hybridW2 * delta;
 			}

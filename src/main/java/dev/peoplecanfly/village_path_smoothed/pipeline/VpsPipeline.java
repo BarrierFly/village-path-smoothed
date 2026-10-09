@@ -7,16 +7,21 @@ package dev.peoplecanfly.village_path_smoothed.pipeline;
 
 import dev.peoplecanfly.village_path_smoothed.VillagePathSmoothed;
 import dev.peoplecanfly.village_path_smoothed.VillagePathSmoothedConfig;
+import dev.peoplecanfly.village_path_smoothed.VillagePathSmoothedConfig.RoadShapeStage;
 import dev.peoplecanfly.village_path_smoothed.compat.VpsCompat;
 import dev.peoplecanfly.village_path_smoothed.duck.StructureStartVpsAccess;
 import dev.peoplecanfly.village_path_smoothed.terrain.VpsGenContext;
-import net.minecraft.util.RandomSource;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.util.RandomSource;
 import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.LevelHeightAccessor;
 import net.minecraft.world.level.WorldGenLevel;
 import net.minecraft.world.level.chunk.ChunkGenerator;
+import net.minecraft.world.level.levelgen.RandomState;
 import net.minecraft.world.level.levelgen.structure.BoundingBox;
+import net.minecraft.world.level.levelgen.structure.StructurePiece;
 import net.minecraft.world.level.levelgen.structure.StructureStart;
+import net.minecraft.world.level.levelgen.structure.templatesystem.StructureTemplateManager;
 
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -33,6 +38,21 @@ public final class VpsPipeline {
 	public static final AtomicLong KERBS_PLACED = new AtomicLong();
 	public static final AtomicLong RAILINGS_PLACED = new AtomicLong();
 	public static final AtomicLong SCAFFOLDS_PLACED = new AtomicLong();
+	public static final AtomicLong SCAFFOLD_WATER_SELF = new AtomicLong();
+	public static final AtomicLong SCAFFOLD_WATER_BELOW = new AtomicLong();
+	public static final AtomicLong SCAFFOLD_DRY = new AtomicLong();
+	public static final AtomicLong WALLS_PLACED = new AtomicLong();
+	public static final AtomicLong T15_APPLIED = new AtomicLong();
+	public static final AtomicLong T15_NO_SERVER = new AtomicLong();
+	public static final AtomicLong BUILDING_COMPONENTS = new AtomicLong();
+	public static final AtomicLong BUILDINGS_SHIFTED = new AtomicLong();
+	public static final AtomicLong BUILDINGS_NO_ROAD_ACCESS = new AtomicLong();
+	public static final AtomicLong BUILDINGS_UNSERVED = new AtomicLong();
+	public static final AtomicLong OVERLAP_GUARDS = new AtomicLong();
+	public static final AtomicLong SOLVE_NON_CONVERGED = new AtomicLong();
+	public static final AtomicLong DOOR_PARITY_FALLBACK = new AtomicLong();
+	public static final AtomicLong BUILDING_FLOATING = new AtomicLong();
+	public static final AtomicLong BUILDING_BURIED = new AtomicLong();
 	public static final AtomicLong DEBUG_VILLAGER_BRAIN_SKIPS = new AtomicLong();
 
 	private VpsPipeline() {
@@ -77,7 +97,86 @@ public final class VpsPipeline {
 		}
 
 		VpsGenContext ctx = VpsGenContext.capture(level, generator, chunkPos);
+		if (solution.t15Applied && config.roadSmoothing.buildingGuard && !solution.guardChecked) {
+			solution.guardChecked = true;
+			runBuildingGuard(solution, ctx, config);
+		}
 		RoadWriter.write(solution.network, ctx, chunkBB, config);
+	}
+
+	/**
+	 * T1.5 hook (B1): called at the tail of {@code Structure#generate}, before
+	 * the bounding box is cached. Runs the joint forward decision (road profile
+	 * + RIGID component shifts) when the stage is T1_5, the world is enabled and
+	 * the server could be resolved; attaches the solution to the StructureStart
+	 * for the feature-placement write. Fails safe: on any missing precondition
+	 * the pieces are left untouched and the legacy T5 solve runs later.
+	 */
+	public static void onStructureGenerated(
+			StructureStart start,
+			ChunkGenerator generator,
+			RandomState randomState,
+			StructureTemplateManager templateManager,
+			ChunkPos chunkPos,
+			LevelHeightAccessor heightAccessor
+	) {
+		VillagePathSmoothedConfig config = VillagePathSmoothedConfig.get();
+		if (start == null || !start.isValid()) {
+			return;
+		}
+		if (config.roadSmoothing.roadShapeStage != RoadShapeStage.T1_5 || !config.roadSmoothing.enabled) {
+			return;
+		}
+		MinecraftServer server = VpsGenThread.server();
+		if (server == null) {
+			// R-B19: never "default allow" - leave the pieces alone and let the
+			// FEATURES hook fall back to the T5 solve (no building move)
+			T15_NO_SERVER.incrementAndGet();
+			return;
+		}
+		if (!VpsWorldSettings.isEnabled(server)) {
+			return;
+		}
+		if (!hasStreetPiece(start, config)) {
+			return;
+		}
+		StructureStartVpsAccess access = (StructureStartVpsAccess) (Object) start;
+		if (access.village_path_smoothed$getSolution() != null) {
+			return; // idempotent (F10)
+		}
+		VpsVillageSolution solution = T15Planner.plan(start, generator, randomState, templateManager, chunkPos, heightAccessor, config);
+		access.village_path_smoothed$setSolution(solution);
+		T15_APPLIED.incrementAndGet();
+	}
+
+	private static boolean hasStreetPiece(StructureStart start, VillagePathSmoothedConfig config) {
+		for (StructurePiece piece : start.getPieces()) {
+			if (RoadCollector.isStreetPiece(piece, config)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** B4: pure diagnostic - count moved components that ended up floating or buried; never repairs. */
+	private static void runBuildingGuard(VpsVillageSolution solution, VpsGenContext ctx, VillagePathSmoothedConfig config) {
+		for (int[] component : solution.shiftedComponents) {
+			int cx = (component[0] + component[1]) / 2;
+			int cz = (component[2] + component[3]) / 2;
+			int baseY = component[4];
+			int realTop;
+			try {
+				realTop = ctx.surfaceTopY(cx, cz, config);
+			} catch (Throwable t) {
+				continue;
+			}
+			int diff = realTop - baseY;
+			if (diff > 3) {
+				BUILDING_BURIED.incrementAndGet();
+			} else if (diff < -3) {
+				BUILDING_FLOATING.incrementAndGet();
+			}
+		}
 	}
 
 	private static volatile boolean warnedServerLookup;

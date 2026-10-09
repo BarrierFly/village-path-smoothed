@@ -52,4 +52,49 @@ public final class RoadWritePolicy {
 				&& clearTop < surfaceTopY - 1
 				&& clearTop >= roadTopBlockY;
 	}
+
+	/**
+	 * Road walk surface in half-block units: a whole road block tops out 1.0
+	 * above its block Y, a bottom slab 0.5. All drop criteria are computed in
+	 * this unit (A1) - never from {@code roadTopBlockY + 1}.
+	 */
+	public static int roadWalkSurface2(int roadTopBlockY, boolean slab) {
+		return 2 * roadTopBlockY + (slab ? 1 : 2);
+	}
+
+	/** Kerb: the side walk surface is more than {@code minDropHeight} whole blocks above the road. */
+	public static boolean kerbApplies(int sideWalkSurface2, int roadWalkSurface2, int minDropHeight) {
+		return sideWalkSurface2 - roadWalkSurface2 > 2 * minDropHeight;
+	}
+
+	/** Railing: the road walk surface is more than {@code minDropHeight} whole blocks above the side. */
+	public static boolean railingApplies(int sideWalkSurface2, int roadWalkSurface2, int minDropHeight) {
+		return roadWalkSurface2 - sideWalkSurface2 > 2 * minDropHeight;
+	}
+
+	/** Elevated-road wall: the side drops at least {@code wallMinDropHeight} whole blocks below the road (negative disables). */
+	public static boolean wallApplies(int sideWalkSurface2, int roadWalkSurface2, int wallMinDropHeight) {
+		return wallMinDropHeight >= 0 && roadWalkSurface2 - sideWalkSurface2 >= 2 * wallMinDropHeight;
+	}
+
+	/**
+	 * True when the solved walk surface {@code p} (half units) is beyond the
+	 * affordable fill (road above the surface) or cut (road below) cap by more
+	 * than 2 whole blocks; the writer then snaps the cell onto the real surface
+	 * with the correct parity (A5). The relevant cap is chosen by direction and
+	 * a negative cap means unlimited (never triggers).
+	 */
+	public static boolean overBudget(int p, int surfaceTopY, int maxFillLayers, int maxClearLayers) {
+		int diff = p - 2 * surfaceTopY; // half units, positive = road above the surface (fill)
+		int budget = diff >= 0 ? maxFillLayers : maxClearLayers;
+		if (budget < 0) {
+			return false;
+		}
+		return Math.abs(diff) > 2 * (budget + 2);
+	}
+
+	/** Fallback parity: odd P is a bottom slab, even P a whole block (both at surfaceTopY - 1). */
+	public static boolean fallbackSlab(int p) {
+		return (p & 1) != 0;
+	}
 }

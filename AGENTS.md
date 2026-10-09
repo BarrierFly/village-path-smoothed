@@ -16,20 +16,31 @@ src/main/java/dev/peoplecanfly/village_path_smoothed/
 ├── VillagePathSmoothedConfig.java  # Gson POJO config, no external library
 ├── mixin/       # wiring ONLY - no algorithms here
 │   ├── MixinCreateWorldScreen           # client-only: enabled toggle on the create-world screen
-│   ├── MixinStructureStart              # the single worldgen hook (placeInChunk RETURN)
+│   ├── MixinStructureGenerate           # T1.5 hook: Structure#generate RETURN (forward decision)
+│   ├── MixinChunkGenerator              # captures the MinecraftServer for STRUCTURE_STARTS
+│   ├── MixinStructureManager            # @Accessor("level") to resolve the server
+│   ├── MixinStructureStart              # the single feature-placement hook (placeInChunk RETURN)
 │   ├── MixinSinglePoolElement           # @Accessor("template")
 │   ├── MixinPoolElementStructurePiece   # @Accessor("structureTemplateManager")
 │   ├── MixinStructureTemplate           # @Accessor("palettes")
-│   └── MixinCommands                    # registers /vps (no fabric-api dependency)
+│   ├── MixinCommands                    # registers /vps (no fabric-api dependency)
+│   └── MixinVillagerBrain               # debug: skip villager brain ticks
 ├── duck/        # interfaces implemented by the mixins
 ├── pipeline/    # orchestration + pure algorithm
-│   ├── VpsPipeline          # entry from the mixin: gate -> solve (cached) -> write
-│   ├── RoadCollector        # templates -> road mask (MC-touching)
+│   ├── VpsPipeline          # entry from the mixins: gate -> T1.5 plan / solve (cached) -> write
+│   ├── T15Planner           # T1.5 forward decision: solve + RIGID component shifts
+│   ├── BuildingComponents   # RIGID pieces -> rigid connected components (junction union-find)
+│   ├── VpsGenThread         # ThreadLocal MinecraftServer for STRUCTURE_STARTS
+│   ├── RoadCollector        # templates -> road mask (MC-touching, VpsProbe)
 │   ├── RoadNetwork          # mask -> arms/regions decomposition (pure)
 │   ├── RoadSmoother         # arm slice DP + region ICM (pure, unit tested)
 │   ├── RoadMaterialTable    # style -> blocks (MC-touching)
-│   └── RoadWriter           # profile -> blocks, kerbs, railings, scaffolds
+│   └── RoadWriter           # profile -> blocks, kerbs, railings, walls, scaffolds
 ├── terrain/     # height probing: real heightmap (+/-1 chunks) vs noise
+│   ├── VpsProbe             # height-source interface (real + noise)
+│   ├── VpsGenContext        # feature placement: real heightmap +/-1 chunks, noise elsewhere
+│   ├── VpsNoiseContext      # T1.5: pure noise, no world access
+│   └── WaterCrossings       # pure water-crossing predicate (unit tested)
 ├── compat/      # VpsCompat: version shims; modmenu/: optional client screen
 └── command/     # /vps brigadier tree
 ```
@@ -59,14 +70,29 @@ Rules:
 
 ## Hard constraints (easy to get wrong)
 
+- **All drop criteria are computed in half-block walk-surface units** (`S = 2 *
+  walk surface`); never use `roadTopBlockY + 1` as the walk surface (it is 0.5
+  too high for a slab). The pure helpers live in `RoadWritePolicy`
+  (`roadWalkSurface2` / `kerbApplies` / `railingApplies` / `wallApplies`).
+- **T1.5 runs during STRUCTURE_STARTS**, not FEATURES: `MixinStructureGenerate`
+  hooks `Structure#generate` RETURN (pieces assembled, bounding box not yet
+  cached) and `MixinChunkGenerator` captures the MinecraftServer into
+  `VpsGenThread` around `ChunkGenerator#createStructures`. If the server cannot
+  be resolved, T1.5 must move nothing and let the T5 solve run at FEATURES
+  (never "default allow" - a disabled world must not get its buildings moved).
+- **RIGID building components move as a group**: `BuildingComponents` unions
+  RIGID pieces joined by a RIGID-to-RIGID jigsaw junction; one `dy` per
+  component. `PoolElementStructurePiece#move` does NOT touch junctions, so
+  `T15Planner#syncJunctions` rebuilds them (fields are final) on both sides of
+  the connection. Overlap and world-height guards run before each move.
 - Structure placement is **incremental per chunk**: `placeInChunk` only sees and
   writes the current chunk's 16x16 writable area. Cells outside it are written
   when their own chunk generates. Never try to write the whole village at once.
-- Reading heights is only reliable within +/-1 chunks of the current chunk
-  (`WorldGenRegion`); beyond that use the noise base height
-  (`ChunkGenerator#getBaseHeight`). The solved profile is cached on the
-  `StructureStart` (duck interface `StructureStartVpsAccess`) so the village is
-  solved exactly once.
+- Reading heights at FEATURES is only reliable within +/-1 chunks of the current
+  chunk (`WorldGenRegion`); beyond that use the noise base height. T1.5 uses
+  noise everywhere (`VpsNoiseContext`), so the decision is a pure function of
+  the seed. The solved profile is cached on the `StructureStart` (duck interface
+  `StructureStartVpsAccess`) so the village is solved exactly once.
 - Write blocks with `Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE` (vanilla
   structure flags): no client updates during worldgen and heightmaps stay
   untouched (so our own probes stay consistent).
@@ -128,3 +154,11 @@ Rules:
   `data/minecraft/worldgen/template_pool/village/<style>/streets.json`;
   `GravityProcessor` = terrain matching; `#minecraft:dirt` = 10 blocks;
   village structure tag = the five `village_*` ids.
+- T1.5 hooks: `StructureManager#level` (field name stable) is the ServerLevel
+  during worldgen; `Structure#generate`'s signature drifted three times (26.3
+  added `Climate.Sampler`, 1.21.10 added `Holder`/`ResourceKey`) - the mixin
+  branches per version and only declares the leading parameters (Mixin allows
+  omitting trailing ones). `PoolElementStructurePiece#getJunctions()` returns
+  the live list; `JigsawJunction` fields are final. A RIGID-to-RIGID junction
+  pair has `destProjection == RIGID` on both sides, opposite `deltaY` and
+  source positions one block apart.

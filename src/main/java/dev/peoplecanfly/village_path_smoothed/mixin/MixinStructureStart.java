@@ -22,10 +22,22 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
- * Single hook of the whole mod: after a structure start has placed its pieces
- * into a chunk, rebuild the road mask from the pieces' templates, solve the
- * smooth profile (cached per StructureStart) and rewrite the road blocks that
- * fall into this chunk's writable area.
+ * The two hooks of the cure route (review 4 section 9).
+ *
+ * <p>HEAD solves the village and opens the placement context, so the gravity
+ * processor can drop the vanilla street layer on every column the mod's road
+ * mask claims. RETURN closes the context and writes the road.
+ *
+ * <p>The solve used to happen at RETURN, which is now too late: by then every
+ * block of the piece is already in the world. Moving it to HEAD is safe because
+ * nothing of <em>this</em> start has been placed yet and the probe reads the
+ * same level, generator and chunk either way (risk R8); the heightmap state a
+ * chunk exposes to the generator does not depend on the piece that is about to
+ * be placed into it.
+ *
+ * <p>Both handlers declare every target parameter (the descriptor rule in
+ * AGENTS.md is about exactly this pair - the two shapes have to match the
+ * target in both cases) and both run with {@code require = 1}.
  */
 @Mixin(StructureStart.class)
 public abstract class MixinStructureStart implements StructureStartVpsAccess {
@@ -33,6 +45,23 @@ public abstract class MixinStructureStart implements StructureStartVpsAccess {
 	// another worker thread must see a fully published RoadNetwork (report 4.2 #4)
 	@Unique
 	private volatile VpsVillageSolution village_path_smoothed$solution;
+
+	@Inject(method = "placeInChunk", at = @At("HEAD"))
+	private void village_path_smoothed$onPlaceInChunkHead(
+			WorldGenLevel level,
+			net.minecraft.world.level.StructureManager structureManager,
+			ChunkGenerator generator,
+			RandomSource random,
+			BoundingBox chunkBB,
+			ChunkPos chunkPos,
+			CallbackInfo ci
+	) {
+		try {
+			VpsPipeline.onStructurePlacementHead((StructureStart) (Object) this, level, generator, chunkPos);
+		} catch (Throwable t) {
+			VillagePathSmoothed.LOGGER.error("[VPS] Failed to prepare village road suppression for chunk {}", chunkPos, t);
+		}
+	}
 
 	@Inject(method = "placeInChunk", at = @At("RETURN"))
 	private void village_path_smoothed$onPlaceInChunkTail(

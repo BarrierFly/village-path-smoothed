@@ -7,7 +7,6 @@ package dev.peoplecanfly.village_path_smoothed.pipeline;
 
 import dev.peoplecanfly.village_path_smoothed.VillagePathSmoothedConfig;
 import dev.peoplecanfly.village_path_smoothed.compat.VpsCompat;
-import net.minecraft.tags.BlockTags;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
@@ -121,10 +120,5 @@ public final class RoadMaterialTable {
 			default:
 				return Style.UNKNOWN;
 		}
-	}
-
-	/** Vanilla replaces the road block with planks over water (desert has no such rule). */
-	public static boolean isPlanks(BlockState state) {
-		return state.is(BlockTags.PLANKS);
 	}
 }

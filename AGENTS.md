@@ -19,7 +19,8 @@ src/main/java/dev/peoplecanfly/village_path_smoothed/
 │   ├── MixinStructureGenerate           # T1.5 hook: Structure#generate RETURN (forward decision)
 │   ├── MixinChunkGenerator              # captures the MinecraftServer for STRUCTURE_STARTS
 │   ├── MixinStructureManager            # @Accessor("level") to resolve the server
-│   ├── MixinStructureStart              # the single feature-placement hook (placeInChunk RETURN)
+│   ├── MixinStructureStart              # two hooks: placeInChunk HEAD (open suppression context) and RETURN (write)
+│   ├── MixinGravityProcessor            # drops the vanilla street layer on claimed columns
 │   ├── MixinSinglePoolElement           # @Accessor("template")
 │   ├── MixinPoolElementStructurePiece   # @Accessor("structureTemplateManager")
 │   ├── MixinStructureTemplate           # @Accessor("palettes")
@@ -27,15 +28,18 @@ src/main/java/dev/peoplecanfly/village_path_smoothed/
 │   └── MixinVillagerBrain               # debug: skip villager brain ticks
 ├── duck/        # interfaces implemented by the mixins
 ├── pipeline/    # orchestration + pure algorithm
-│   ├── VpsPipeline          # entry from the mixins: gate -> T1.5 plan / solve (cached) -> write
-│   ├── T15Planner           # T1.5 forward decision: solve + RIGID component shifts
+│   ├── VpsPipeline          # entry from the mixins: gate -> T1.5 plan / solve (cached) -> suppress/write
+│   ├── T15Planner           # T1.5 forward decision: solve + RIGID component shifts + post-shift re-solve
 │   ├── BuildingComponents   # RIGID pieces -> rigid connected components (junction union-find)
 │   ├── VpsGenThread         # ThreadLocal MinecraftServer for STRUCTURE_STARTS
 │   ├── RoadCollector        # templates -> road mask (MC-touching, VpsProbe)
 │   ├── RoadNetwork          # mask -> arms/regions decomposition (pure)
 │   ├── RoadSmoother         # arm slice DP + region ICM (pure, unit tested)
+│   ├── RoadReference        # reference profile P_ref: follow-vs-span per piece (pure, unit tested)
+│   ├── PlacementPolicy      # the one suppress/pass-through decision (pure, unit tested)
+│   ├── VpsPlacementContext  # ThreadLocal road mask live during one placeInChunk
 │   ├── RoadMaterialTable    # style -> blocks (MC-touching)
-│   └── RoadWriter           # profile -> blocks, kerbs, railings, walls, scaffolds
+│   └── RoadWriter           # profile -> blocks, kerbs, railings, scaffolds
 ├── terrain/     # height probing: real heightmap (+/-1 chunks) vs noise
 │   ├── VpsProbe             # height-source interface (real + noise)
 │   ├── VpsGenContext        # feature placement: real heightmap +/-1 chunks, noise elsewhere
@@ -61,19 +65,55 @@ Rules:
   - `ResourceLocation` (<= 1.21.10) vs `Identifier` (>= 1.21.11): see
     `VpsCompat` / `MixinSinglePoolElement`;
   - `ResourceKey#location()` vs `#identifier()`;
-  - `RegistryAccess#registryOrThrow` (1.19.4) vs `#lookupOrThrow`.
+  - `RegistryAccess#registryOrThrow` (1.19.4) vs `#lookupOrThrow`;
+  - `StructureBlockInfo.pos` field (<= 1.19.4) vs `.pos()` accessor
+    (>= 1.20.1): `MixinGravityProcessor`. The **parameter list** of
+    `GravityProcessor#processBlock` itself is identical in all six versions,
+    so no branch is needed for the descriptor - only for the accessor.
 - `SinglePoolElement#getTemplateLocation()` does not exist on 1.19.4 - always
   go through the `@Accessor("template")` mixin (the field name is stable).
+- `GravityProcessor` is added **last** by `SinglePoolElement#getSettings`
+  (projection processors come after the template's own processors), and
+  `StructureTemplate#processBlockInfos` drops a block the moment a processor
+  returns null - so a suppression there also discards the `street_plains` plank
+  bridge / grassify / waterify rules for that block. That is intended; do not
+  assume the template's own processor already ran.
 - 26.3 builds unobfuscated through `fabric-loom` (no remap) with Java 25;
   older nodes use `fabric-loom-remap` (17 or 21). Version facts live in
   `versions/<mc>/gradle.properties`.
 
 ## Hard constraints (easy to get wrong)
 
+- **The mod writes the road, it does not overwrite it.**
+  `MixinGravityProcessor` returns null for every claimed column's y=0 block,
+  which drops it from the placement list, so the vanilla street layer is never
+  written. Do not reintroduce a "clean up the leftover vanilla block" pass: the
+  two windows where that cleanup used to miss (profile 9-10 blocks above the
+  surface, 7-8 below) are the double-road bug, and they exist only because the
+  mod used to place after vanilla. Unclaimed cells (probe failed, cap hit) keep
+  the vanilla road on purpose. Reconcile the two sides with
+  `SUPPRESSED_VANILLA_ROAD_BLOCKS` vs `ROAD_CELLS_WRITTEN` in `/vps stats`.
+- **Deviation is measured against the reference profile, never raw terrain.**
+  `RoadReference` decides per piece and per slice whether the terrain is the
+  reference (inside the fill/clear envelope and legally reachable from every
+  hard value) or the reference is a level span between the piece's ends. Every
+  downstream consumer follows: the arm candidate band is the chase hull of the
+  reference *target*, the ICM candidate window is centred on `refP`, the cost
+  model reads `cell.refP`. Changing one of those back to terrain silently
+  resurrects "level the 1-block mound" or "plunge into the canyon".
+- **SMOOTH_FIRST ranks deviation ABOVE steps.** Cliff penalty on top, deviation
+  in the middle, total step count at the bottom. Swapping the lower two back
+  is what made `smoothFirstMinimisesTotalStepsOverDeviation` true, i.e. what
+  made the road run visibly off rolling ground.
+- **Candidate bands are narrowed against the seam cone, never merged with it.**
+  A union widens the band by up to the arm length on every slice, which pushed
+  wide arms past the state budget and into the region fallback. If narrowing
+  makes the band empty, the band keeps the reference and the cliff penalty
+  counts the difference - that is the intended degradation.
 - **All drop criteria are computed in half-block walk-surface units** (`S = 2 *
   walk surface`); never use `roadTopBlockY + 1` as the walk surface (it is 0.5
   too high for a slab). The pure helpers live in `RoadWritePolicy`
-  (`roadWalkSurface2` / `kerbApplies` / `railingApplies` / `wallApplies`).
+  (`roadWalkSurface2` / `kerbApplies` / `railingApplies`).
 - **T1.5 runs during STRUCTURE_STARTS**, not FEATURES: `MixinStructureGenerate`
   hooks `Structure#generate` RETURN (pieces assembled, bounding box not yet
   cached) and `MixinChunkGenerator` captures the MinecraftServer into
@@ -88,6 +128,11 @@ Rules:
 - Structure placement is **incremental per chunk**: `placeInChunk` only sees and
   writes the current chunk's 16x16 writable area. Cells outside it are written
   when their own chunk generates. Never try to write the whole village at once.
+  The **HEAD** hook on `placeInChunk` runs before anything of the start is
+  placed and is the only place the suppression context may be opened; the
+  **RETURN** hook pops it first and then writes. Solving moved from RETURN to
+  HEAD when the suppression was added - by RETURN it was too late, vanilla had
+  already written its road.
 - Reading heights at FEATURES is only reliable within +/-1 chunks of the current
   chunk (`WorldGenRegion`); beyond that use the noise base height. T1.5 uses
   noise everywhere (`VpsNoiseContext`), so the decision is a pure function of
@@ -175,6 +220,10 @@ skipped hook. The safety net is the smoke test below, not `require`.
 ./gradlew :1.21.11:runServer   # smoke test (needs run/eula.txt)
 ```
 
+If you are on Windows use `gradlew.bat`. Pass `--no-daemon` (or
+`--console=plain`) so a lingering daemon does not hold the console open after
+the build reports success.
+
 **Compiling green is not delivery.** `javac` treats a mixin handler as a plain
 private method and performs no descriptor check against the target, and the
 unit tests are pure-algorithm only, so a whole class of mixin defects passes
@@ -207,6 +256,10 @@ the process tree. `run/` already carries `-Dmixin.debug.export=true`, so
   `data/minecraft/worldgen/template_pool/village/<style>/streets.json`;
   `GravityProcessor` = terrain matching; `#minecraft:dirt` = 10 blocks;
   village structure tag = the five `village_*` ids.
+- Every street and terminator piece is a `legacy_single_pool_element` with
+  `terrain_matching` and **not** RIGID, so none of them is ever moved by T1.5
+  and their mask coordinates stay valid at placement time. Their templates
+  carry no blocks above y=0, so suppressing y=0 cannot lose decoration.
 - T1.5 hooks: `StructureManager#level` (field name stable) is the ServerLevel
   during worldgen; `Structure#generate`'s signature drifted three times (1.21.10
   added `Holder`/`ResourceKey`, 26.3 added `Climate.Sampler`) and

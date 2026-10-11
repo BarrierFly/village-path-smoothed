@@ -23,7 +23,9 @@ import net.minecraft.world.level.block.state.properties.SlabType;
 import net.minecraft.world.level.levelgen.structure.BoundingBox;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -52,20 +54,86 @@ public final class RoadWriter {
 	public static void write(RoadNetwork net, VpsGenContext ctx, BoundingBox chunkBB, VillagePathSmoothedConfig config) {
 		RoadMaterialTable table = RoadMaterialTable.create(config);
 		List<Block> kerbExtras = resolveKerbExtras(config);
+		// Review 4 section 9.3: with the vanilla street layer suppressed on every
+		// claimed column, the kerb/railing work is the only thing left that two
+		// road cells at different heights can both do to the same side column -
+		// a low cell lining it with kerb and a high cell railing above. Deciding
+		// per chunk which cell owns each side column keeps exactly one writer,
+		// and the owner is the highest road, because that is the one whose edge
+		// actually has to be held up.
+		Map<Long, Integer> sideColumnOwner = highestRoadPerSideColumn(net, chunkBB);
 		for (RoadCell cell : net.cells) {
 			if (cell.x < chunkBB.minX() || cell.x > chunkBB.maxX() || cell.z < chunkBB.minZ() || cell.z > chunkBB.maxZ()) {
 				continue; // written when this cell's own chunk generates
 			}
 			try {
-				writeCell(net, cell, ctx, config, table, kerbExtras);
+				writeCell(net, cell, ctx, config, table, kerbExtras, sideColumnOwner);
 			} catch (Throwable t) {
 				VillagePathSmoothed.LOGGER.debug("[VPS] failed to write road cell {} {}", cell.x, cell.z, t);
+				// Review 4 risk R3: the cell's vanilla block is NOT there to fall
+				// back on any more (it was suppressed), so a per-cell failure has
+				// to leave something behind itself. The real surface is the only
+				// height that is trustworthy at write time.
+				writeSurfaceFallback(cell, ctx, config, table);
 			}
 		}
 	}
 
+	/**
+	 * Highest road walk surface (half units) claiming each side column of this
+	 * chunk, keyed by the packed x/z of the column.
+	 */
+	private static Map<Long, Integer> highestRoadPerSideColumn(RoadNetwork net, BoundingBox chunkBB) {
+		Map<Long, Integer> owner = new HashMap<>();
+		for (RoadCell cell : net.cells) {
+			if (cell.x < chunkBB.minX() || cell.x > chunkBB.maxX() || cell.z < chunkBB.minZ() || cell.z > chunkBB.maxZ()) {
+				continue;
+			}
+			int road2 = RoadWritePolicy.roadWalkSurface2(cell.solvedP / 2 - 1, (cell.solvedP & 1) != 0);
+			for (int dir = 0; dir < 4; dir++) {
+				int outX = cell.x + SIDE_DX[dir];
+				int outZ = cell.z + SIDE_DZ[dir];
+				if (net.cellAt(outX, outZ) >= 0) {
+					continue; // road continues this way: no side edge
+				}
+				long key = RoadCell.packedXZ(outX, outZ);
+				Integer current = owner.get(key);
+				if (current == null || road2 > current) {
+					owner.put(key, road2);
+				}
+			}
+		}
+		return owner;
+	}
+
+	/**
+	 * Last-resort road block at the real surface, used when the profile write
+	 * threw. Deliberately the simplest possible column: no slab parity games,
+	 * no kerbs, no railings - just a road surface where vanilla would have put
+	 * one, so a claimed cell is never a hole in the world.
+	 */
+	private static void writeSurfaceFallback(RoadCell cell, VpsGenContext ctx, VillagePathSmoothedConfig config, RoadMaterialTable table) {
+		try {
+			int topY = ctx.realSurfaceTopY(cell.x, cell.z);
+			Block road = table.forStyle(cell.style).roadBlock;
+			Block configured = "STYLE_ROAD".equals(config.roadSmoothing.fillMaterial)
+					? null
+					: VpsCompat.blockById(config.roadSmoothing.fillMaterial);
+			if (configured != null) {
+				road = configured;
+			}
+			setBlock(ctx, cell.x, topY - 1, cell.z, road.defaultBlockState());
+			VpsPipeline.SURFACE_FALLBACK_WRITES.incrementAndGet();
+		} catch (Throwable t) {
+			VillagePathSmoothed.LOGGER.debug("[VPS] surface fallback failed at {} {}", cell.x, cell.z, t);
+		}
+	}
+
+	private static final int[] SIDE_DX = {-1, 1, 0, 0};
+	private static final int[] SIDE_DZ = {0, 0, -1, 1};
+
 	private static void writeCell(RoadNetwork net, RoadCell cell, VpsGenContext ctx, VillagePathSmoothedConfig config,
-			RoadMaterialTable table, List<Block> kerbExtras) {
+			RoadMaterialTable table, List<Block> kerbExtras, Map<Long, Integer> sideColumnOwner) {
 		int x = cell.x;
 		int z = cell.z;
 		int topY = ctx.realSurfaceTopY(x, z);
@@ -77,10 +145,14 @@ public final class RoadWriter {
 			boolean waterAtWt = isWater(ctx, x, wt, z);
 			boolean waterBelow = isWater(ctx, x, wt - 1, z);
 			boolean crossing = WaterCrossings.isCrossing(waterAtWt, waterBelow);
-			// entry also keeps the vanilla plank bridges (dry planks are counted
-			// separately so /vps stats can characterise the real distribution)
-			BlockState vanilla = ctx.blockState(x, wt, z);
-			if (crossing || RoadMaterialTable.isPlanks(vanilla)) {
+			// Review 4 section 9.3: the dry-plank signal is gone. It used to be
+			// "a block that already is planks", which only existed because vanilla
+			// had placed its street layer first; with that layer suppressed on
+			// claimed columns, street_plains can no longer turn a claimed cell
+			// into planks and the check would never fire again. The fluid
+			// predicate was always the real signal; the dry branch only ever
+			// existed to count a vanilla behaviour that is now gone.
+			if (crossing) {
 				if (waterAtWt) {
 					VpsPipeline.SCAFFOLD_WATER_SELF.incrementAndGet();
 				} else if (waterBelow) {
@@ -166,7 +238,7 @@ public final class RoadWriter {
 						: roadBlock.defaultBlockState();
 				setBlock(ctx, x, roadTopBlockY, z, roadState);
 				VpsPipeline.ROAD_CELLS_WRITTEN.incrementAndGet();
-				applyKerbsAndRailings(net, cell, ctx, config, materials, kerbExtras, roadTopBlockY, slab);
+				applyKerbsAndRailings(net, cell, ctx, config, materials, kerbExtras, roadTopBlockY, slab, sideColumnOwner);
 				return;
 			}
 			for (int y = topY - 1; y < roadTopBlockY; y++) {
@@ -196,24 +268,31 @@ public final class RoadWriter {
 		VpsPipeline.ROAD_CELLS_WRITTEN.incrementAndGet();
 
 		// ---- kerbs and railings on side edges (5.5)
-		applyKerbsAndRailings(net, cell, ctx, config, materials, kerbExtras, roadTopBlockY, slab);
+		applyKerbsAndRailings(net, cell, ctx, config, materials, kerbExtras, roadTopBlockY, slab, sideColumnOwner);
 	}
 
 	private static void applyKerbsAndRailings(RoadNetwork net, RoadCell cell, VpsGenContext ctx, VillagePathSmoothedConfig config,
-			RoadMaterialTable.StyleMaterials materials, List<Block> kerbExtras, int roadTopBlockY, boolean slab) {
+			RoadMaterialTable.StyleMaterials materials, List<Block> kerbExtras, int roadTopBlockY, boolean slab,
+			Map<Long, Integer> sideColumnOwner) {
 		// walk surfaces in half-block units: a slab walk surface is 0.5 above
 		// the block Y, a whole block is 1.0 (A1: the old code compared
 		// "roadTopBlockY + 1" which is 0.5 too high for slabs and off by one
 		// whole block for the kerb/railing thresholds)
 		int sRoad2 = RoadWritePolicy.roadWalkSurface2(roadTopBlockY, slab);
-		int[] dx = {-1, 1, 0, 0};
-		int[] dz = {0, 0, -1, 1};
 		for (int dir = 0; dir < 4; dir++) {
-			if (net.cellAt(cell.x + dx[dir], cell.z + dz[dir]) >= 0) {
+			int outX = cell.x + SIDE_DX[dir];
+			int outZ = cell.z + SIDE_DZ[dir];
+			if (net.cellAt(outX, outZ) >= 0) {
 				continue; // road continues this way: no side edge
 			}
-			int outX = cell.x + dx[dir];
-			int outZ = cell.z + dz[dir];
+			// review 4 section 7 (P2): one writer per side column. A shared
+			// column used to get a kerb from the lower road cell and a railing
+			// from the higher one, which is the "kerb and railing on the same
+			// spot" complaint; the highest road owns the column now.
+			Integer owner = sideColumnOwner.get(RoadCell.packedXZ(outX, outZ));
+			if (owner != null && owner != sRoad2) {
+				continue;
+			}
 			int outTopY;
 			try {
 				outTopY = ctx.realSurfaceTopY(outX, outZ); // +/-1 chunk of the current chunk: readable
@@ -228,22 +307,7 @@ public final class RoadWriter {
 			if (config.railing.enabled && RoadWritePolicy.railingApplies(sSide2, sRoad2, config.railing.minDropHeight)) {
 				placeRailing(ctx, outX, outZ, roadTopBlockY + 1, materials);
 			}
-			// elevated road: a solid wall at the road block level on the side
-			// column so the sides are not just a row of floating leaves (A1)
-			if (config.kerb.enabled && RoadWritePolicy.wallApplies(sSide2, sRoad2, config.kerb.wallMinDropHeight)) {
-				placeWall(ctx, outX, outZ, roadTopBlockY, materials);
-			}
 		}
-	}
-
-	/** Elevated-road edge wall: one kerb-material block at the road block level on the side column. */
-	private static void placeWall(VpsGenContext ctx, int x, int z, int y, RoadMaterialTable.StyleMaterials materials) {
-		BlockState existing = ctx.blockState(x, y, z);
-		if (!existing.isAir() && !existing.canBeReplaced()) {
-			return;
-		}
-		setBlock(ctx, x, y, z, materials.kerbBlock.defaultBlockState());
-		VpsPipeline.WALLS_PLACED.incrementAndGet();
 	}
 
 	/** Replaces dirt-tag blocks on the side column from the road block up to the side surface (Q07/Q08: no upper limit). */

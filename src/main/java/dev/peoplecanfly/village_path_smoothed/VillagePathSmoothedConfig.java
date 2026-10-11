@@ -104,8 +104,6 @@ public final class VillagePathSmoothedConfig {
 		public boolean enabled = true;
 		/** "Terrain more than N blocks above the road" triggers a kerb. */
 		public int minDropHeight = 1;
-		/** Elevated-road wall: when the side terrain drops at least this many blocks below the road, a kerb-material wall is placed at the road block level on the side column (0 = always, < 0 = never). */
-		public int wallMinDropHeight = 3;
 		/** Extra block ids (besides #minecraft:dirt) treated as replaceable by kerbs. */
 		public List<String> replaceableBlocks = Arrays.asList("#minecraft:dirt");
 		public BlockByStyle blockByStyle = new BlockByStyle(

@@ -40,6 +40,14 @@ import java.util.Map;
  * feature placement.
  */
 public final class T15Planner {
+	/**
+	 * Villages whose road network was re-collected and re-solved after the
+	 * building shift, so the noise probe compensates the post-move beard boxes
+	 * (review 4 section 7, P1).
+	 */
+	public static final java.util.concurrent.atomic.AtomicLong T15_RESOLVED_AFTER_SHIFT =
+			new java.util.concurrent.atomic.AtomicLong();
+
 	private T15Planner() {
 	}
 
@@ -101,8 +109,27 @@ public final class T15Planner {
 		VpsPipeline.BUILDING_COMPONENTS.addAndGet(components.size());
 		syncJunctions(pieces, components);
 		solution.shiftedComponents = shifted.toArray(new int[0][]);
+
+		// Review 4 section 7 (P1): close the probe gap that the move just opened.
+		// The road profile was solved against beard boxes taken BEFORE the shift,
+		// but a moved building has a different bounding box, so the noise probe
+		// compensated the wrong columns - the +/-$1 near shifted buildings that
+		// the review measured. RoadCollector#collect reads the boxes live off the
+		// pieces, so re-running it after the move is enough: no second probe
+		// implementation, no state to keep in sync. The building shift itself is
+		// NOT repeated (a second pass would be circular: the road moved, so the
+		// buildings would move, so the road would move); this only corrects the
+		// road, which is what the write stage consumes.
+		RoadNetwork resolved = RoadCollector.collect(start, ctx, config);
+		if (config.roadSmoothing.enabled) {
+			RoadSmoother.solve(resolved, VpsPipeline.paramsFor(config));
+		}
+		solution.network = resolved;
+		T15_RESOLVED_AFTER_SHIFT.incrementAndGet();
+
 		if (config.diagnostics.dumpRoadNetwork) {
-			VillagePathSmoothed.LOGGER.info("[VPS] T1.5 village at {}: {} cells, {} building components, {} shifted", chunkPos, network.cells.size(), components.size(), shifted.size());
+			VillagePathSmoothed.LOGGER.info("[VPS] T1.5 village at {}: {} cells, {} building components, {} shifted, {} cells after the post-shift re-solve",
+					chunkPos, network.cells.size(), components.size(), shifted.size(), resolved.cells.size());
 		}
 		return solution;
 	}

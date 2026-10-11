@@ -174,7 +174,7 @@ public final class VpsCommands {
 				+ ", roadSmoothing=" + config.roadSmoothing.enabled + " (" + config.roadSmoothing.objective + ", window=" + config.roadSmoothing.dpWindowHalfUnits
 				+ ", penalty=" + config.roadSmoothing.stepViolationPenalty + ", cut=" + config.roadSmoothing.allowCutIntoTerrain
 				+ ", stage=" + config.roadSmoothing.roadShapeStage + ")"
-				+ ", kerb=" + config.kerb.enabled + " (> " + config.kerb.minDropHeight + " blocks, wall >= " + config.kerb.wallMinDropHeight + ", savanna="
+				+ ", kerb=" + config.kerb.enabled + " (> " + config.kerb.minDropHeight + " blocks, savanna="
 				+ config.kerb.blockByStyle.savanna + ")"
 				+ ", railing=" + config.railing.enabled + " (< -" + config.railing.minDropHeight + " blocks)"
 				+ ", waterCrossing=" + config.waterCrossing.enabled;
@@ -184,16 +184,16 @@ public final class VpsCommands {
 		long solved = VpsPipeline.VILLAGES_SOLVED.get();
 		long nanos = VpsPipeline.SOLVE_NANOS.get();
 		return String.format(
-				"[VPS] villages solved: %d (%.2f ms avg), road cells written: %d, kerbs: %d, railings: %d, walls: %d, scaffolds: %d (water-self %d / water-below %d / dry %d)"
-						+ ", probe skips: %d, floor-garbage probes: %d, clamped writes: %d, fallback re-anchors: %d, over-budget cells: %d"
-						+ ", solve contradictions: %d, step violations: %d (worst %d), villages without arms: %d"
+				"[VPS] villages solved: %d (%.2f ms avg), road cells written: %d, kerbs: %d, railings: %d, scaffolds: %d (water-self %d / water-below %d / dry %d)"
+						+ ", probe skips: %d, floor-garbage probes: %d, clamped writes: %d, fallback re-anchors: %d, over-budget cells: %d, surface fallbacks: %d"
+						+ ", solve contradictions: %d, step violations: %d (worst %d), span slices: %d (illegal %d), villages without arms: %d"
+						+ ", suppressed vanilla road blocks: %d (passed through: %d)"
 						+ ", T1.5 applied: %d (no-server %d), building components: %d, shifted: %d, unserved: %d, no-road: %d, overlap guards: %d, floating: %d, buried: %d",
 				solved,
 				solved > 0 ? nanos / 1_000_000.0 / solved : 0.0,
 				VpsPipeline.ROAD_CELLS_WRITTEN.get(),
 				VpsPipeline.KERBS_PLACED.get(),
 				VpsPipeline.RAILINGS_PLACED.get(),
-				VpsPipeline.WALLS_PLACED.get(),
 				VpsPipeline.SCAFFOLDS_PLACED.get(),
 				VpsPipeline.SCAFFOLD_WATER_SELF.get(),
 				VpsPipeline.SCAFFOLD_WATER_BELOW.get(),
@@ -203,10 +203,15 @@ public final class VpsCommands {
 				RoadWriter.CLAMPED_WRITES.get(),
 				RoadWriter.FALLBACK_REANCHORS.get(),
 				RoadWriter.OVER_BUDGET_CELLS.get(),
+				VpsPipeline.SURFACE_FALLBACK_WRITES.get(),
 				VpsPipeline.SOLVE_CANDIDATE_CONTRADICTIONS.get(),
 				VpsPipeline.SOLVE_STEP_VIOLATIONS.get(),
 				VpsPipeline.SOLVE_WORST_STEP.get(),
+				VpsPipeline.SOLVE_SPAN_SLICES.get(),
+				VpsPipeline.SOLVE_ILLEGAL_SPANS.get(),
 				VpsPipeline.VILLAGES_WITHOUT_ARMS.get(),
+				VpsPipeline.SUPPRESSED_VANILLA_ROAD_BLOCKS.get(),
+				VpsPipeline.SUPPRESSION_PASSED_THROUGH.get(),
 				VpsPipeline.T15_APPLIED.get(),
 				VpsPipeline.T15_NO_SERVER.get(),
 				VpsPipeline.BUILDING_COMPONENTS.get(),

@@ -12,11 +12,15 @@ package dev.peoplecanfly.village_path_smoothed.pipeline;
  *
  * With roadShapeStage=T1_5 the solution is produced during structure assembly
  * ({@link T15Planner}); {@link #shiftedComponents} then carries the moved
- * building footprints ({minX,maxX,minZ,maxZ,baseY}) for the write-time
+ * building footprints ({minX,maxX,minZ,maxY,baseY}) for the write-time
  * diagnostic guard.
+ *
+ * <p>{@link #network} is not final: the T1.5 pass replaces it with the network
+ * re-collected after the building shift, because the noise probe's beard boxes
+ * are only correct once the pieces have moved (review 4 section 7, P1).
  */
 public final class VpsVillageSolution {
-	public final RoadNetwork network;
+	public RoadNetwork network;
 	public boolean solved;
 	/** True when the T1.5 forward decision ran (buildings may have been shifted). */
 	public boolean t15Applied;

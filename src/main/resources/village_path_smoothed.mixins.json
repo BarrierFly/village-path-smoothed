@@ -6,6 +6,7 @@
   "mixins": [
     "MixinStructureStart",
     "MixinStructureGenerate",
+    "MixinGravityProcessor",
     "MixinStructureManager",
     "MixinChunkGenerator",
     "MixinSinglePoolElement",

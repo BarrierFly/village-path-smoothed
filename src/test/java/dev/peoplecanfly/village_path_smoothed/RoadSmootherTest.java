@@ -30,7 +30,18 @@ import static org.junit.Assert.assertTrue;
  */
 public class RoadSmootherTest {
 	private static RoadSmoother.SolveParams params(Objective objective) {
-		return new RoadSmoother.SolveParams(objective, 8 * 16, 32, 16, 4, true);
+		return params(objective, 8, 6);
+	}
+
+	/**
+	 * Solve parameters with an explicit reference envelope, in whole blocks.
+	 * The defaults mirror the shipped config: maxFillLayers 8, maxClearLayers 6,
+	 * widened by the +2 that {@link RoadWritePolicy#overBudget} allows before
+	 * the writer snaps a cell back onto the real surface.
+	 */
+	private static RoadSmoother.SolveParams params(Objective objective, int fillLayers, int clearLayers) {
+		return new RoadSmoother.SolveParams(objective, 8 * 16, 32, 16, 4, true,
+				2 * (fillLayers + 2), 2 * (clearLayers + 2));
 	}
 
 	/** A 3-wide road along z with a terrain height function of z. */
@@ -336,11 +347,6 @@ public class RoadSmootherTest {
 		// railing: road at least 2 whole blocks above the side
 		assertFalse(RoadWritePolicy.railingApplies(2 * 64, roadWhole, 1)); // 1 below: no
 		assertTrue(RoadWritePolicy.railingApplies(2 * 63, roadWhole, 1));  // 2 below: yes
-
-		// wall: side drops at least wallMinDropHeight (default 3) below the road
-		assertFalse(RoadWritePolicy.wallApplies(2 * 63, roadWhole, 3)); // 2 below: no
-		assertTrue(RoadWritePolicy.wallApplies(2 * 62, roadWhole, 3));  // 3 below: yes
-		assertFalse(RoadWritePolicy.wallApplies(2 * 50, roadWhole, -1)); // disabled
 	}
 
 	private static long totalSteps(RoadNetwork net) {
@@ -356,22 +362,205 @@ public class RoadSmootherTest {
 		return steps;
 	}
 
+	/** Total deviation from the reference profile, which is what the objective ranks. */
+	private static long totalDeviation(RoadNetwork net) {
+		long deviation = 0;
+		for (RoadCell cell : net.cells) {
+			deviation += Math.abs(cell.solvedP - cell.refP);
+		}
+		return deviation;
+	}
+
 	@Test
-	public void smoothFirstMinimisesTotalStepsOverDeviation() {
-		// A7: SMOOTH_FIRST puts the total step count strictly above the
-		// deviation, so on the same terrain it must not produce more steps than
-		// the legacy MIN_DEVIATION objective (which weighs deviation and steps
-		// in the same rank)
+	public void smoothFirstNowPrefersDeviationOverSteps() {
+		// Review 4 section 3.1. This assertion used to be the opposite one and
+		// the flip is the point of the change: SMOOTH_FIRST used to rank total
+		// steps above total deviation, so on rolling ground it levelled the
+		// terrain instead of following it (measured on the review's probe: 0
+		// steps / 90 half units of deviation against 30 steps / 15).
 		IntUnaryOperator terrain = z -> 64 + z / 3 + ((z % 5) == 0 ? 1 : 0);
 		RoadNetwork minDev = straightRoad(60, terrain, "plains");
 		RoadNetwork smooth = straightRoad(60, terrain, "plains");
 		RoadSmoother.solve(minDev, params(Objective.MIN_DEVIATION));
 		RoadSmoother.solve(smooth, params(Objective.SMOOTH_FIRST));
-		long stepsMinDev = totalSteps(minDev);
-		long stepsSmooth = totalSteps(smooth);
-		assertTrue("SMOOTH_FIRST steps " + stepsSmooth + " should be <= MIN_DEVIATION steps " + stepsMinDev, stepsSmooth <= stepsMinDev);
+		long deviationMinDev = totalDeviation(minDev);
+		long deviationSmooth = totalDeviation(smooth);
+		assertTrue("SMOOTH_FIRST deviation " + deviationSmooth + " should be <= MIN_DEVIATION deviation " + deviationMinDev,
+				deviationSmooth <= deviationMinDev);
 		// the cliff penalty stays on top: no soft violations on a legal profile
 		assertAdjacentConstraint(smooth, false);
+		// and it still uses no more steps than the legacy objective - deviation
+		// now outranks steps, it did not simply stop caring about them
+		assertTrue("SMOOTH_FIRST steps " + totalSteps(smooth) + " should be <= MIN_DEVIATION steps " + totalSteps(minDev),
+				totalSteps(smooth) <= totalSteps(minDev));
+	}
+
+	@Test
+	public void smoothFirstFollowsASmallMoundInsteadOfLevellingIt() {
+		// Review 4 section 3.1 probe P1, the case the old default got exactly
+		// backwards: a 1-block mound 4 cells wide on otherwise flat ground.
+		// Following it costs half-block slab steps; levelling it is what
+		// "steps outrank deviation" used to choose.
+		RoadNetwork net = straightRoad(12, z -> (z >= 4 && z < 8) ? 65 : 64, "plains");
+		RoadSmoother.SolveStats stats = RoadSmoother.solve(net, params(Objective.SMOOTH_FIRST));
+		assertEquals("no soft violation may survive", 0, stats.residualViolations());
+		int centre = net.cellAt(1, 6);
+		assertTrue("the road must ride the mound instead of cutting through it",
+				net.cells.get(centre).solvedP >= 2 * 65);
+	}
+
+	@Test
+	public void rollingGroundIsFollowedWithSlabSteps() {
+		// the second half of probe P1: 1-block mounds every 3 cells
+		RoadNetwork net = straightRoad(60, z -> 64 + z / 3 + ((z % 5) == 0 ? 1 : 0), "plains");
+		RoadSmoother.SolveStats stats = RoadSmoother.solve(net, params(Objective.SMOOTH_FIRST));
+		assertEquals("no soft violation may survive", 0, stats.residualViolations());
+		assertTrue("the road must stay near the terrain", totalDeviation(net) < net.cells.size());
+	}
+
+	@Test
+	public void canyonBecomesALevelSpanAndTheWriterTurnsItIntoADeck() {
+		// Review 4 section 5.3 probe P3: a gentle-walled canyon, 12 blocks deep
+		// with an 8-wide floor. Following the terrain would dive to the floor
+		// and climb back out; the reference is the level span between the two
+		// rims instead, so the solved profile stays high and the writer's fill
+		// cap is what turns it into a bridge deck.
+		int rim = 64;
+		int depth = 12;
+		List<RoadCell> cells = new ArrayList<>();
+		for (int z = 0; z < 64; z++) {
+			// 0.5 block per cell down, an 8-wide floor, 0.5 block per cell up
+			int offset;
+			if (z < 24) {
+				offset = z / 2;
+			} else if (z < 32) {
+				offset = depth;
+			} else {
+				offset = depth - (z - 32) / 2;
+			}
+			int topY = rim - offset;
+			for (int x = 0; x < 3; x++) {
+				cells.add(new RoadCell(x, z, "plains", 2 * topY, false));
+			}
+		}
+		RoadNetwork net = RoadNetwork.build(cells, 4);
+		RoadSmoother.SolveStats stats = RoadSmoother.solve(net, params(Objective.SMOOTH_FIRST));
+		assertTrue("the canyon must register as a level span", stats.spanSlices() > 0);
+		// the middle of the canyon stays near the rim instead of on the floor
+		int mid = net.cellAt(1, 28);
+		assertTrue("the road must bridge the canyon, not dive into it",
+				net.cells.get(mid).solvedP >= 2 * (rim - depth) + 8);
+		assertAdjacentConstraint(net, false);
+		// and the profile it actually is: a legal level span across the floor
+		for (int z = 26; z <= 30; z++) {
+			int solved = net.cells.get(net.cellAt(1, z)).solvedP;
+			assertTrue("bridge deck at z=" + z + " must be beyond the fill cap", RoadWritePolicy.bridgeDeck((solved - 1) / 2 - (rim - depth), 8));
+		}
+	}
+
+	@Test
+	public void smallMoundIsNotTurnedIntoASpan() {
+		// the other half of the same proof: the reference must not swallow
+		// ordinary terrain. A 1-block mound is inside the envelope, so it stays
+		// a follow, otherwise every village would be bridged.
+		RoadNetwork net = straightRoad(12, z -> (z >= 4 && z < 8) ? 65 : 64, "plains");
+		RoadSmoother.solve(net, params(Objective.SMOOTH_FIRST));
+		assertEquals("a 1-block mound is not a canyon", 0, stats(net).spanSlices());
+	}
+
+	@Test
+	public void unlimitedEnvelopeAlwaysFollowsTheTerrain() {
+		// a negative cap means "never re-anchor", so there is no envelope and
+		// no span can form
+		RoadNetwork net = straightRoad(24, z -> 64 + (z / 2) * (z < 12 ? 1 : -1), "plains");
+		RoadSmoother.SolveStats stats = RoadSmoother.solve(net,
+				new RoadSmoother.SolveParams(Objective.SMOOTH_FIRST, 8 * 16, 32, 16, 4, true, -1, -1));
+		assertEquals(0, stats.spanSlices());
+	}
+
+	private static RoadSmoother.SolveStats stats(RoadNetwork net) {
+		return RoadSmoother.solve(net, params(Objective.SMOOTH_FIRST));
+	}
+
+	// ------------------------------------------------------------------
+	// review 4 probe bench: the two junction topologies that were still
+	// broken after review 3, reproduced as regressions
+	// ------------------------------------------------------------------
+
+	/** Two 5x5 junction cores joined by a 3-wide street, terrain per column. */
+	private static RoadNetwork twoJunctionsWithStreet(int streetLength, IntUnaryOperator streetTerrain, int plazaAY, int plazaBY) {
+		List<RoadCell> cells = new ArrayList<>();
+		for (int x = 0; x <= 4; x++) {
+			for (int z = -4; z <= 0; z++) {
+				cells.add(new RoadCell(x, z, "plains", 2 * plazaAY, false));
+			}
+		}
+		for (int z = 1; z <= streetLength; z++) {
+			for (int x = 1; x <= 3; x++) {
+				cells.add(new RoadCell(x, z, "plains", 2 * streetTerrain.applyAsInt(z), false));
+			}
+		}
+		int last = streetLength + 1;
+		for (int x = 0; x <= 4; x++) {
+			for (int z = last; z <= last + 4; z++) {
+				cells.add(new RoadCell(x, z, "plains", 2 * plazaBY, false));
+			}
+		}
+		return RoadNetwork.build(cells, 4);
+	}
+
+	@Test
+	public void probeM2StreetBetweenTwoJunctionsOverATerraceStaysLegal() {
+		// Review 4 probe M2: a street clamped between two junctions with an
+		// 8-block terrace wall in the middle of it. Review 3 fixed only the
+		// single-outlier junction; this topology held a low flat line across
+		// the wall and tore the far junction open - 13 violating edges, worst 15
+		// half units. The cause was the seam hull collapsing two end seams into
+		// one interval, plus an ICM candidate window centred on terrain.
+		RoadNetwork net = twoJunctionsWithStreet(17, z -> (z >= 13 ? 72 : 64), 64, 72);
+		assertEquals("both junctions must decompose into regions", 2, net.regions.size());
+		assertEquals("the street between them must be one arm", 1, net.arms.size());
+
+		RoadSmoother.SolveStats stats = RoadSmoother.solve(net, params(Objective.SMOOTH_FIRST));
+		assertEquals("a street pinned at both ends must not tear the junction", 0, stats.residualViolations());
+		assertEquals(0, stats.worstStep());
+
+		// The street must not hold one flat line across its whole length. How MUCH of
+		// the 8-block terrace it takes up is the far junction's choice: a seam
+		// pins the street to the junction's already-solved height, and that
+		// junction is free to sink to meet the street (the "buildings follow the
+		// road" contract). The hard guarantee - and the thing review 3 got
+		// wrong - is that the two ends can be reconciled at all: zero violating
+		// edges above, instead of a 7.5-block tear at the far plaza.
+		int near = net.cells.get(net.cellAt(2, 2)).solvedP;
+		int far = net.cells.get(net.cellAt(2, 16)).solvedP;
+		assertTrue("the street must climb towards the far end (" + near + " -> " + far + ")", far > near);
+	}
+
+	@Test
+	public void probeM2SurvivesEveryTerraceHeight() {
+		// the review measured Delta = 4 absorbing and Delta >= 6 tearing; the
+		// whole range must stay clean now
+		for (int delta = 2; delta <= 10; delta++) {
+			final int step = delta;
+			RoadNetwork net = twoJunctionsWithStreet(17, z -> (z >= 13 ? 64 + step : 64), 64, 64 + step);
+			RoadSmoother.SolveStats stats = RoadSmoother.solve(net, params(Objective.SMOOTH_FIRST));
+			assertEquals("delta " + delta + ": no violating edge", 0, stats.residualViolations());
+		}
+	}
+
+	@Test
+	public void probeM1LongArmOntoHigherTerrainReachesTheTerrain() {
+		// Review 4 probe M1: a legal climb that stopped half way. A 20-cell arm
+		// leaving a junction at 64 towards terrain 70 needs 12 half units and has
+		// 20 cells of room, but the road held at 136 and stayed 2..5.5 blocks
+		// below the terrain for the rest of its length - a "legal" profile that
+		// simply gave up. Deviation outranking steps is what fixes it.
+		RoadNetwork net = twoJunctionsWithStreet(20, z -> 70, 64, 70);
+		RoadSmoother.SolveStats stats = RoadSmoother.solve(net, params(Objective.SMOOTH_FIRST));
+		assertEquals("a climb that fits must not produce a violation", 0, stats.residualViolations());
+		int far = net.cellAt(2, 20);
+		assertEquals("the arm must arrive at its terrain", 2 * 70, net.cells.get(far).solvedP);
 	}
 
 	@Test

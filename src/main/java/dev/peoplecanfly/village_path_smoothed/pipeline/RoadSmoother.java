@@ -31,6 +31,24 @@ import java.util.Map;
  * re-optimized with hard bounds from fixed orthogonal neighbours) followed by a
  * hard pass that guarantees every 4-adjacency constraint is exactly satisfied.
  *
+ * <p>Review 4: the objective now measures deviation against the reference
+ * profile {@link RoadReference} instead of raw terrain, and SMOOTH_FIRST ranks
+ * deviation <em>above</em> the total step count. Review 3 had put steps on top,
+ * which made "levelling a 1-block mound" strictly cheaper than "following it"
+ * (measured: 0 steps / 24 half units of deviation against 12 steps / 6), and
+ * equally made "plunging into a canyon" cheaper than "bridging it". Swapping
+ * the two ranks alone would only have relocated the canyon failure; the
+ * reference profile is what tells the two feature scales apart, and the
+ * candidate bands are built around its target so a span's level is reachable at
+ * all in the first place.
+ *
+ * <p>Review 4 also rebuilt the candidate bands. They used to be generated from
+ * a chase line over raw terrain, which is why a bridge solution was not in the
+ * candidate set for a wide canyon, and why a seam at <em>both</em> ends of an
+ * arm degenerated into "merge the whole hard interval" and tore the junction
+ * apart (probe M2). They are now generated from the reference target, and the
+ * seam extension is a per-slice legal-slope cone from the nearest pinned slice.
+ *
  * <p>Review 3: when an arm is re-solved against a region (phase 3), its
  * candidate band is extended toward the seam hard bound along the legal-slope
  * cone, so the seam can always be satisfied and an outlier direction becomes a
@@ -43,15 +61,21 @@ public final class RoadSmoother {
 	/** Upper bound on enumerated states per slice before the DP window shrinks. */
 	private static final int STATE_BUDGET = 30_000;
 
-	public record SolveParams(
-			Objective objective,
-			int hybridWeightScaled,
-			int stepViolationPenalty,
-			int windowHalf,
-			int icmRounds,
-			boolean allowCut
-	) {
+public record SolveParams(
+		Objective objective,
+		int hybridWeightScaled,
+		int stepViolationPenalty,
+		int windowHalf,
+		int icmRounds,
+		boolean allowCut,
+		int fillBudget2,
+		int clearBudget2
+) {
+	public SolveParams(Objective objective, int hybridWeightScaled, int stepViolationPenalty, int windowHalf,
+			int icmRounds, boolean allowCut) {
+		this(objective, hybridWeightScaled, stepViolationPenalty, windowHalf, icmRounds, allowCut, -1, -1);
 	}
+}
 
 	/**
 	 * Residual diagnostics of one solve (review 3 P0-A). Everything reported
@@ -65,9 +89,12 @@ public final class RoadSmoother {
 	 * @param residualViolations 4-adjacency edges with |dP| > 1 after the final
 	 *        pass over the whole network
 	 * @param worstStep the largest |dP| observed on any edge
+	 * @param spanSlices slices whose reference is a level span (canyon, terrace);
+	 *        review 4 section 5.3 - these are the cells the writer turns into
+	 *        bridge decks or lined tunnels
 	 */
-	public record SolveStats(int candidateContradictions, int residualViolations, int worstStep) {
-		public static final SolveStats EMPTY = new SolveStats(0, 0, 0);
+	public record SolveStats(int candidateContradictions, int residualViolations, int worstStep, int spanSlices) {
+		public static final SolveStats EMPTY = new SolveStats(0, 0, 0, 0);
 	}
 
 	/** Mutable per-solve accumulator threaded through the leaf candidate builders. */
@@ -75,9 +102,10 @@ public final class RoadSmoother {
 		int candidateContradictions;
 		int residualViolations;
 		int worstStep;
+		int spanSlices;
 
 		SolveStats toStats() {
-			return new SolveStats(candidateContradictions, residualViolations, worstStep);
+			return new SolveStats(candidateContradictions, residualViolations, worstStep, spanSlices);
 		}
 	}
 
@@ -95,6 +123,20 @@ public final class RoadSmoother {
 			}
 		}
 		Stats stats = new Stats();
+
+		// 0. references (review 4 section 5.3). Every arm gets its reference up
+		//    front, before any band is built, because a fallback arm keeps this
+		//    reference when it drops into the region solver - that is what stops
+		//    the ICM from re-flattening a legal ramp back against raw terrain.
+		for (RoadNetwork.Arm arm : net.arms) {
+			RoadReference.Profile profile = armReference(net, arm, null, p.fillBudget2(), p.clearBudget2());
+			for (int s = 0; s < arm.slices.size(); s++) {
+				for (int cellIdx : arm.slices.get(s)) {
+					net.cells.get(cellIdx).refP = profile.ref()[s];
+				}
+			}
+			stats.spanSlices += profile.spanSlices();
+		}
 
 		// 1. arms with free boundaries; arms whose chase band is too wide for the
 		//    exact DP fall back to the region solver (constraints stay exact)
@@ -177,69 +219,118 @@ public final class RoadSmoother {
 	}
 
 	/**
-	 * Seam geometry of one arm in phase 3, used to extend the candidate bands
-	 * toward the region side (review 3 P0-A item 1). {@code hardLo}/{@code hardHi}
-	 * hull all seam cells' hard bounds; {@code sliceDistance[s]} is the slice
-	 * distance to the nearest slice that contains a seam cell, so a cell d slices
-	 * in can still be reached by a legal 1-half-unit-per-slice ramp from the seam.
+	 * Seam geometry of one arm in phase 3 (review 4, superseding review 3
+	 * P0-A item 1).
+	 *
+	 * <p>Review 3 hulled <em>all</em> seam cells of the arm into one
+	 * {@code [hardLo, hardHi]} interval. That is correct for the single
+	 * outlier direction review 3 was about and wrong for the topology a real
+	 * village actually has: an arm pinned at <em>both</em> ends. There the hull
+	 * straddles the whole body, the extension degenerated into "merge the entire
+	 * interval", the band lost every slope structure, and the arm collapsed to a
+	 * low flat line that tore the far junction open (probe M2: 13 violating
+	 * edges, worst 15 half units).
+	 *
+	 * <p>So the cone is now kept per slice: {@code lo[s]}/{@code hi[s]} is the
+	 * range reachable from the nearest pinned slice at a legal one half unit per
+	 * slice. With a seam at each end the two cones are computed independently
+	 * and meet in the middle, which is exactly the ramp the arm needs.
 	 */
 	private static final class ArmSeam {
-		final int hardLo;
-		final int hardHi;
-		final int[] sliceDistance;
+		final int[] lo;
+		final int[] hi;
 
-		ArmSeam(int hardLo, int hardHi, int[] sliceDistance) {
-			this.hardLo = hardLo;
-			this.hardHi = hardHi;
-			this.sliceDistance = sliceDistance;
+		ArmSeam(int[] lo, int[] hi) {
+			this.lo = lo;
+			this.hi = hi;
+		}
+
+		/** Nearest pinned slice at or before {@code s}, or -1. */
+		private static int lastPinned(boolean[] pinned, int s) {
+			for (int i = s; i >= 0; i--) {
+				if (pinned[i]) {
+					return i;
+				}
+			}
+			return -1;
+		}
+
+		/** Nearest pinned slice at or after {@code s}, or -1. */
+		private static int nextPinned(boolean[] pinned, int s) {
+			for (int i = s; i < pinned.length; i++) {
+				if (pinned[i]) {
+					return i;
+				}
+			}
+			return -1;
 		}
 	}
 
 	private static ArmSeam analyzeSeam(RoadNetwork.Arm arm, int[][] hardBounds) {
-		int hardLo = Integer.MAX_VALUE;
-		int hardHi = Integer.MIN_VALUE;
-		int[] distance = new int[arm.slices.size()];
-		Arrays.fill(distance, Integer.MAX_VALUE);
-		for (int s = 0; s < arm.slices.size(); s++) {
-			boolean seamSlice = false;
+		int sliceCount = arm.slices.size();
+		boolean[] pinned = new boolean[sliceCount];
+		int[] pinLo = new int[sliceCount];
+		int[] pinHi = new int[sliceCount];
+		boolean any = false;
+		for (int s = 0; s < sliceCount; s++) {
+			int lo = Integer.MAX_VALUE;
+			int hi = Integer.MIN_VALUE;
 			for (int cellIdx : arm.slices.get(s)) {
-				if (hardBounds[cellIdx] != null) {
-					seamSlice = true;
-					hardLo = Math.min(hardLo, hardBounds[cellIdx][0]);
-					hardHi = Math.max(hardHi, hardBounds[cellIdx][1]);
+				int[] bound = hardBounds[cellIdx];
+				if (bound != null) {
+					lo = Math.min(lo, bound[0]);
+					hi = Math.max(hi, bound[1]);
 				}
 			}
-			if (seamSlice) {
-				distance[s] = 0;
+			if (lo != Integer.MAX_VALUE) {
+				pinned[s] = true;
+				pinLo[s] = lo;
+				pinHi[s] = hi;
+				any = true;
 			}
 		}
-		if (hardLo == Integer.MAX_VALUE) {
+		if (!any) {
 			return null;
 		}
-		for (int s = 1; s < distance.length; s++) {
-			distance[s] = Math.min(distance[s], distance[s - 1] == Integer.MAX_VALUE ? Integer.MAX_VALUE : distance[s - 1] + 1);
+		int[] coneLo = new int[sliceCount];
+		int[] coneHi = new int[sliceCount];
+		for (int s = 0; s < sliceCount; s++) {
+			int lo = Integer.MAX_VALUE;
+			int hi = Integer.MIN_VALUE;
+			int back = ArmSeam.lastPinned(pinned, s);
+			if (back >= 0) {
+				int d = s - back;
+				lo = Math.min(lo, pinLo[back] - d);
+				hi = Math.max(hi, pinHi[back] + d);
+			}
+			int fwd = ArmSeam.nextPinned(pinned, s);
+			if (fwd >= 0) {
+				int d = fwd - s;
+				lo = Math.min(lo, pinLo[fwd] - d);
+				hi = Math.max(hi, pinHi[fwd] + d);
+			}
+			coneLo[s] = lo;
+			coneHi[s] = hi;
 		}
-		for (int s = distance.length - 2; s >= 0; s--) {
-			distance[s] = Math.min(distance[s], distance[s + 1] == Integer.MAX_VALUE ? Integer.MAX_VALUE : distance[s + 1] + 1);
-		}
-		return new ArmSeam(hardLo, hardHi, distance);
+		return new ArmSeam(coneLo, coneHi);
 	}
 
 	/**
-	 * Fills the per-cell candidate bands: the chase-line hull with the given
-	 * margin, then - in phase 3 - the seam extension of review 3 P0-A.
+	 * Fills the per-cell candidate bands: the reference/chase hull with the given
+	 * margin, then - in phase 3 - the seam cone.
 	 *
-	 * <p>Seam cells (own hard bound present) get their bound merged into the
-	 * band outright, so a seam cell always has legal candidates and the
-	 * {@code lo > hi} contradiction that used to silently keep the first-pass
-	 * solution can only survive when two region neighbours genuinely disagree.
-	 * Interior cells get the legal-slope cone from the nearest seam slice:
-	 * when the hard bound sits entirely below (above) the chase band, the band
-	 * grows downward (upward) by at most one half unit per slice of distance -
-	 * exactly what a maximal legal ramp needs and no more, so the state budget
-	 * is spent on the bridge instead of on values the deviation cost would
-	 * never pick. When the hard interval overlaps the band on both sides the
-	 * full interval is merged (bounded, corner-case shapes).
+	 * <p>The hull is centred on the reference target, not on raw terrain
+	 * (review 4 section 5.2). That is the change that makes a span reachable at
+	 * all: with a terrain-centred band the only candidates near a canyon floor
+	 * were canyon-floor heights, so no cost model could have picked a bridge no
+	 * matter how the weights were set. The cell's own terrain and its reference
+	 * are still both inside the hull, so a normal village piece sees the same
+	 * candidate set as before.
+	 *
+	 * <p>Seam cells merge their own hard bound outright, so they always have
+	 * legal candidates. Every other cell is unioned with the per-slice cone,
+	 * which is the smallest widening that still guarantees a legal ramp can
+	 * reach the seam.
 	 *
 	 * @return the widest per-cell band, for the state budget check
 	 */
@@ -256,53 +347,42 @@ public final class RoadSmoother {
 			boolean[] hasBand
 	) {
 		int maxBand = 0;
-		int chaseLoMin = Integer.MAX_VALUE;
-		int chaseHiMax = Integer.MIN_VALUE;
 		for (int s = 0; s < arm.slices.size(); s++) {
+			int coneLo = seam != null ? seam.lo[s] : Integer.MIN_VALUE;
+			int coneHi = seam != null ? seam.hi[s] : Integer.MAX_VALUE;
 			for (int cellIdx : arm.slices.get(s)) {
 				RoadCell cell = net.cells.get(cellIdx);
-				int lo = Math.min(chaseFwd[s], Math.min(chaseBack[s], cell.baseP)) - margin;
-				int hi = Math.max(chaseFwd[s], Math.max(chaseBack[s], cell.baseP)) + margin;
+				int lo = Math.min(chaseFwd[s], Math.min(chaseBack[s], Math.min(cell.baseP, cell.refP))) - margin;
+				int hi = Math.max(chaseFwd[s], Math.max(chaseBack[s], Math.max(cell.baseP, cell.refP))) + margin;
+				if (seam != null) {
+					int[] own = hardBounds[cellIdx];
+					if (own != null) {
+						// the seam cell itself: its candidates must intersect the
+						// hard bound, which pins it one half unit off the region
+						lo = Math.max(lo, own[0]);
+						hi = Math.min(hi, own[1]);
+					}
+					// The cone is intersected, not merged. Any value a cell can
+					// hold while still reaching the seam at a legal slope lies in
+					// the cone, so anything outside it can only ever produce a
+					// counted violation - and merging instead would widen the band
+					// by up to the arm length on every slice, which is what pushed
+					// wide arms past the state budget and into the region
+					// fallback (review 4 probe bench, 4-wide arm). If the
+					// reference itself falls outside the cone the two cannot both
+					// be satisfied; the band then keeps the reference and the
+					// cliff penalty on top counts the difference.
+					int narrowedLo = Math.max(lo, coneLo);
+					int narrowedHi = Math.min(hi, coneHi);
+					if (narrowedLo <= narrowedHi) {
+						lo = narrowedLo;
+						hi = narrowedHi;
+					}
+				}
 				bandLo[cellIdx] = lo;
 				bandHi[cellIdx] = hi;
 				hasBand[cellIdx] = true;
-				chaseLoMin = Math.min(chaseLoMin, lo);
-				chaseHiMax = Math.max(chaseHiMax, hi);
-			}
-		}
-		if (seam != null) {
-			for (int s = 0; s < arm.slices.size(); s++) {
-				int d = seam.sliceDistance[s];
-				for (int cellIdx : arm.slices.get(s)) {
-					int lo = bandLo[cellIdx];
-					int hi = bandHi[cellIdx];
-					int[] own = hardBounds[cellIdx];
-					if (own != null) {
-						// the seam cell itself: merge its own bound so its
-						// candidates always intersect the hard bound
-						lo = Math.min(lo, own[0]);
-						hi = Math.max(hi, own[1]);
-					} else if (seam.hardHi < chaseLoMin) {
-						// region below the band: legal ramp descends toward it
-						lo = Math.min(lo, seam.hardHi + d);
-					} else if (seam.hardLo > chaseHiMax) {
-						// region above the band: legal ramp climbs toward it
-						hi = Math.max(hi, seam.hardLo - d);
-					} else {
-						// hard interval straddles the band: merge it wholesale
-						lo = Math.min(lo, seam.hardLo);
-						hi = Math.max(hi, seam.hardHi);
-					}
-					bandLo[cellIdx] = lo;
-					bandHi[cellIdx] = hi;
-					maxBand = Math.max(maxBand, hi - lo + 1);
-				}
-			}
-		} else {
-			for (int s = 0; s < arm.slices.size(); s++) {
-				for (int cellIdx : arm.slices.get(s)) {
-					maxBand = Math.max(maxBand, bandHi[cellIdx] - bandLo[cellIdx] + 1);
-				}
+				maxBand = Math.max(maxBand, hi - lo + 1);
 			}
 		}
 		return maxBand;
@@ -321,23 +401,34 @@ public final class RoadSmoother {
 		}
 		int window = chooseWindow(maxSliceWidth, p.windowHalf());
 
-		// Chase lines: the legal profile tracking the terrain as closely as legal
-		// steps allow, from the left (chaseFwd) and from the right (chaseBack).
-		// For the deviation objectives the optimum lies pointwise between them,
-		// so a per-cell candidate band around [min, max] of the two lines and P0
-		// contains it while staying small on sustained slopes, where a fixed
-		// window around P0 would run out of room.
+		// Reference profile of this arm (review 4 section 5.3). The hard values
+		// are the anchors plus, in phase 3, the seam bounds, so a seam is part
+		// of the reference's own skeleton instead of a band patch applied
+		// afterwards.
+		RoadReference.Profile profile = armReference(net, arm, hardBounds, p.fillBudget2(), p.clearBudget2());
+		int[] target = profile.target();
+		for (int s = 0; s < sliceCount; s++) {
+			for (int cellIdx : slices.get(s)) {
+				net.cells.get(cellIdx).refP = profile.ref()[s];
+			}
+		}
+
+		// Chase lines: the legal profile tracking the reference target as closely
+		// as legal steps allow, from the left (chaseFwd) and from the right
+		// (chaseBack). The target is terrain wherever the terrain is affordable
+		// and the level span baseline where it is not, so chasing it tracks a
+		// mound but stays on the bridge deck over a canyon. For the deviation
+		// objectives the optimum lies pointwise between the two lines, so a
+		// per-cell candidate band around [min, max] of the two lines, the cell's
+		// own terrain and its reference contains it while staying small on
+		// sustained slopes, where a fixed window around P0 would run out of room.
 		int[] chaseFwd = new int[sliceCount];
 		int[] chaseBack = new int[sliceCount];
-		int[] sliceRef = new int[sliceCount];
 		for (int s = 0; s < sliceCount; s++) {
-			sliceRef[s] = sliceReference(net, slices.get(s));
-		}
-		for (int s = 0; s < sliceCount; s++) {
-			chaseFwd[s] = s == 0 ? sliceRef[0] : clampToStep(sliceRef[s], chaseFwd[s - 1]);
+			chaseFwd[s] = s == 0 ? target[0] : clampToStep(target[s], chaseFwd[s - 1]);
 		}
 		for (int s = sliceCount - 1; s >= 0; s--) {
-			chaseBack[s] = s == sliceCount - 1 ? sliceRef[s] : clampToStep(sliceRef[s], chaseBack[s + 1]);
+			chaseBack[s] = s == sliceCount - 1 ? target[s] : clampToStep(target[s], chaseBack[s + 1]);
 		}
 		ArmSeam seam = hardBounds == null ? null : analyzeSeam(arm, hardBounds);
 		int margin = Math.max(0, Math.min(p.windowHalf(), 4));
@@ -467,7 +558,46 @@ public final class RoadSmoother {
 		return out;
 	}
 
-	/** Reference height of one slice for the chase lines: the median base height (anchors carry their fixed value). */
+	/**
+	 * Reference profile of one arm. A slice is pinned when it carries an anchor
+	 * (a water crossing, fixed at the water surface) or - in phase 3 - a cell
+	 * with a seam hard bound; a slice can never carry both at disagreeing
+	 * values, and the seam wins because the region it points at is already
+	 * solved and frozen. The budgets are the writer's own envelope, so a
+	 * reference value inside them can never trip the writer's fallback
+	 * re-anchor.
+	 */
+	private static RoadReference.Profile armReference(RoadNetwork net, RoadNetwork.Arm arm, int[][] hardBounds,
+			int fillBudget2, int clearBudget2) {
+		int sliceCount = arm.slices.size();
+		int[] terrain = new int[sliceCount];
+		boolean[] pinned = new boolean[sliceCount];
+		int[] pinValue = new int[sliceCount];
+		for (int s = 0; s < sliceCount; s++) {
+			terrain[s] = sliceReference(net, arm.slices.get(s));
+			int pin = 0;
+			boolean isPin = false;
+			for (int cellIdx : arm.slices.get(s)) {
+				RoadCell cell = net.cells.get(cellIdx);
+				int[] bound = hardBounds != null && cellIdx < hardBounds.length ? hardBounds[cellIdx] : null;
+				if (bound != null) {
+					// the seam cell must sit exactly one half unit off the
+					// already-solved region height
+					int mid = (int) Math.floorDiv((long) bound[0] + bound[1], 2L);
+					pin = isPin ? clampToStep(mid, pin) : mid;
+					isPin = true;
+				} else if (cell.anchor && !isPin) {
+					pin = cell.baseP;
+					isPin = true;
+				}
+			}
+			pinned[s] = isPin;
+			pinValue[s] = pin;
+		}
+		return RoadReference.forArm(terrain, pinned, pinValue, fillBudget2, clearBudget2);
+	}
+
+	/** Reference height of one slice for the reference profile: the median base height. */
 	private static int sliceReference(RoadNetwork net, int[] slice) {
 		int[] values = new int[slice.length];
 		for (int i = 0; i < slice.length; i++) {
@@ -841,6 +971,11 @@ public final class RoadSmoother {
 			} else {
 				continue; // hole: filled below from initialised neighbours
 			}
+			// review 4: the seed becomes the region reference (legalised below).
+			// The ICM measures its deviation against it, so anchoring on a raw
+			// terrain platform would be the exact thing that tore the junction
+			// apart in probe M2 - and anchoring on an ILLEGAL seed would make it
+			// worse, preserving a step the ICM can no longer climb away from.
 			filled[i] = true;
 			anyReference = true;
 		}
@@ -888,8 +1023,16 @@ public final class RoadSmoother {
 				break;
 			}
 		}
+		legaliseRegionReference(net, region, init, filled);
 		for (int i = 0; i < region.length; i++) {
 			if (filled[i]) {
+				// Review 4: the seed, once legal, IS this region's reference, so
+				// the ICM below anchors on a staircase that already respects the
+				// boundary cones instead of on raw terrain. Fallback arms keep
+				// the reference their arm pass gave them.
+				if (net.regionCells.get(region[i])) {
+					net.cells.get(region[i]).refP = init[i];
+				}
 				net.cells.get(region[i]).solvedP = init[i];
 			}
 		}
@@ -902,6 +1045,59 @@ public final class RoadSmoother {
 		// final hard passes: every 4-adjacency edge ends up exactly satisfied
 		scanRuns(net, region, true, false, p, stats);
 		scanRuns(net, region, false, false, p, stats);
+	}
+
+	/**
+	 * Turns the region seed into a legal staircase before it is used as the
+	 * region's reference (review 4).
+	 *
+	 * <p>The seed averages a row interpolation with a column interpolation, so
+	 * on a crossing with arms on opposite sides it can step by more than one
+	 * half unit between adjacent cells - averaging two legal staircases that
+	 * disagree is not itself legal. That was harmless while the seed was only a
+	 * starting point the ICM was free to walk away from. It stops being
+	 * harmless once the seed becomes the reference the ICM measures deviation
+	 * against: the ICM would then be pulled towards an illegal field and hold
+	 * the step, which is exactly the interior cliff review 4 set out to remove.
+	 *
+	 * <p>Alternating row and column forward/backward clamps, a few times over.
+	 * It is not optimal - the ICM still owns the real optimisation - it only
+	 * guarantees the field it is handed can be walked legally.
+	 */
+	private static void legaliseRegionReference(RoadNetwork net, int[] region, int[] init, boolean[] filled) {
+		for (int pass = 0; pass < 4; pass++) {
+			for (boolean alongX : new boolean[]{true, false}) {
+				for (int start = 0; start < region.length; start++) {
+					if (!filled[start]) {
+						continue;
+					}
+					int backDir = alongX ? RoadNetwork.DIR_WEST : RoadNetwork.DIR_NORTH;
+					int fwdDir = alongX ? RoadNetwork.DIR_EAST : RoadNetwork.DIR_SOUTH;
+					int previous = net.neighbors[region[start]][backDir];
+					if (previous >= 0 && regionIndexOf(region, previous) >= 0) {
+						continue; // not the head of its run
+					}
+					List<Integer> run = new ArrayList<>();
+					int j = region[start];
+					while (j >= 0) {
+						int k = regionIndexOf(region, j);
+						if (k < 0 || !filled[k]) {
+							break;
+						}
+						run.add(k);
+						j = net.neighbors[j][fwdDir];
+					}
+					for (int i = 1; i < run.size(); i++) {
+						int p = init[run.get(i - 1)];
+						init[run.get(i)] = Math.max(p - 1, Math.min(p + 1, init[run.get(i)]));
+					}
+					for (int i = run.size() - 2; i >= 0; i--) {
+						int q = init[run.get(i + 1)];
+						init[run.get(i)] = Math.max(q - 1, Math.min(q + 1, init[run.get(i)]));
+					}
+				}
+			}
+		}
 	}
 
 	private static int regionIndexOf(int[] region, int cell) {
@@ -1078,14 +1274,27 @@ public final class RoadSmoother {
 		}
 	}
 
-	/** Candidates for one cell inside an ICM run: window intersected with hard bounds from fixed orthogonal neighbours. */
+	/**
+	 * Candidates for one cell inside an ICM run: the window around the cell's
+	 * REFERENCE, intersected with the hard bounds from the fixed orthogonal
+	 * neighbours.
+	 *
+	 * <p>Review 4 section 4.3 item 2: this used to be a window around raw
+	 * {@code baseP}, i.e. centred on the terrain. A legal ramp seeded by the
+	 * boundary cones would therefore be re-centred on the terrain inside the
+	 * very pass that is supposed to legalise it, which is what flattened the
+	 * M2 street back to a low line and tore the junction. Centring on the
+	 * reference - which already carries the cone structure and the span level -
+	 * keeps the seed's discipline.
+	 */
 	private static int[] runCandidates(RoadNetwork net, RoadCell cell, boolean rowsAlongX, SolveParams p, Stats stats) {
 		if (cell.anchor) {
 			return new int[]{cell.baseP};
 		}
 		int window = Math.max(1, p.windowHalf());
-		int lo = p.allowCut() ? cell.baseP - window : cell.baseP;
-		int hi = cell.baseP + window;
+		int centre = cell.refP;
+		int lo = p.allowCut() ? centre - window : Math.max(centre, cell.baseP);
+		int hi = centre + window;
 		int perpA = rowsAlongX ? RoadNetwork.DIR_NORTH : RoadNetwork.DIR_WEST;
 		int perpB = rowsAlongX ? RoadNetwork.DIR_SOUTH : RoadNetwork.DIR_EAST;
 		for (int dir : new int[]{perpA, perpB}) {
@@ -1124,17 +1333,29 @@ public final class RoadSmoother {
 
 	/**
 	 * Lexicographic cost packed into a single long, decomposable into per-cell
-	 * and per-edge terms:
+	 * and per-edge terms. Deviation is always measured against the cell's
+	 * REFERENCE (review 4 section 5.3), never against raw terrain.
 	 * <ul>
-	 *   <li>SMOOTH_FIRST (default): primary = penalty*sum(excess), secondary = sum|dP|, tertiary = sum|P-P0|</li>
-	 *   <li>MIN_DEVIATION: primary = sum|P-P0| + penalty*sum(excess), secondary = sum|dP|</li>
-	 *   <li>SHORTEST_CATCHUP: primary = deviating cells, secondary = sum|P-P0| + penalty*sum(excess), tertiary = sum|dP|</li>
-	 *   <li>HYBRID: primary = w1*sum|P-P0| + penalty*sum(excess), secondary = w2*sum|dP|</li>
+	 *   <li>SMOOTH_FIRST (default): primary = penalty*sum(excess), secondary = sum|P-P_ref|, tertiary = sum|dP|</li>
+	 *   <li>MIN_DEVIATION: primary = sum|P-P_ref| + penalty*sum(excess), secondary = sum|dP|</li>
+	 *   <li>SHORTEST_CATCHUP: primary = deviating cells, secondary = sum|P-P_ref| + penalty*sum(excess), tertiary = sum|dP|</li>
+	 *   <li>HYBRID: primary = w1*sum|P-P_ref| + penalty*sum(excess), secondary = w2*sum|dP|</li>
 	 * </ul>
-	 * SMOOTH_FIRST keeps the three ranks strictly separated (cliff penalty above
-	 * total step count above total deviation), which is what P1 "roads smooth
-	 * first" means; the legacy MIN_DEVIATION adds deviation and steps in the
-	 * same rank.
+	 *
+	 * <p>Review 4 changed SMOOTH_FIRST's middle and bottom rank. It used to be
+	 * cliff &gt; steps &gt; deviation, which measured out as: levelling a 1-block
+	 * mound cost 0 steps and 24 half units of deviation, following it cost 12
+	 * steps and 6. "Smooth first" was implemented as "flat first", so the road
+	 * ran visibly off the terrain on any piece of rolling ground. Putting
+	 * deviation above steps makes the default do what it says. On its own that
+	 * swap would have made canyon diving strictly worse - plunging to the floor
+	 * is the zero-deviation answer - which is why the reference exists: over a
+	 * canyon the reference is not the floor but the level span between the rims,
+	 * so bridging is both smooth and deviation-free and the swap costs nothing.
+	 *
+	 * <p>SHORTEST_CATCHUP keeps its old shape: its whole point is that the step
+	 * count is what it optimises, and the deviating-cell count already expresses
+	 * that.
 	 */
 	private static final class CostModel {
 		/** Deviations beyond this many half units all cost the same (overflow guard, report 2.1/5-⑤). */
@@ -1147,7 +1368,7 @@ public final class RoadSmoother {
 		private final long s2;
 		private final long s1;
 		private final long sDev;
-		/** SMOOTH_FIRST scales: sLow = deviation rank, sMid = step rank, sTop = cliff penalty rank. */
+		/** SMOOTH_FIRST scales: sLow = step rank, sMid = deviation rank, sTop = cliff penalty rank. */
 		private final long sLow;
 		private final long sMid;
 		private final long sTop;
@@ -1191,14 +1412,14 @@ public final class RoadSmoother {
 			// profile fits the geometry
 			this.s1 = s1v;
 
-			// SMOOTH_FIRST scales (strict lexicographic, overflow-clamped):
-			// sLow: deviation rank (1 unit); sMid: step rank (> max total dev);
-			// sTop: cliff penalty rank (> max total step). Clamped to room so the
+// SMOOTH_FIRST scales (strict lexicographic, overflow-clamped):
+		// sLow: step rank (1 unit); sMid: deviation rank (> max total step);
+		// sTop: cliff penalty rank (> max total deviation). Clamped to room so the
 			// component worst case stays under Long.MAX_VALUE/8; on huge
 			// components the ranks blur gracefully instead of wrapping.
 			long sLowV = 1;
-			long sMidV = satAdd(satMul(Math.max(1, cellCount), EXCESS_SATURATION), 1);
-			long sTopV = satAdd(satDiv(satMul(Math.max(1, edgeCount), satMul(EXCESS_SATURATION, sMidV)), Math.max(1, this.penalty)), 1);
+			long sMidV = satAdd(satMul(Math.max(1, edgeCount), EXCESS_SATURATION), 1);
+			long sTopV = satAdd(satDiv(satMul(Math.max(1, cellCount), satMul(EXCESS_SATURATION, sMidV)), Math.max(1, this.penalty)), 1);
 			long perItem = satMul(Math.max(1, this.penalty), EXCESS_SATURATION);
 			long roomSmooth = (Long.MAX_VALUE / 8) / Math.max(1, satMul(items, Math.max(1, perItem)));
 			if (sTopV > roomSmooth) {
@@ -1236,14 +1457,14 @@ public final class RoadSmoother {
 		}
 
 		long cellCost(RoadCell cell, int value) {
-			int dev = Math.min(Math.abs(value - cell.baseP), EXCESS_SATURATION);
+			int dev = Math.min(Math.abs(value - cell.refP), EXCESS_SATURATION);
 			switch (objective) {
 				case MIN_DEVIATION:
 					return dev * s2;
 				case SHORTEST_CATCHUP:
 					return (dev != 0 ? 1L : 0L) * s1 * sDev * s2 + dev * s2;
 				case SMOOTH_FIRST:
-					return dev * sLow;
+					return dev * sMid;
 				default:
 					return (long) hybridW1 * dev * s2;
 			}
@@ -1285,9 +1506,10 @@ public final class RoadSmoother {
 					// deviating-cell term in cellCost
 					return (long) penalty * excess * s1 * sDev * s2 + delta;
 				case SMOOTH_FIRST:
-					// strict ranks: cliff penalty on top, total steps in the
-					// middle, total deviation at the bottom
-					return (long) penalty * excess * sTop + (long) delta * sMid;
+					// review 4: strict ranks, deviation above steps. Bridging a
+					// canyon stays free because the reference over a canyon is
+					// the level span, not the floor.
+					return (long) penalty * excess * sTop + (long) delta * sLow;
 				default:
 					return (long) penalty * excess * s2 + (long) hybridW2 * delta;
 			}

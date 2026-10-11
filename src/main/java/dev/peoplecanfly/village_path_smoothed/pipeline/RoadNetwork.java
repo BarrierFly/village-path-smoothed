@@ -8,6 +8,7 @@ package dev.peoplecanfly.village_path_smoothed.pipeline;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.BitSet;
 import java.util.Comparator;
 import java.util.Deque;
 import java.util.HashMap;
@@ -39,6 +40,14 @@ public final class RoadNetwork {
 	public final List<Arm> arms = new ArrayList<>();
 	/** Region cell index arrays. */
 	public final List<int[]> regions = new ArrayList<>();
+	/**
+	 * Cells that belong to a region core (review 4). The region solver owns the
+	 * reference of exactly these cells; arm cells - including arms that fall back
+	 * to the region solver because their band blew the state budget - keep the
+	 * arm reference computed by {@link RoadReference}, which is what stops a
+	 * fallback arm from being re-flattened against raw terrain.
+	 */
+	public final BitSet regionCells = new BitSet();
 
 	private final Map<Long, Integer> cellIndexLookup;
 
@@ -134,6 +143,7 @@ public final class RoadNetwork {
 		for (int[] region : network.regions) {
 			for (int cell : region) {
 				regionMembership[cell] = true;
+				network.regionCells.set(cell);
 			}
 		}
 		for (Arm arm : pendingArms) {

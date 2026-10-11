@@ -72,11 +72,6 @@ public final class RoadWritePolicy {
 		return roadWalkSurface2 - sideWalkSurface2 > 2 * minDropHeight;
 	}
 
-	/** Elevated-road wall: the side drops at least {@code wallMinDropHeight} whole blocks below the road (negative disables). */
-	public static boolean wallApplies(int sideWalkSurface2, int roadWalkSurface2, int wallMinDropHeight) {
-		return wallMinDropHeight >= 0 && roadWalkSurface2 - sideWalkSurface2 >= 2 * wallMinDropHeight;
-	}
-
 	/**
 	 * True when the solved walk surface {@code p} (half units) is beyond the
 	 * affordable fill (road above the surface) or cut (road below) cap by more

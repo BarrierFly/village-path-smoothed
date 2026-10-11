@@ -25,10 +25,13 @@ import net.minecraft.world.level.levelgen.structure.templatesystem.StructureTemp
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Entry point called from MixinStructureStart after every
- * StructureStart#placeInChunk. Solves each village once (cached on the start
- * instance) and rewrites the road blocks that fall into the current chunk's
- * writable area.
+ * Entry point of the placement chain. Split in two by review 4 section 9:
+ * {@link #onStructurePlacementHead} runs before vanilla places anything and
+ * opens the suppression context, {@link #onStructurePlacedInChunk} runs after
+ * and writes the road.
+ *
+ * <p>The village is solved once and cached on the start instance, so the two
+ * hooks never solve it twice.
  */
 public final class VpsPipeline {
 	public static final AtomicLong VILLAGES_SOLVED = new AtomicLong();
@@ -40,7 +43,10 @@ public final class VpsPipeline {
 	public static final AtomicLong SCAFFOLD_WATER_SELF = new AtomicLong();
 	public static final AtomicLong SCAFFOLD_WATER_BELOW = new AtomicLong();
 	public static final AtomicLong SCAFFOLD_DRY = new AtomicLong();
-	public static final AtomicLong WALLS_PLACED = new AtomicLong();
+	// Review 4 risk R3: a claimed cell whose profile write threw and fell back
+	// to a surface-anchored road block. Should stay at zero; a non-zero value
+	// means the profile write is throwing per cell.
+	public static final AtomicLong SURFACE_FALLBACK_WRITES = new AtomicLong();
 	public static final AtomicLong T15_APPLIED = new AtomicLong();
 	public static final AtomicLong T15_NO_SERVER = new AtomicLong();
 	public static final AtomicLong BUILDING_COMPONENTS = new AtomicLong();
@@ -57,6 +63,19 @@ public final class VpsPipeline {
 	public static final AtomicLong SOLVE_CANDIDATE_CONTRADICTIONS = new AtomicLong();
 	public static final AtomicLong SOLVE_STEP_VIOLATIONS = new AtomicLong();
 	public static final AtomicLong SOLVE_WORST_STEP = new AtomicLong();
+	// Review 4 section 5.3: slices whose reference is a level span instead of
+	// the terrain, i.e. the places the writer will turn into a bridge deck or a
+	// lined tunnel. Spans whose two ends could not be joined legally are a
+	// separate count: those are the ones that keep a residual drop.
+	public static final AtomicLong SOLVE_SPAN_SLICES = new AtomicLong();
+	public static final AtomicLong SOLVE_ILLEGAL_SPANS = new AtomicLong();
+	// Review 4 section 9: vanilla street blocks dropped from the placement chain
+	// on claimed cells. Reconciliation rule: suppressed ~= road cells written
+	// minus the anchor cells (anchors keep their vanilla block by decision),
+	// split per chunk, so a mismatch means the mask and the suppression set
+	// disagree (risk R2) and both show up at once in /vps stats.
+	public static final AtomicLong SUPPRESSED_VANILLA_ROAD_BLOCKS = new AtomicLong();
+	public static final AtomicLong SUPPRESSION_PASSED_THROUGH = new AtomicLong();
 	// Review 3 section 1: a village whose street widths all exceed
 	// maxExactSectionWidth decomposes into ONE giant region - arms = 0 - and the
 	// exact arm DP plus the seam phase never run for it. Worth watching.
@@ -68,6 +87,18 @@ public final class VpsPipeline {
 	private VpsPipeline() {
 	}
 
+	public static void onStructurePlacementHead(
+			StructureStart start,
+			WorldGenLevel level,
+			ChunkGenerator generator,
+			ChunkPos chunkPos
+	) {
+		VpsVillageSolution solution = prepare(start, level, generator, chunkPos);
+		if (solution != null) {
+			VpsPlacementContext.push(solution.network);
+		}
+	}
+
 	public static void onStructurePlacedInChunk(
 			StructureStart start,
 			WorldGenLevel level,
@@ -76,18 +107,48 @@ public final class VpsPipeline {
 			ChunkPos chunkPos
 	) {
 		VillagePathSmoothedConfig config = VillagePathSmoothedConfig.get();
-		if (start == null || !start.isValid()) {
+		StructureStartVpsAccess access = (StructureStartVpsAccess) (Object) start;
+		VpsVillageSolution solution = access.village_path_smoothed$getSolution();
+		// The context is popped first: a failure further down must not leave a
+		// stale mask live on a reused world-gen thread. The caller already wraps
+		// this hook in its own try/catch, so there is nothing to add here.
+		VpsPlacementContext.pop();
+		if (solution == null || solution.network.cells.isEmpty()) {
 			return;
+		}
+		VpsGenContext ctx = VpsGenContext.capture(level, generator, chunkPos);
+		if (solution.t15Applied && config.roadSmoothing.buildingGuard && !solution.guardChecked) {
+			solution.guardChecked = true;
+			runBuildingGuard(solution, ctx, config);
+		}
+		RoadWriter.write(solution.network, ctx, chunkBB, config);
+	}
+
+	/**
+	 * Solves the village (cached on the start) and returns the solution when
+	 * the suppression context must be opened: the world is enabled, the start
+	 * is a village, and the road mask is non-empty. Every other case returns
+	 * null, which means a pure pass-through for the placement chain.
+	 */
+	private static VpsVillageSolution prepare(
+			StructureStart start,
+			WorldGenLevel level,
+			ChunkGenerator generator,
+			ChunkPos chunkPos
+	) {
+		VillagePathSmoothedConfig config = VillagePathSmoothedConfig.get();
+		if (start == null || !start.isValid()) {
+			return null;
 		}
 		// the per-world switch is authoritative; the global config "enabled" only
 		// seeds the default for worlds without their own file (VpsWorldSettings)
 		MinecraftServer server = serverOf(level);
 		if (server == null || !VpsWorldSettings.isEnabled(server)) {
-			return;
+			return null;
 		}
 		boolean isVanillaVillage = VpsCompat.isVanillaVillageStructure(level, start.getStructure());
 		if (!isVanillaVillage && !RoadCollector.hasCustomRegex(config)) {
-			return; // fast path: other structures cost nothing
+			return null; // fast path: other structures cost nothing
 		}
 
 		// StructureStart is final: cast through Object so the compiler accepts the mixin duck interface
@@ -102,16 +163,7 @@ public final class VpsPipeline {
 				}
 			}
 		}
-		if (solution.network.cells.isEmpty()) {
-			return;
-		}
-
-		VpsGenContext ctx = VpsGenContext.capture(level, generator, chunkPos);
-		if (solution.t15Applied && config.roadSmoothing.buildingGuard && !solution.guardChecked) {
-			solution.guardChecked = true;
-			runBuildingGuard(solution, ctx, config);
-		}
-		RoadWriter.write(solution.network, ctx, chunkBB, config);
+		return solution.network.cells.isEmpty() ? null : solution;
 	}
 
 	/**
@@ -225,7 +277,9 @@ public final class VpsPipeline {
 			SOLVE_CANDIDATE_CONTRADICTIONS.addAndGet(stats.candidateContradictions());
 			SOLVE_STEP_VIOLATIONS.addAndGet(stats.residualViolations());
 			SOLVE_WORST_STEP.accumulateAndGet(stats.worstStep(), Math::max);
+			SOLVE_SPAN_SLICES.addAndGet(stats.spanSlices());
 		}
+		SOLVE_ILLEGAL_SPANS.addAndGet(RoadReference.illegalDrops());
 		if (!network.cells.isEmpty() && network.arms.isEmpty()) {
 			VILLAGES_WITHOUT_ARMS.incrementAndGet();
 			VillagePathSmoothed.LOGGER.warn("[VPS] village at {}: {} road cells but 0 arms - every street is wider than maxExactSectionWidth ({}), the whole village degrades into {} giant region(s) and the exact arm DP never runs",
@@ -256,13 +310,30 @@ public final class VpsPipeline {
 		var smoothing = config.roadSmoothing;
 		int hybridWeight = (int) Math.round(Math.max(0.0, smoothing.hybridWeightDeviation) * 16);
 		int window = Math.max(1, Math.min(smoothing.dpWindowHalfUnits, 64));
+		// The reference profile's envelope is the writer's own budget, not a
+		// separate knob: RoadWritePolicy#overBudget snaps a cell back onto the
+		// real surface once the solved profile is more than cap+2 blocks away
+		// from it, so measuring the reference against anything else would let
+		// the solver aim at a height the writer then throws away.
+		int fillBudget2 = budget2(smoothing.maxFillLayers);
+		int clearBudget2 = budget2(smoothing.maxClearLayers);
 		return new RoadSmoother.SolveParams(
 				smoothing.objective,
 				hybridWeight,
 				Math.max(0, smoothing.stepViolationPenalty),
 				window,
 				Math.max(0, Math.min(smoothing.icmRounds, 64)),
-				smoothing.allowCutIntoTerrain
+				smoothing.allowCutIntoTerrain,
+				fillBudget2,
+				clearBudget2
 		);
+	}
+
+	/** Fill/clear envelope in half units; a negative cap means unlimited (never a span). */
+	private static int budget2(int layers) {
+		if (layers < 0) {
+			return -1;
+		}
+		return 2 * (Math.max(0, layers) + 2);
 	}
 }

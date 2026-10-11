@@ -208,10 +208,14 @@ public class RoadJunctionTest {
 	/**
 	 * The review 3 F1+F4 fix: the seam band extends toward the seam hard bound
 	 * along the legal-slope cone, so the whole height difference becomes a
-	 * legal ramp plus a bounded body deviation instead of a full-height cliff.
-	 * The arm ends up strictly below (above) its terrain: SMOOTH_FIRST spends
-	 * as few steps as the seam bound and the slope cone allow and then holds,
-	 * which the writer surfaces as fill/cut, not as a wall.
+	 * legal ramp instead of a full-height cliff.
+	 *
+	 * <p>Review 4 changed what the arm body does inside that ramp. It used to
+	 * hold strictly below its own terrain - the old objective spent as few steps
+	 * as the seam allowed and then stopped, which is how a smooth road ended up
+	 * visibly off the hillside. Deviation now outranks steps, so the arm body
+	 * tracks the terrain it was handed and the seam is absorbed into a ramp
+	 * rather than into a plateau.
 	 */
 	@Test
 	public void seamAbsorbsTheOutlierDirectionIntoABodyDeviation() {
@@ -230,8 +234,10 @@ public class RoadJunctionTest {
 					armMax = Math.max(armMax, cell.solvedP);
 				}
 			}
-			assertTrue("diff " + diff + ": the arm holds strictly below its terrain (" + armMax + ")",
-					armMax < 2 * (64 + diff));
+			// the arm converges on its own terrain instead of holding below it,
+			// within the fill budget the writer would have to pay anyway
+			assertTrue("diff " + diff + ": the arm tracks its terrain (" + armMax + " vs " + 2 * (64 + diff) + ")",
+					Math.abs(armMax - 2 * (64 + diff)) <= 2 * 8);
 		}
 	}
 
@@ -408,13 +414,14 @@ public class RoadJunctionTest {
 	// ------------------------------------------------------------------
 
 	/**
-	 * Review 3 F2 fix (P0-B): the crossing is seeded with a boundary gradient
-	 * instead of the boundary median. A 4-block terrain step across a 5-wide
-	 * core still cannot be followed legally (1 half unit per cell), so the
-	 * crossing stays inside one legalisable span - but at heights BOTH arms can
-	 * reach with (near-)legal ramps, so the seams stay clean and what tiny
-	 * excess remains sits inside an arm at one block, counted. The old solve
-	 * flattened to the boundary median 68 and left full-height cliffs.
+	 * Review 3 F2 fix (P0-B), completed by review 4: the crossing is seeded with
+	 * a boundary gradient, that seed is legalised into a staircase and becomes
+	 * the crossing's reference, and the ICM is anchored on it. So the crossing
+	 * stays inside the band its two arms can reach with near-legal ramps and the
+	 * seams stay clean. Review 4 removed the "one legalisable span" width bound:
+	 * a crossing is two-dimensional and a legal staircase over a 5x5 core can
+	 * legitimately span more than its four rows, so the meaningful statement is
+	 * that it stays between the two arm levels and is internally legal.
 	 */
 	@Test
 	public void crossingPlatformIsReachableFromBothArms() {
@@ -436,11 +443,11 @@ public class RoadJunctionTest {
 			min = Math.min(min, net.cells.get(cell).solvedP);
 			max = Math.max(max, net.cells.get(cell).solvedP);
 		}
-		assertTrue("the crossing stays within one legalisable span (was " + min + ".." + max + ")", max - min <= 4);
-		assertTrue("the platform sits above the north arm level (was " + min + ")", min > 2 * 64);
-		assertTrue("the platform sits below the south arm level (was " + max + ")", max < 2 * 72);
+		assertTrue("the platform never sinks below the low arm (was " + min + ")", min >= 2 * 64);
+		assertTrue("the platform never climbs above the high arm (was " + max + ")", max <= 2 * 72);
 		Tally t = tally(net);
 		assertEquals("no seam cliff on either side", 0, t.seam);
+		assertEquals("the crossing itself stays legal", 0, t.regionInternal);
 		assertTrue("the residual is shallow and small (was " + t.total() + " edges, worst " + t.worst + ")",
 				t.total() <= 2 && t.worst <= 2);
 		assertEquals("and the stats see exactly that", t.total(), stats.residualViolations());
@@ -456,8 +463,8 @@ public class RoadJunctionTest {
 			return 68;
 		});
 		Tally t = solve(m);
-		assertEquals("at most one interior edge", 1, t.regionInternal);
-		assertEquals("and never more than one whole block (2 half units)", 2, t.worst);
+		assertTrue("at most one interior edge (was " + t.regionInternal + ")", t.regionInternal <= 1);
+		assertTrue("and never more than one whole block (2 half units)", t.worst <= 2);
 	}
 
 	/** A cliff crossing the middle of the crossing is absorbed when it is shallow enough. */
@@ -495,13 +502,26 @@ public class RoadJunctionTest {
 		Tally opposedTally = tally(opposed);
 		assertEquals(opposedTally.total(), opposedStats.residualViolations());
 		assertEquals(opposedTally.worst, opposedStats.worstStep());
-		assertTrue("the unsatisfiable shape leaves a counted residual", opposedStats.residualViolations() > 0);
+		// Review 3 left a counted residual here because the crossing seed was a
+		// raw average of two legal staircases and therefore not itself legal;
+		// review 4 legalises it before it becomes the region's reference, and
+		// this shape is now fully solvable. Keeping a "there must be a residual"
+		// assertion would pin the defect.
+		assertEquals("the opposed-plaza shape is legal now, not merely shallow", 0, opposedStats.residualViolations());
 	}
 
 	/**
 	 * allowCut = false is an explicit user choice: the road never digs below the
-	 * terrain, so an outlier direction that would require cutting keeps its
-	 * cliff - but the cliff is COUNTED now instead of silent.
+	 * terrain, so an outlier direction that would require cutting keeps a cliff -
+	 * but the cliff is COUNTED now instead of silent.
+	 *
+	 * <p>Review 4 changed how deep that cliff is. It used to be exactly the full
+	 * height difference because the band merged the whole seam interval and the
+	 * resulting candidate contradiction pinned the arm body at its terrain. With
+	 * the seam cone intersecting the band instead, and the seam height feeding
+	 * the reference, the arm now stops nearer the junction: the cliff is smaller
+	 * but the mode still behaves the way the flag promises, so the assertion is
+	 * a bound, not the old exact value.
 	 */
 	@Test
 	public void allowCutFalseKeepsTheCliffButCountsIt() {
@@ -511,7 +531,8 @@ public class RoadJunctionTest {
 		RoadSmoother.SolveStats stats = RoadSmoother.solve(net, noCut);
 		Tally t = tally(net);
 		assertEquals("without cutting the outlier direction cliffs", 3, t.seam);
-		assertEquals("the cliff is the full height difference", 8, t.worst);
+		assertTrue("a cliff really does remain, that is what the flag asks for (was " + t.worst + ")", t.worst > 1);
+		assertTrue("and it never exceeds the full height difference (was " + t.worst + ")", t.worst <= 8);
 		assertTrue("the contradiction is counted (was silent before the fix)", stats.candidateContradictions() >= 3);
 		assertEquals("and the verifier sees the same edges", t.total(), stats.residualViolations());
 	}

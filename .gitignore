@@ -31,3 +31,7 @@ bin/
 # fabric
 
 run/
+
+# local smoke-test logs
+
+.smoke/

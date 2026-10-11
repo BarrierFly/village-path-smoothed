@@ -121,6 +121,44 @@ Rules:
   (matched by `ServerLevelData#getLevelName()`). The per-server flag is cached
   in a WeakHashMap - do not read the file per chunk.
 
+## Mixin injection rules (learned the hard way - read before writing a handler)
+
+An `@Inject` handler has exactly **two** legal shapes:
+
+1. every parameter of the target method, in order, followed by
+   `CallbackInfo` / `CallbackInfoReturnable<T>`; or
+2. the `CallbackInfo` / `CallbackInfoReturnable<T>` **alone** (nothing is
+   captured, which is only useful for a pure side-effect hook).
+
+"Declare the leading parameters and omit the trailing ones" is **not** a legal
+shape. Mixin compares the handler descriptor against the target descriptor at
+APPLY time and throws `InvalidInjectionException: Invalid descriptor on ...`,
+which - because the mixin config is `"required": true` - is a fatal launch
+crash before the main menu. This shipped and broke all six jars once; the
+crash write-up is `village-path-smoothed-分析报告-崩溃复盘.md` in the workspace.
+
+Consequences:
+
+- Unused target parameters **must still be declared**. A `Predicate` parameter
+  you never read is the normal way to make a descriptor match.
+- Every cross-version signature difference is a separate preprocessor branch
+  with a **complete** parameter list. Do not try to share a "common prefix".
+- Do not use `net.`-prefixed fully qualified names as parameter types where a
+  plain import would do; the preprocessor's branch-local imports are the
+  supported way (see `MixinVillagerBrain`).
+
+**`require` is not a safety net for this.** `require` / `defaultRequire` only
+govern how many injection points must match when the target *method* or `@At`
+point cannot be found. A descriptor mismatch happens later, at APPLY, where
+`require` does not apply. Never write a comment claiming `require = 0` turns a
+signature drift into a graceful degradation.
+
+**require policy: fail fast.** Every injection in this mod is load-bearing, so
+all of them run with `require = 1` (`village_path_smoothed.mixins.json` sets
+`defaultRequire: 1`; the two T1.5 mixins state it explicitly). If a future
+version drifts, the correct outcome is a crash we notice, not a silently
+skipped hook. The safety net is the smoke test below, not `require`.
+
 ## Code style
 
 - Tab indentation, English comments, English identifiers.
@@ -136,6 +174,21 @@ Rules:
 ./gradlew buildAndGather       # all versions, jars collected in build/libs
 ./gradlew :1.21.11:runServer   # smoke test (needs run/eula.txt)
 ```
+
+**Compiling green is not delivery.** `javac` treats a mixin handler as a plain
+private method and performs no descriptor check against the target, and the
+unit tests are pure-algorithm only, so a whole class of mixin defects passes
+both gates silently. Any change that adds or edits an `@Inject` must be
+followed by a real `runServer` launch before the jars may be handed out.
+
+Minimum smoke coverage: **one node per dialect** - `1.21.11` (new pipeline
+dialect) and `1.19.4` (old dialect). Passing means: the server reaches
+`Done (...)`, no `MixinApplyError` / `InvalidInjectionException` anywhere, no
+`[VPS] ERROR`, and `/vps` is available. `runServer` never exits on its own -
+launch it detached with output redirected to a file, watch the file, then kill
+the process tree. `run/` already carries `-Dmixin.debug.export=true`, so
+`run/.mixin.out/` holds the transformed classes; grep them for the
+`village_path_smoothed$...` handler names to prove an injection actually landed.
 
 ## Do not
 
@@ -155,10 +208,11 @@ Rules:
   `GravityProcessor` = terrain matching; `#minecraft:dirt` = 10 blocks;
   village structure tag = the five `village_*` ids.
 - T1.5 hooks: `StructureManager#level` (field name stable) is the ServerLevel
-  during worldgen; `Structure#generate`'s signature drifted three times (26.3
-  added `Climate.Sampler`, 1.21.10 added `Holder`/`ResourceKey`) - the mixin
-  branches per version and only declares the leading parameters (Mixin allows
-  omitting trailing ones). `PoolElementStructurePiece#getJunctions()` returns
-  the live list; `JigsawJunction` fields are final. A RIGID-to-RIGID junction
+  during worldgen; `Structure#generate`'s signature drifted three times (1.21.10
+  added `Holder`/`ResourceKey`, 26.3 added `Climate.Sampler`) and
+  `ChunkGenerator#createStructures` drifted once (1.21.10 added
+  `ResourceKey<Level>`) - each shape gets its own preprocessor branch and every
+  branch declares the **full** parameter list. `PoolElementStructurePiece#getJunctions()`
+  returns the live list; `JigsawJunction` fields are final. A RIGID-to-RIGID junction
   pair has `destProjection == RIGID` on both sides, opposite `deltaY` and
   source positions one block apart.

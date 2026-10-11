@@ -26,9 +26,18 @@ import java.util.Map;
  * and consecutive slices are linked by a separable min-plus transform. The
  * kernel factorizes because, with coordinate-swept slices, cross-slice edges
  * always connect cells that share the non-sweep coordinate. Wide regions are
- * solved by iterative coordinate minimization (row/column runs re-optimized
- * with hard bounds from fixed orthogonal neighbours) followed by a hard pass
- * that guarantees every 4-adjacency constraint is exactly satisfied.
+ * seeded with a per-row/column gradient between the solved arm heights and then
+ * re-optimized by iterative coordinate minimization (row/column runs
+ * re-optimized with hard bounds from fixed orthogonal neighbours) followed by a
+ * hard pass that guarantees every 4-adjacency constraint is exactly satisfied.
+ *
+ * <p>Review 3: when an arm is re-solved against a region (phase 3), its
+ * candidate band is extended toward the seam hard bound along the legal-slope
+ * cone, so the seam can always be satisfied and an outlier direction becomes a
+ * body deviation (the road ramps or sinks smoothly) instead of a full-height
+ * seam cliff. Contradictions that survive the extension and every residual
+ * |dP|>1 edge left after the whole solve are counted in the returned
+ * {@link SolveStats} instead of staying silent.
  */
 public final class RoadSmoother {
 	/** Upper bound on enumerated states per slice before the DP window shrinks. */
@@ -44,10 +53,38 @@ public final class RoadSmoother {
 	) {
 	}
 
+	/**
+	 * Residual diagnostics of one solve (review 3 P0-A). Everything reported
+	 * here used to be a silent failure: candidate contradictions were resolved
+	 * by quietly keeping the first-pass value, and leftover constraint
+	 * violations were never looked at again.
+	 *
+	 * @param candidateContradictions cells whose hard bounds and candidate band
+	 *        still disagreed after the seam extension, so the first-pass value
+	 *        was kept as the only candidate
+	 * @param residualViolations 4-adjacency edges with |dP| > 1 after the final
+	 *        pass over the whole network
+	 * @param worstStep the largest |dP| observed on any edge
+	 */
+	public record SolveStats(int candidateContradictions, int residualViolations, int worstStep) {
+		public static final SolveStats EMPTY = new SolveStats(0, 0, 0);
+	}
+
+	/** Mutable per-solve accumulator threaded through the leaf candidate builders. */
+	private static final class Stats {
+		int candidateContradictions;
+		int residualViolations;
+		int worstStep;
+
+		SolveStats toStats() {
+			return new SolveStats(candidateContradictions, residualViolations, worstStep);
+		}
+	}
+
 	private RoadSmoother() {
 	}
 
-	public static void solve(RoadNetwork net, SolveParams p) {
+	public static SolveStats solve(RoadNetwork net, SolveParams p) {
 		for (RoadCell cell : net.cells) {
 			cell.solvedP = cell.baseP;
 		}
@@ -57,29 +94,59 @@ public final class RoadSmoother {
 				regionCells.set(cell);
 			}
 		}
+		Stats stats = new Stats();
 
 		// 1. arms with free boundaries; arms whose chase band is too wide for the
 		//    exact DP fall back to the region solver (constraints stay exact)
 		List<int[]> icmFallback = new ArrayList<>();
 		for (RoadNetwork.Arm arm : net.arms) {
-			if (!solveArm(net, arm, p, regionCells, null)) {
+			if (!solveArm(net, arm, p, null, stats)) {
 				icmFallback.add(armCells(arm));
 			}
 		}
-		// 2. regions (platform init from arm boundaries + ICM)
-		for (int[] region : net.regions) {
-			solveRegion(net, region, p, regionCells);
-		}
+		// 2. regions (gradient init from arm boundaries + ICM). The init walks
+		//    must treat every ICM-solved cell as inside, so the membership set
+		//    is regions plus fallback arms; otherwise a fallback arm's own cells
+		//    look like "outside references" and the interpolation mixes raw
+		//    baseP values across terrain cliffs into a garbage seed.
+		BitSet icmMembership = (BitSet) regionCells.clone();
 		for (int[] fallback : icmFallback) {
-			solveRegion(net, fallback, p, regionCells);
-		}
-		// 3. arms glued to a region: re-solve with the seam clipped to the fixed
-		//    region heights, making the arm/region transition exact
-		for (RoadNetwork.Arm arm : net.arms) {
-			if (arm.touchesRegion) {
-				solveArm(net, arm, p, regionCells, seamBoundsForArm(net, arm, regionCells));
+			for (int cell : fallback) {
+				icmMembership.set(cell);
 			}
 		}
+		for (int[] region : net.regions) {
+			solveRegion(net, region, p, icmMembership, stats);
+		}
+		for (int[] fallback : icmFallback) {
+			solveRegion(net, fallback, p, icmMembership, stats);
+		}
+		// 3. arms glued to a region: re-solve with the seam clipped to the fixed
+		//    region heights, making the arm/region transition exact. An arm whose
+		//    extended band still does not fit the state budget keeps its phase-1
+		//    solution here; the final verification below counts the consequences.
+		for (RoadNetwork.Arm arm : net.arms) {
+			if (arm.touchesRegion) {
+				solveArm(net, arm, p, seamBoundsForArm(net, arm, regionCells), stats);
+			}
+		}
+
+		// global final verification (review 3 P0-A item 3): walk every 4-adjacency
+		// edge of the finished network so no violation can stay invisible
+		for (int i = 0; i < net.cells.size(); i++) {
+			for (int dir = 0; dir < 4; dir++) {
+				int j = net.neighbors[i][dir];
+				if (j <= i) {
+					continue;
+				}
+				int d = Math.abs(net.cells.get(i).solvedP - net.cells.get(j).solvedP);
+				if (d > 1) {
+					stats.residualViolations++;
+					stats.worstStep = Math.max(stats.worstStep, d);
+				}
+			}
+		}
+		return stats.toStats();
 	}
 
 	// ------------------------------------------------------------------
@@ -109,7 +176,139 @@ public final class RoadSmoother {
 		return bounds;
 	}
 
-	private static boolean solveArm(RoadNetwork net, RoadNetwork.Arm arm, SolveParams p, BitSet regionCells, int[][] hardBounds) {
+	/**
+	 * Seam geometry of one arm in phase 3, used to extend the candidate bands
+	 * toward the region side (review 3 P0-A item 1). {@code hardLo}/{@code hardHi}
+	 * hull all seam cells' hard bounds; {@code sliceDistance[s]} is the slice
+	 * distance to the nearest slice that contains a seam cell, so a cell d slices
+	 * in can still be reached by a legal 1-half-unit-per-slice ramp from the seam.
+	 */
+	private static final class ArmSeam {
+		final int hardLo;
+		final int hardHi;
+		final int[] sliceDistance;
+
+		ArmSeam(int hardLo, int hardHi, int[] sliceDistance) {
+			this.hardLo = hardLo;
+			this.hardHi = hardHi;
+			this.sliceDistance = sliceDistance;
+		}
+	}
+
+	private static ArmSeam analyzeSeam(RoadNetwork.Arm arm, int[][] hardBounds) {
+		int hardLo = Integer.MAX_VALUE;
+		int hardHi = Integer.MIN_VALUE;
+		int[] distance = new int[arm.slices.size()];
+		Arrays.fill(distance, Integer.MAX_VALUE);
+		for (int s = 0; s < arm.slices.size(); s++) {
+			boolean seamSlice = false;
+			for (int cellIdx : arm.slices.get(s)) {
+				if (hardBounds[cellIdx] != null) {
+					seamSlice = true;
+					hardLo = Math.min(hardLo, hardBounds[cellIdx][0]);
+					hardHi = Math.max(hardHi, hardBounds[cellIdx][1]);
+				}
+			}
+			if (seamSlice) {
+				distance[s] = 0;
+			}
+		}
+		if (hardLo == Integer.MAX_VALUE) {
+			return null;
+		}
+		for (int s = 1; s < distance.length; s++) {
+			distance[s] = Math.min(distance[s], distance[s - 1] == Integer.MAX_VALUE ? Integer.MAX_VALUE : distance[s - 1] + 1);
+		}
+		for (int s = distance.length - 2; s >= 0; s--) {
+			distance[s] = Math.min(distance[s], distance[s + 1] == Integer.MAX_VALUE ? Integer.MAX_VALUE : distance[s + 1] + 1);
+		}
+		return new ArmSeam(hardLo, hardHi, distance);
+	}
+
+	/**
+	 * Fills the per-cell candidate bands: the chase-line hull with the given
+	 * margin, then - in phase 3 - the seam extension of review 3 P0-A.
+	 *
+	 * <p>Seam cells (own hard bound present) get their bound merged into the
+	 * band outright, so a seam cell always has legal candidates and the
+	 * {@code lo > hi} contradiction that used to silently keep the first-pass
+	 * solution can only survive when two region neighbours genuinely disagree.
+	 * Interior cells get the legal-slope cone from the nearest seam slice:
+	 * when the hard bound sits entirely below (above) the chase band, the band
+	 * grows downward (upward) by at most one half unit per slice of distance -
+	 * exactly what a maximal legal ramp needs and no more, so the state budget
+	 * is spent on the bridge instead of on values the deviation cost would
+	 * never pick. When the hard interval overlaps the band on both sides the
+	 * full interval is merged (bounded, corner-case shapes).
+	 *
+	 * @return the widest per-cell band, for the state budget check
+	 */
+	private static int computeBands(
+			RoadNetwork net,
+			RoadNetwork.Arm arm,
+			int[] chaseFwd,
+			int[] chaseBack,
+			int margin,
+			ArmSeam seam,
+			int[][] hardBounds,
+			int[] bandLo,
+			int[] bandHi,
+			boolean[] hasBand
+	) {
+		int maxBand = 0;
+		int chaseLoMin = Integer.MAX_VALUE;
+		int chaseHiMax = Integer.MIN_VALUE;
+		for (int s = 0; s < arm.slices.size(); s++) {
+			for (int cellIdx : arm.slices.get(s)) {
+				RoadCell cell = net.cells.get(cellIdx);
+				int lo = Math.min(chaseFwd[s], Math.min(chaseBack[s], cell.baseP)) - margin;
+				int hi = Math.max(chaseFwd[s], Math.max(chaseBack[s], cell.baseP)) + margin;
+				bandLo[cellIdx] = lo;
+				bandHi[cellIdx] = hi;
+				hasBand[cellIdx] = true;
+				chaseLoMin = Math.min(chaseLoMin, lo);
+				chaseHiMax = Math.max(chaseHiMax, hi);
+			}
+		}
+		if (seam != null) {
+			for (int s = 0; s < arm.slices.size(); s++) {
+				int d = seam.sliceDistance[s];
+				for (int cellIdx : arm.slices.get(s)) {
+					int lo = bandLo[cellIdx];
+					int hi = bandHi[cellIdx];
+					int[] own = hardBounds[cellIdx];
+					if (own != null) {
+						// the seam cell itself: merge its own bound so its
+						// candidates always intersect the hard bound
+						lo = Math.min(lo, own[0]);
+						hi = Math.max(hi, own[1]);
+					} else if (seam.hardHi < chaseLoMin) {
+						// region below the band: legal ramp descends toward it
+						lo = Math.min(lo, seam.hardHi + d);
+					} else if (seam.hardLo > chaseHiMax) {
+						// region above the band: legal ramp climbs toward it
+						hi = Math.max(hi, seam.hardLo - d);
+					} else {
+						// hard interval straddles the band: merge it wholesale
+						lo = Math.min(lo, seam.hardLo);
+						hi = Math.max(hi, seam.hardHi);
+					}
+					bandLo[cellIdx] = lo;
+					bandHi[cellIdx] = hi;
+					maxBand = Math.max(maxBand, hi - lo + 1);
+				}
+			}
+		} else {
+			for (int s = 0; s < arm.slices.size(); s++) {
+				for (int cellIdx : arm.slices.get(s)) {
+					maxBand = Math.max(maxBand, bandHi[cellIdx] - bandLo[cellIdx] + 1);
+				}
+			}
+		}
+		return maxBand;
+	}
+
+	private static boolean solveArm(RoadNetwork net, RoadNetwork.Arm arm, SolveParams p, int[][] hardBounds, Stats stats) {
 		List<int[]> slices = arm.slices;
 		int sliceCount = slices.size();
 		if (sliceCount == 0) {
@@ -140,45 +339,24 @@ public final class RoadSmoother {
 		for (int s = sliceCount - 1; s >= 0; s--) {
 			chaseBack[s] = s == sliceCount - 1 ? sliceRef[s] : clampToStep(sliceRef[s], chaseBack[s + 1]);
 		}
+		ArmSeam seam = hardBounds == null ? null : analyzeSeam(arm, hardBounds);
 		int margin = Math.max(0, Math.min(p.windowHalf(), 4));
-		int margin0 = margin;
-		int maxBand = 0;
 		int[] bandLo = new int[net.cells.size()];
 		int[] bandHi = new int[net.cells.size()];
-		int[] baseLo = new int[net.cells.size()];
-		int[] baseHi = new int[net.cells.size()];
 		boolean[] hasBand = new boolean[net.cells.size()];
-		for (int s = 0; s < sliceCount; s++) {
-			for (int cellIdx : slices.get(s)) {
-				RoadCell cell = net.cells.get(cellIdx);
-				int lo = Math.min(chaseFwd[s], Math.min(chaseBack[s], cell.baseP)) - margin;
-				int hi = Math.max(chaseFwd[s], Math.max(chaseBack[s], cell.baseP)) + margin;
-				baseLo[cellIdx] = lo;
-				baseHi[cellIdx] = hi;
-				bandLo[cellIdx] = lo;
-				bandHi[cellIdx] = hi;
-				hasBand[cellIdx] = true;
-				maxBand = Math.max(maxBand, hi - lo + 1);
-			}
-		}
-		// A3: actually narrow the candidate band as the margin shrinks. The old
-		// loop kept the full band but subtracted 2*margin from the width estimate
-		// (so the estimate GREW as the margin fell) and never touched
-		// bandLo/bandHi - candidatesFor then still used the un-narrowed band, so
-		// the exact arm DP never ran on wide arms. Shrink symmetrically from the
-		// margin0 band, keeping at least one value per cell.
+		int maxBand = computeBands(net, arm, chaseFwd, chaseBack, margin, seam, hardBounds, bandLo, bandHi, hasBand);
+		// State budget guard. The old A3 loop shrank the band symmetrically,
+		// which is exactly what used to cut the seam side away and produce the
+		// candidate contradiction behind the junction cliff (review 3 F4), and
+		// for the flat junction arms it measures it never fired at all. The
+		// replacement shrinks only the margin slack around the chase lines -
+		// the chase hull and the seam extension keep their shape - and gives up
+		// to the ICM fallback only for extreme terrain where even that is too
+		// wide (review 3 section 9 flagged the 4-wide+slope case as unproven
+		// for A3; this keeps those arms exact instead of flattening them).
 		while (margin > 0 && powOf(maxBand, maxSliceWidth) > STATE_BUDGET) {
 			margin--;
-			int shrink = margin0 - margin;
-			maxBand = 0;
-			for (int s = 0; s < sliceCount; s++) {
-				for (int cellIdx : slices.get(s)) {
-					int s2 = Math.min(shrink, (baseHi[cellIdx] - baseLo[cellIdx]) / 2);
-					bandLo[cellIdx] = baseLo[cellIdx] + s2;
-					bandHi[cellIdx] = baseHi[cellIdx] - s2;
-					maxBand = Math.max(maxBand, bandHi[cellIdx] - bandLo[cellIdx] + 1);
-				}
-			}
+			maxBand = computeBands(net, arm, chaseFwd, chaseBack, margin, seam, hardBounds, bandLo, bandHi, hasBand);
 		}
 		if (powOf(maxBand, maxSliceWidth) > STATE_BUDGET) {
 			return false; // band too wide for the exact DP: caller falls back to ICM
@@ -213,7 +391,7 @@ public final class RoadSmoother {
 			long[][] cellCostSlice = new long[slice.length][];
 			for (int pos = 0; pos < slice.length; pos++) {
 				RoadCell cell = net.cells.get(slice[pos]);
-				candSlice[pos] = candidatesFor(cell, window, p, hardBounds, bandLo, bandHi, hasBand);
+				candSlice[pos] = candidatesFor(cell, window, p, hardBounds, bandLo, bandHi, hasBand, stats);
 				cellCostSlice[pos] = new long[candSlice[pos].length];
 				for (int v = 0; v < candSlice[pos].length; v++) {
 					cellCostSlice[pos][v] = cost.cellCost(cell, candSlice[pos][v]);
@@ -567,7 +745,7 @@ public final class RoadSmoother {
 		return false;
 	}
 
-	private static int[] candidatesFor(RoadCell cell, int window, SolveParams p, int[][] hardBounds, int[] bandLo, int[] bandHi, boolean[] hasBand) {
+	private static int[] candidatesFor(RoadCell cell, int window, SolveParams p, int[][] hardBounds, int[] bandLo, int[] bandHi, boolean[] hasBand, Stats stats) {
 		if (cell.anchor) {
 			return new int[]{cell.baseP};
 		}
@@ -590,7 +768,12 @@ public final class RoadSmoother {
 			hi = Math.min(hi, hardBounds[cell.index][1]);
 		}
 		if (lo > hi) {
-			// contradictory bounds: keep the current value as the only option
+			// contradictory bounds: keep the current value as the only option.
+			// With the seam extension this only happens when two region
+			// neighbours genuinely disagree (or allowCut forbids the only
+			// reachable seam value) - no longer silent, but counted (review 3
+			// P0-A item 1)
+			stats.candidateContradictions++;
 			return new int[]{cell.solvedP};
 		}
 		int[] out = new int[hi - lo + 1];
@@ -626,47 +809,174 @@ public final class RoadSmoother {
 	// region ICM
 	// ------------------------------------------------------------------
 
-	private static void solveRegion(RoadNetwork net, int[] region, SolveParams p, BitSet regionCells) {
-		// platform initialisation: median of the boundary (arm side) heights
-		int[] boundaryValues = new int[region.length * 4];
-		int count = 0;
-		for (int cell : region) {
-			if (net.cells.get(cell).anchor) {
+	private static void solveRegion(RoadNetwork net, int[] region, SolveParams p, BitSet icmMembership, Stats stats) {
+		// Review 3 P0-B: seed the region with a feasible gradient instead of a
+		// single median platform. The old init flattened the whole crossing to
+		// the boundary median, which discarded the crossing's own ramp and
+		// pushed all of the error onto the two seams as cliffs. Per cell the
+		// solved heights just outside the region are interpolated along its row
+		// and its column; both interpolations are clamped to a legal staircase
+		// (|dP| <= 1 per cell) and holes (cells whose row AND column walks both
+		// reach the network edge, e.g. the corners of a core whose arms sit at
+		// the edge midpoints) are filled from their initialised neighbours, so
+		// the ICM starts from a field it can actually legalise. The ICM rounds
+		// plus the hard passes below still own the final legality.
+		int[] init = new int[region.length];
+		boolean[] filled = new boolean[region.length];
+		boolean anyReference = false;
+		for (int i = 0; i < region.length; i++) {
+			RoadCell rc = net.cells.get(region[i]);
+			if (rc.anchor) {
 				continue;
 			}
-			for (int dir = 0; dir < 4; dir++) {
-				int j = net.neighbors[cell][dir];
-				if (j >= 0 && !regionCells.get(j)) {
-					boundaryValues[count++] = net.cells.get(j).solvedP;
+			int rowValue = interpolateFromBoundary(net, region[i], icmMembership, true);
+			int colValue = interpolateFromBoundary(net, region[i], icmMembership, false);
+			if (rowValue != Integer.MIN_VALUE && colValue != Integer.MIN_VALUE) {
+				long sum = (long) rowValue + colValue;
+				init[i] = (int) ((sum + ((sum >= 0) ? 1 : -1)) / 2); // deterministic half-away-from-zero
+			} else if (rowValue != Integer.MIN_VALUE) {
+				init[i] = rowValue;
+			} else if (colValue != Integer.MIN_VALUE) {
+				init[i] = colValue;
+			} else {
+				continue; // hole: filled below from initialised neighbours
+			}
+			filled[i] = true;
+			anyReference = true;
+		}
+		if (!anyReference) {
+			// no boundary reference anywhere (a region with no adjacent solved
+			// cell): the old platform seed is the only sensible fallback
+			int[] base = new int[region.length];
+			int c = 0;
+			for (int r : region) {
+				base[c++] = net.cells.get(r).baseP;
+			}
+			int platform = median(base, c);
+			for (int i = 0; i < region.length; i++) {
+				if (!net.cells.get(region[i]).anchor) {
+					init[i] = platform;
+					filled[i] = true;
 				}
 			}
 		}
-		int platform;
-		if (count > 0) {
-			platform = median(boundaryValues, count);
-		} else {
-			int[] base = new int[region.length];
-			int c = 0;
-			for (int cell : region) {
-				base[c++] = net.cells.get(cell).baseP;
+		for (int pass = 0; pass < region.length; pass++) {
+			boolean changed = false;
+			for (int i = 0; i < region.length; i++) {
+				if (filled[i] || net.cells.get(region[i]).anchor) {
+					continue;
+				}
+				long sum = 0;
+				int n = 0;
+				for (int dir = 0; dir < 4; dir++) {
+					int j = net.neighbors[region[i]][dir];
+					if (j >= 0 && icmMembership.get(j)) {
+						int k = regionIndexOf(region, j);
+						if (k >= 0 && filled[k]) {
+							sum += init[k];
+							n++;
+						}
+					}
+				}
+				if (n > 0) {
+					init[i] = (int) ((sum + ((sum >= 0) ? n / 2 : -(n / 2))) / n);
+					filled[i] = true;
+					changed = true;
+				}
 			}
-			platform = median(base, c);
+			if (!changed) {
+				break;
+			}
 		}
-		for (int cell : region) {
-			RoadCell rc = net.cells.get(cell);
-			if (!rc.anchor) {
-				rc.solvedP = platform;
+		for (int i = 0; i < region.length; i++) {
+			if (filled[i]) {
+				net.cells.get(region[i]).solvedP = init[i];
 			}
 		}
 
 		// ICM rounds: x runs then z runs with soft transitions
 		for (int round = 0; round < Math.max(0, p.icmRounds()); round++) {
-			scanRuns(net, region, true, true, p);
-			scanRuns(net, region, false, true, p);
+			scanRuns(net, region, true, true, p, stats);
+			scanRuns(net, region, false, true, p, stats);
 		}
 		// final hard passes: every 4-adjacency edge ends up exactly satisfied
-		scanRuns(net, region, true, false, p);
-		scanRuns(net, region, false, false, p);
+		scanRuns(net, region, true, false, p, stats);
+		scanRuns(net, region, false, false, p, stats);
+	}
+
+	private static int regionIndexOf(int[] region, int cell) {
+		for (int i = 0; i < region.length; i++) {
+			if (region[i] == cell) {
+				return i;
+			}
+		}
+		return -1;
+	}
+
+	/**
+	 * One boundary interpolation for a region cell (review 3 P0-B). Walks along
+	 * one axis to the region edge on both sides and interpolates between the
+	 * solved heights found there, clamped to the legal staircase reachable from
+	 * the two references: from the west value {@code W} at distance {@code k}
+	 * the cell can only hold {@code [W-k, W+k]} without breaking the step
+	 * constraint, and symmetrically for the east value. When the two reachable
+	 * ranges do not meet (the endpoints cannot be joined legally at 1 half unit
+	 * per cell) the near side wins. Returns {@link Integer#MIN_VALUE} when the
+	 * axis has no outside reference on either side.
+	 */
+	private static int interpolateFromBoundary(RoadNetwork net, int cell, BitSet icmMembership, boolean alongX) {
+		int backDir = alongX ? RoadNetwork.DIR_WEST : RoadNetwork.DIR_NORTH;
+		int fwdDir = alongX ? RoadNetwork.DIR_EAST : RoadNetwork.DIR_SOUTH;
+		int backValue = Integer.MIN_VALUE;
+		int backDist = 0;
+		int j = cell;
+		while (true) {
+			int next = net.neighbors[j][backDir];
+			if (next < 0) {
+				break;
+			}
+			backDist++;
+			if (!icmMembership.get(next)) {
+				backValue = net.cells.get(next).solvedP;
+				break;
+			}
+			j = next;
+		}
+		int fwdValue = Integer.MIN_VALUE;
+		int fwdDist = 0;
+		j = cell;
+		while (true) {
+			int next = net.neighbors[j][fwdDir];
+			if (next < 0) {
+				break;
+			}
+			fwdDist++;
+			if (!icmMembership.get(next)) {
+				fwdValue = net.cells.get(next).solvedP;
+				break;
+			}
+			j = next;
+		}
+		if (backValue == Integer.MIN_VALUE && fwdValue == Integer.MIN_VALUE) {
+			return Integer.MIN_VALUE;
+		}
+		if (backValue == Integer.MIN_VALUE) {
+			return fwdValue;
+		}
+		if (fwdValue == Integer.MIN_VALUE) {
+			return backValue;
+		}
+		// integer lerp backValue -> fwdValue, clamped into the legal staircase
+		int span = backDist + fwdDist;
+		long linear = backValue + Math.round((double) (fwdValue - backValue) * backDist / span);
+		long lo = Math.max((long) backValue - backDist, (long) fwdValue - fwdDist);
+		long hi = Math.min((long) backValue + backDist, (long) fwdValue + fwdDist);
+		if (lo > hi) {
+			// endpoints cannot be joined legally: stay reachable from the near side
+			lo = (long) backValue - backDist;
+			hi = (long) backValue + backDist;
+		}
+		return (int) Math.max(lo, Math.min(hi, linear));
 	}
 
 	/**
@@ -675,7 +985,7 @@ public final class RoadSmoother {
 	 * {@code soft}: |dP| > 1 transitions are allowed at penalty cost; when
 	 * false the transitions are hard so the pass cannot introduce violations.
 	 */
-	private static void scanRuns(RoadNetwork net, int[] region, boolean rowsAlongX, boolean soft, SolveParams p) {
+	private static void scanRuns(RoadNetwork net, int[] region, boolean rowsAlongX, boolean soft, SolveParams p, Stats stats) {
 		BitSet remaining = new BitSet(net.cells.size());
 		for (int cell : region) {
 			remaining.set(cell);
@@ -701,11 +1011,11 @@ public final class RoadSmoother {
 				remaining.clear(j);
 				j = net.neighbors[j][fwdDir];
 			}
-			optimizeRun(net, run, rowsAlongX, soft, p);
+			optimizeRun(net, run, rowsAlongX, soft, p, stats);
 		}
 	}
 
-	private static void optimizeRun(RoadNetwork net, List<Integer> run, boolean rowsAlongX, boolean soft, SolveParams p) {
+	private static void optimizeRun(RoadNetwork net, List<Integer> run, boolean rowsAlongX, boolean soft, SolveParams p, Stats stats) {
 		int n = run.size();
 		if (n == 0) {
 			return;
@@ -715,7 +1025,7 @@ public final class RoadSmoother {
 		long[][] cellCosts = new long[n][];
 		for (int i = 0; i < n; i++) {
 			RoadCell cell = net.cells.get(run.get(i));
-			candidates[i] = runCandidates(net, cell, rowsAlongX, p);
+			candidates[i] = runCandidates(net, cell, rowsAlongX, p, stats);
 			cellCosts[i] = new long[candidates[i].length];
 			for (int v = 0; v < candidates[i].length; v++) {
 				cellCosts[i][v] = cost.cellCost(cell, candidates[i][v]);
@@ -769,7 +1079,7 @@ public final class RoadSmoother {
 	}
 
 	/** Candidates for one cell inside an ICM run: window intersected with hard bounds from fixed orthogonal neighbours. */
-	private static int[] runCandidates(RoadNetwork net, RoadCell cell, boolean rowsAlongX, SolveParams p) {
+	private static int[] runCandidates(RoadNetwork net, RoadCell cell, boolean rowsAlongX, SolveParams p, Stats stats) {
 		if (cell.anchor) {
 			return new int[]{cell.baseP};
 		}
@@ -787,6 +1097,9 @@ public final class RoadSmoother {
 			}
 		}
 		if (lo > hi) {
+			// orthogonal clamps disagree with the window: keep the current
+			// value, but never silently (review 3 section 3-3)
+			stats.candidateContradictions++;
 			return new int[]{cell.solvedP};
 		}
 		int[] out = new int[hi - lo + 1];

@@ -30,10 +30,12 @@ import static org.junit.Assert.assertTrue;
  * plus four 3-wide arms reproduces a real village junction. Heights are
  * half-block walk-surface units, i.e. {@code 2 * walkSurfaceY}.
  *
- * <p>Every test here is a CHARACTERIZATION test: it pins the behaviour the
- * solver has today, including the two defects the review identified, so that
- * whoever fixes them has to update the expectation deliberately. The tests
- * marked DEFECT document behaviour that must not survive the fix.
+ * <p>Review 3 pinned the seam-cliff defects with characterization tests whose
+ * expectations had to be flipped deliberately by the fix (P0-A). The cliff
+ * expectations are gone: an outlier direction is now absorbed into a legal
+ * ramp plus a bounded body deviation, and what still cannot be satisfied
+ * (opposed plazas on a short crossing) is shallow and counted in the solve
+ * stats instead of silent.
  */
 public class RoadJunctionTest {
 	private static final int MAX_EXACT_WIDTH = 4;
@@ -204,93 +206,125 @@ public class RoadJunctionTest {
 	}
 
 	/**
-	 * DEFECT (review 3 F1 + F4). The seam can only absorb
-	 * {@code min(dpWindowHalfUnits, 4) + 1} half units; with the default window
-	 * that is 2.5 blocks. One block more and the candidate band (terrain-anchored,
-	 * hard-capped at {@code margin = min(windowHalf, 4)} half units) no longer
-	 * intersects the seam hard bound, so {@code candidatesFor} silently keeps the
-	 * first pass and the direction is left with a full-height cliff - with no
-	 * counter and no log.
+	 * The review 3 F1+F4 fix: the seam band extends toward the seam hard bound
+	 * along the legal-slope cone, so the whole height difference becomes a
+	 * legal ramp plus a bounded body deviation instead of a full-height cliff.
+	 * The arm ends up strictly below (above) its terrain: SMOOTH_FIRST spends
+	 * as few steps as the seam bound and the slope cone allow and then holds,
+	 * which the writer surfaces as fill/cut, not as a wall.
 	 */
 	@Test
-	public void junctionSeamCliffsAsSoonAsOneDirectionDiffersByThreeBlocks() {
+	public void seamAbsorbsTheOutlierDirectionIntoABodyDeviation() {
 		for (int diff = 3; diff <= 8; diff++) {
-			Tally t = solve(junction(2, 6, 64, 64 + diff, 64, 64, 64));
-			assertEquals("diff " + diff + ": the cliff sits on the seam", 3, t.seam);
+			Mask mask = junction(2, 6, 64, 64 + diff, 64, 64, 64);
+			Tally t = solve(mask);
+			assertEquals("diff " + diff + ": no seam cliff", 0, t.seam);
 			assertEquals("diff " + diff + ": the region stays internally legal", 0, t.regionInternal);
 			assertEquals("diff " + diff + ": the arms stay internally legal", 0, t.armInternal);
-			assertEquals("cliff depth is the WHOLE height difference", 2 * diff, t.worst);
+			assertEquals("cliff depth is gone entirely", 0, t.worst);
+			RoadNetwork net = RoadNetwork.build(new ArrayList<>(mask.cells), MAX_EXACT_WIDTH);
+			RoadSmoother.solve(net, params(Objective.SMOOTH_FIRST));
+			int armMax = Integer.MIN_VALUE;
+			for (RoadCell cell : net.cells) {
+				if (cell.z > 2) {
+					armMax = Math.max(armMax, cell.solvedP);
+				}
+			}
+			assertTrue("diff " + diff + ": the arm holds strictly below its terrain (" + armMax + ")",
+					armMax < 2 * (64 + diff));
 		}
 	}
 
-	/** Same cliff downwards and with two opposed outliers. */
+	/** Absorption works downwards too, and opposed plazas degrade gracefully. */
 	@Test
-	public void seamCliffIsSymmetricAndCountsOneEdgePerOutlierDirection() {
+	public void absorptionIsSymmetricAndOpposedPlazasDegradeGracefully() {
 		Tally down = solve(junction(2, 6, 64, 64 - 4, 64, 64, 64));
-		assertEquals(3, down.seam);
-		assertEquals(8, down.worst);
+		assertEquals("single outlier below: fully absorbed", 0, down.total());
+		assertEquals(0, down.worst);
 
+		// two plazas 4 blocks apart sharing one 5x5 crossing is geometrically
+		// unsatisfiable at 1 half unit per cell; the residual must stay shallow
+		// and off the seams (it is counted in the solve stats, see the stats test)
 		Tally opposed = solve(junction(2, 6, 68, 60, 64, 64, 64));
-		assertEquals("north and south both break", 6, opposed.seam);
-		assertEquals(8, opposed.worst);
+		assertEquals("no seam cliff between opposed plazas", 0, opposed.seam);
+		assertTrue("opposed plazas: shallow residual only, was " + opposed.worst, opposed.worst <= 2);
 
 		Tally diagonal = solve(junction(2, 6, 64, 64, 60, 68, 64));
-		assertEquals("east and west both break", 6, diagonal.seam);
-		assertEquals(8, diagonal.worst);
+		assertEquals("no seam cliff between diagonal plazas", 0, diagonal.seam);
+		assertTrue("diagonal plazas: shallow residual only, was " + diagonal.worst, diagonal.worst <= 2);
 	}
 
 	/**
-	 * The threshold is a pure function of the arm's candidate-band margin, which
-	 * is {@code min(dpWindowHalfUnits, 4)} half units. That is the whole proof of
-	 * the causal chain: shrink the window and the cliff threshold drops with it.
+	 * The old cliff threshold was {@code min(dpWindowHalfUnits, 4) + 1} half
+	 * units - the proof of the F4 causal chain. With the seam extension the
+	 * threshold is set by the arm's LENGTH (the slope cone has one half unit
+	 * per slice to work with), not by any solver knob, so every window absorbs
+	 * every height difference this bench can express.
 	 */
 	@Test
-	public void seamCliffThresholdIsExactlyTheArmBandMargin() {
+	public void seamAbsorptionNoLongerDependsOnTheWindow() {
 		for (int windowHalf = 1; windowHalf <= 8; windowHalf++) {
-			int margin = Math.min(windowHalf, 4);
-			int firstBrokenDiff = (margin + 1) / 2 + 1;
 			for (int diff = 1; diff <= 4; diff++) {
 				Tally t = solveAndTally(junction(2, 6, 64, 64 + diff, 64, 64, 64),
 						new RoadSmoother.SolveParams(Objective.SMOOTH_FIRST, 8 * 16, 32, windowHalf, 4, true));
-				if (diff < firstBrokenDiff) {
-					assertEquals("window " + windowHalf + " diff " + diff + " must stay legal", 0, t.total());
+				assertEquals("window " + windowHalf + " diff " + diff + ": no seam cliff", 0, t.seam);
+				if (windowHalf >= 4) {
+					assertEquals("window " + windowHalf + " diff " + diff + " must absorb fully", 0, t.total());
 				} else {
-					assertEquals("window " + windowHalf + " diff " + diff + " must cliff", 3, t.seam);
+					// a tiny window freezes the ICM to its seed (candidates reach
+					// only baseP +/- windowHalf): the residual stays shallow and
+					// interior - the review's "shrinking the window makes it
+					// worse" caveat, now bounded to a couple of half units
+					// instead of full-height cliffs
+					assertTrue("window " + windowHalf + " diff " + diff + " worst " + t.worst, t.worst <= 5);
 				}
 			}
 		}
 	}
 
-	/** Nothing else in the solver can move the cliff: not the objective, penalty or ICM rounds. */
+	/**
+	 * The absorption is knob-independent. HYBRID is the one objective that may
+	 * still jump: its cost ranks the deviation weight (w1 = 128) together with
+	 * the cliff penalty, so holding the ramp below terrain costs more than one
+	 * jump. Even then the jump is half the old cliff and shows up in the stats.
+	 */
 	@Test
-	public void seamCliffIgnoresEverySolverKnob() {
+	public void seamAbsorptionAlsoIgnoresEverySolverKnob() {
 		Mask m = junction(2, 6, 64, 68, 64, 64, 64);
-		for (Objective objective : Objective.values()) {
+		for (Objective objective : new Objective[]{Objective.SMOOTH_FIRST, Objective.MIN_DEVIATION, Objective.SHORTEST_CATCHUP}) {
 			Tally t = solveAndTally(m, new RoadSmoother.SolveParams(objective, 8 * 16, 32, 16, 4, true));
-			assertEquals(objective + " must not fix the seam", 8, t.worst);
+			assertEquals(objective + " must absorb the seam", 0, t.total());
 		}
+		Tally hybrid = solveAndTally(m, new RoadSmoother.SolveParams(Objective.HYBRID, 8 * 16, 32, 16, 4, true));
+		assertTrue("HYBRID worst " + hybrid.worst + " must stay under the old full cliff (8)", hybrid.worst < 8);
 		for (int penalty : new int[]{1, 4, 32, 256}) {
 			Tally t = solveAndTally(m, new RoadSmoother.SolveParams(Objective.SMOOTH_FIRST, 8 * 16, penalty, 16, 4, true));
-			assertEquals("penalty " + penalty + " must not fix the seam", 8, t.worst);
+			assertEquals("penalty " + penalty + " must absorb the seam", 0, t.total());
 		}
 		for (int rounds : new int[]{0, 1, 4, 12}) {
 			Tally t = solveAndTally(m, new RoadSmoother.SolveParams(Objective.SMOOTH_FIRST, 8 * 16, 32, 16, rounds, true));
-			assertEquals("icmRounds " + rounds + " must not fix the seam", 8, t.worst);
+			assertEquals("icmRounds " + rounds + ": no seam cliff", 0, t.seam);
+			if (rounds < 4) {
+				// little or no ICM refinement: the hard passes alone keep a
+				// shallow interior residual instead of the old full-height cliff
+				assertTrue("icmRounds " + rounds + " worst " + t.worst + " must stay shallow", t.worst <= 5);
+			} else {
+				assertEquals("icmRounds " + rounds + " must absorb the seam", 0, t.total());
+			}
 		}
 		for (int window : new int[]{4, 8, 16, 32, 64}) {
 			Tally t = solveAndTally(m, new RoadSmoother.SolveParams(Objective.SMOOTH_FIRST, 8 * 16, 32, window, 4, true));
-			assertEquals("dpWindowHalfUnits " + window + " must not fix the seam", 8, t.worst);
+			assertEquals("dpWindowHalfUnits " + window + " must absorb the seam", 0, t.total());
 		}
 	}
 
 	/**
-	 * Only the OUTLIER direction breaks. The platform height is the median of
-	 * the boundary arm heights, so three agreeing directions pull the crossing
-	 * to their level and the fourth is left hanging - that is exactly the
-	 * "only some directions drop" symptom.
+	 * The review 3 symptom "only some directions drop" is gone: with the seam
+	 * band extension no direction breaks at all, whatever the platform height
+	 * the three agreeing directions pull the crossing to.
 	 */
 	@Test
-	public void onlyTheOutlierDirectionBreaks() {
+	public void noDirectionBreaksAnymore() {
 		for (int diff = 2; diff <= 8; diff++) {
 			Mask mask = junction(2, 6, 64, 64 + diff, 64, 64, 64);
 			RoadNetwork net = RoadNetwork.build(new ArrayList<>(mask.cells), MAX_EXACT_WIDTH);
@@ -313,11 +347,11 @@ public class RoadJunctionTest {
 					total++;
 				}
 			}
-			assertEquals("diff " + diff + ": south north east west", diff >= 3 ? 3 : 0, brokenPerDirection[3]);
+			assertEquals("diff " + diff + ": south never breaks", 0, brokenPerDirection[3]);
 			assertEquals("diff " + diff + ": north never breaks", 0, brokenPerDirection[0]);
 			assertEquals("diff " + diff + ": east never breaks", 0, brokenPerDirection[1]);
 			assertEquals("diff " + diff + ": west never breaks", 0, brokenPerDirection[2]);
-			assertEquals("diff " + diff + ": nothing else breaks", diff >= 3 ? 3 : 0, total);
+			assertEquals("diff " + diff + ": nothing breaks", 0, total);
 		}
 	}
 
@@ -346,25 +380,26 @@ public class RoadJunctionTest {
 		}
 	}
 
-	/** Core size does not matter: the failing edge is the seam, not the crossing interior. */
+	/** Core size does not matter: the outlier direction is absorbed for every core size. */
 	@Test
-	public void seamCliffThresholdIsIndependentOfTheCrossingSize() {
+	public void absorptionIsIndependentOfTheCrossingSize() {
 		for (int half = 2; half <= 8; half += 2) {
 			Tally ok = solve(junction(half, 6, 64, 66, 64, 64, 64));
 			assertEquals("core " + (2 * half + 1) + " at +2", 0, ok.total());
 			Tally bad = solve(junction(half, 6, 64, 67, 64, 64, 64));
-			assertEquals("core " + (2 * half + 1) + " at +3", 3, bad.seam);
+			assertEquals("core " + (2 * half + 1) + " at +3: no seam cliff", 0, bad.seam);
 			assertEquals("core " + (2 * half + 1) + " at +3: no interior cliff", 0, bad.regionInternal);
+			assertEquals("core " + (2 * half + 1) + " at +3: fully absorbed", 0, bad.total());
 		}
 	}
 
-	/** Neither does the arm width or length - one edge per arm cell row, whatever that is. */
+	/** Neither does the arm width or length - every row absorbs, whatever the geometry. */
 	@Test
-	public void seamCliffScalesWithTheArmWidthOnly() {
-		assertEquals("1-wide arm", 1, solve(armWidth(1, 4)).seam);
-		assertEquals("4-wide arm", 4, solve(armWidth(4, 4)).seam);
+	public void absorptionIsIndependentOfArmWidthAndLength() {
+		assertEquals("1-wide arm", 0, solve(armWidth(1, 4)).total());
+		assertEquals("4-wide arm", 0, solve(armWidth(4, 4)).total());
 		for (int length : new int[]{1, 2, 3, 6, 12}) {
-			assertEquals("arm length " + length, 3, solve(junction(2, length, 64, 68, 64, 64, 64)).seam);
+			assertEquals("arm length " + length, 0, solve(junction(2, length, 64, 68, 64, 64, 64)).total());
 		}
 	}
 
@@ -373,14 +408,16 @@ public class RoadJunctionTest {
 	// ------------------------------------------------------------------
 
 	/**
-	 * The crossing is initialised to a single platform height (the median of the
-	 * boundary arm heights) and stays flat there: an internal ramp across the
-	 * crossing is not followed, and the whole error is pushed onto the two seams
-	 * as cliffs. F2's "interior cliff" is the rare variant - this shows the
-	 * common shape.
+	 * Review 3 F2 fix (P0-B): the crossing is seeded with a boundary gradient
+	 * instead of the boundary median. A 4-block terrain step across a 5-wide
+	 * core still cannot be followed legally (1 half unit per cell), so the
+	 * crossing stays inside one legalisable span - but at heights BOTH arms can
+	 * reach with (near-)legal ramps, so the seams stay clean and what tiny
+	 * excess remains sits inside an arm at one block, counted. The old solve
+	 * flattened to the boundary median 68 and left full-height cliffs.
 	 */
 	@Test
-	public void crossingStaysFlatAtTheBoundaryMedian() {
+	public void crossingPlatformIsReachableFromBothArms() {
 		Mask ramp = junction(2, 3, 6, (x, z) -> {
 			if (z <= -2) {
 				return 64;
@@ -391,7 +428,7 @@ public class RoadJunctionTest {
 			return 64 + (z + 2) * 2; // 64, 66, 68, 70, 72 across the core
 		});
 		RoadNetwork net = RoadNetwork.build(new ArrayList<>(ramp.cells), MAX_EXACT_WIDTH);
-		RoadSmoother.solve(net, params(Objective.SMOOTH_FIRST));
+		RoadSmoother.SolveStats stats = RoadSmoother.solve(net, params(Objective.SMOOTH_FIRST));
 		int[] core = net.regions.get(0);
 		int min = Integer.MAX_VALUE;
 		int max = Integer.MIN_VALUE;
@@ -399,11 +436,17 @@ public class RoadJunctionTest {
 			min = Math.min(min, net.cells.get(cell).solvedP);
 			max = Math.max(max, net.cells.get(cell).solvedP);
 		}
-		assertEquals("the crossing is one flat platform", min, max);
-		assertEquals("the platform is the boundary median (68), not the ramp", 2 * 68, min);
+		assertTrue("the crossing stays within one legalisable span (was " + min + ".." + max + ")", max - min <= 4);
+		assertTrue("the platform sits above the north arm level (was " + min + ")", min > 2 * 64);
+		assertTrue("the platform sits below the south arm level (was " + max + ")", max < 2 * 72);
+		Tally t = tally(net);
+		assertEquals("no seam cliff on either side", 0, t.seam);
+		assertTrue("the residual is shallow and small (was " + t.total() + " edges, worst " + t.worst + ")",
+				t.total() <= 2 && t.worst <= 2);
+		assertEquals("and the stats see exactly that", t.total(), stats.residualViolations());
 	}
 
-	/** Interior cliffs do exist, but only ever 1 half unit and only one edge at a time. */
+	/** Interior steps do exist, but only ever one edge and one whole block at a time. */
 	@Test
 	public void interiorCliffsAreRareAndTiny() {
 		Mask m = junction(4, 3, 8, (x, z) -> {
@@ -414,7 +457,7 @@ public class RoadJunctionTest {
 		});
 		Tally t = solve(m);
 		assertEquals("at most one interior edge", 1, t.regionInternal);
-		assertEquals("and never more than one half block", 2, t.worst);
+		assertEquals("and never more than one whole block (2 half units)", 2, t.worst);
 	}
 
 	/** A cliff crossing the middle of the crossing is absorbed when it is shallow enough. */
@@ -425,6 +468,80 @@ public class RoadJunctionTest {
 			Tally t = solve(junction(2, 3, 6, (x, z) -> 64 + (z > 0 ? step : 0)));
 			assertEquals("step " + step, 0, t.total());
 		}
+	}
+
+	// ------------------------------------------------------------------
+	// review 3 P0-A item 3: the solve stats make residual failures visible
+	// ------------------------------------------------------------------
+
+	/**
+	 * The returned stats must agree with an independent edge tally: this is the
+	 * counter /vps stats exposes, so a drift between the two would hide real
+	 * failures again.
+	 */
+	@Test
+	public void solveStatsCrossCheckTheIndependentTally() {
+		Mask flat = junction(2, 6, 64, 64, 64, 64, 64);
+		RoadNetwork net = RoadNetwork.build(new ArrayList<>(flat.cells), MAX_EXACT_WIDTH);
+		RoadSmoother.SolveStats stats = RoadSmoother.solve(net, params(Objective.SMOOTH_FIRST));
+		Tally t = tally(net);
+		assertEquals(0, stats.candidateContradictions());
+		assertEquals("stats see exactly the violations the tally sees", t.total(), stats.residualViolations());
+		assertEquals(t.worst, stats.worstStep());
+
+		RoadNetwork opposed = RoadNetwork.build(
+				new ArrayList<>(junction(2, 6, 68, 60, 64, 64, 64).cells), MAX_EXACT_WIDTH);
+		RoadSmoother.SolveStats opposedStats = RoadSmoother.solve(opposed, params(Objective.SMOOTH_FIRST));
+		Tally opposedTally = tally(opposed);
+		assertEquals(opposedTally.total(), opposedStats.residualViolations());
+		assertEquals(opposedTally.worst, opposedStats.worstStep());
+		assertTrue("the unsatisfiable shape leaves a counted residual", opposedStats.residualViolations() > 0);
+	}
+
+	/**
+	 * allowCut = false is an explicit user choice: the road never digs below the
+	 * terrain, so an outlier direction that would require cutting keeps its
+	 * cliff - but the cliff is COUNTED now instead of silent.
+	 */
+	@Test
+	public void allowCutFalseKeepsTheCliffButCountsIt() {
+		RoadNetwork net = RoadNetwork.build(
+				new ArrayList<>(junction(2, 6, 64, 68, 64, 64, 64).cells), MAX_EXACT_WIDTH);
+		RoadSmoother.SolveParams noCut = new RoadSmoother.SolveParams(Objective.SMOOTH_FIRST, 8 * 16, 32, 16, 4, false);
+		RoadSmoother.SolveStats stats = RoadSmoother.solve(net, noCut);
+		Tally t = tally(net);
+		assertEquals("without cutting the outlier direction cliffs", 3, t.seam);
+		assertEquals("the cliff is the full height difference", 8, t.worst);
+		assertTrue("the contradiction is counted (was silent before the fix)", stats.candidateContradictions() >= 3);
+		assertEquals("and the verifier sees the same edges", t.total(), stats.residualViolations());
+	}
+
+	private static Tally tally(RoadNetwork net) {
+		BitSet region = regionMask(net);
+		Tally t = new Tally();
+		for (int i = 0; i < net.cells.size(); i++) {
+			for (int dir = 0; dir < 4; dir++) {
+				int j = net.neighbors[i][dir];
+				if (j <= i) {
+					continue;
+				}
+				int d = Math.abs(net.cells.get(i).solvedP - net.cells.get(j).solvedP);
+				if (d <= 1) {
+					continue;
+				}
+				boolean ri = region.get(i);
+				boolean rj = region.get(j);
+				if (ri && rj) {
+					t.regionInternal++;
+				} else if (!ri && !rj) {
+					t.armInternal++;
+				} else {
+					t.seam++;
+				}
+				t.worst = Math.max(t.worst, d);
+			}
+		}
+		return t;
 	}
 
 	// ------------------------------------------------------------------

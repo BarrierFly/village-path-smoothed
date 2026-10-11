@@ -24,7 +24,6 @@ import net.minecraft.world.level.levelgen.structure.templatesystem.StructureTemp
 
 import java.util.ArrayList;
 import java.util.IdentityHashMap;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -110,39 +109,36 @@ public final class T15Planner {
 
 	/**
 	 * Vertical shift so the component base meets the median adjacent road walk
-	 * surface. Returns {@link Integer#MIN_VALUE} when the component must not be
-	 * moved (no adjacent road, or the road span is too wide to serve).
+	 * surface, delegated to the pure {@link BuildingShift} helper (review 3 T5)
+	 * with the diagnostic counters kept here.
 	 */
 	private static int desiredShift(RoadNetwork network, BuildingComponents.Component component) {
-		int lo = Integer.MAX_VALUE;
-		int hi = Integer.MIN_VALUE;
 		int[] values = new int[Math.max(1, network.cells.size())];
 		int count = 0;
 		for (RoadCell cell : network.cells) {
 			if (cell.x >= component.minX - 1 && cell.x <= component.maxX + 1
 					&& cell.z >= component.minZ - 1 && cell.z <= component.maxZ + 1) {
 				values[count++] = cell.solvedP;
-				lo = Math.min(lo, cell.solvedP);
-				hi = Math.max(hi, cell.solvedP);
 			}
 		}
-		if (count == 0) {
-			VpsPipeline.BUILDINGS_NO_ROAD_ACCESS.incrementAndGet();
-			return Integer.MIN_VALUE;
+		int[] adjacent = count == values.length ? values : java.util.Arrays.copyOf(values, count);
+		BuildingShift.ShiftDecision decision = BuildingShift.desiredShift(adjacent, component.baseY);
+		switch (decision.reason()) {
+			case NO_ROAD:
+				VpsPipeline.BUILDINGS_NO_ROAD_ACCESS.incrementAndGet();
+				return BuildingShift.DO_NOT_MOVE;
+			case SPAN_TOO_WIDE:
+				VpsPipeline.BUILDINGS_UNSERVED.incrementAndGet();
+				return BuildingShift.DO_NOT_MOVE;
+			default:
+				if (decision.doorParityOdd()) {
+					// B3-4: an odd median means the door aligns to a half block. The
+					// optional third (hard-boundary) solve pass that would force an even
+					// door cell is not run, so count it as a parity fallback.
+					VpsPipeline.DOOR_PARITY_FALLBACK.incrementAndGet();
+				}
+				return decision.shift();
 		}
-		if (hi - lo > 6) { // more than 3 blocks of span: geometrically impossible to serve
-			VpsPipeline.BUILDINGS_UNSERVED.incrementAndGet();
-			return Integer.MIN_VALUE;
-		}
-		int medianHalf = median(values, count);
-		if ((medianHalf & 1) != 0) {
-			// B3-4: an odd median means the door aligns to a half block. The
-			// optional third (hard-boundary) solve pass that would force an even
-			// door cell is not run, so count it as a parity fallback.
-			VpsPipeline.DOOR_PARITY_FALLBACK.incrementAndGet();
-		}
-		double targetBlocks = medianHalf / 2.0;
-		return (int) Math.round(targetBlocks - component.baseY);
 	}
 
 	private static int clampWorldHeight(List<StructurePiece> pieces, BuildingComponents.Component component, int dy, int minY, int maxY) {
@@ -273,12 +269,4 @@ public final class T15Planner {
 				&& Math.abs(a.getSourceZ() - b.getSourceZ()) <= 1;
 	}
 
-	private static int median(int[] values, int count) {
-		if (count <= 0) {
-			return 0;
-		}
-		int[] copy = java.util.Arrays.copyOf(values, count);
-		java.util.Arrays.sort(copy);
-		return copy[copy.length / 2];
-	}
 }

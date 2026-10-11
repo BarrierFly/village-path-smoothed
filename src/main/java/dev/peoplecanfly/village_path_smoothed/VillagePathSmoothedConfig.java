@@ -57,7 +57,14 @@ public final class VillagePathSmoothedConfig {
 		public double hybridWeightDeviation = 8.0;
 		/** Soft-constraint penalty per half-block of |dP| above 1 (cliff escape hatch). */
 		public int stepViolationPenalty = 32;
-		/** Per-cell candidate half-window in half-blocks; automatically reduced for wide slices. */
+		/**
+		 * Per-cell candidate half-window in half-blocks; automatically reduced
+		 * for wide slices. NOTE (review 3 section 3-4): this knob does NOT
+		 * widen the seam between a crossing and its streets any more - the
+		 * seam band extends toward the region on its own. Shrinking it below
+		 * ~4 freezes the region ICM to its seed and can leave shallow interior
+		 * steps, so "bigger is smoother" only holds down to the default.
+		 */
 		public int dpWindowHalfUnits = 16;
 		/** Max slice width solved by the exact arm DP; wider slices/areas go through ICM. */
 		public int maxExactSectionWidth = 4;
@@ -65,10 +72,26 @@ public final class VillagePathSmoothedConfig {
 		public int icmRounds = 4;
 		public boolean allowCutIntoTerrain = true;
 		public String fillMaterial = "STYLE_ROAD";
-		/** Blocks added to the noise-probed height next to RIGID pieces (buildings): vanilla beards terrain toward the building base, the raw noise probe does not know that (< 0 disables). */
+		/** Blocks added to the noise-probed height next to RIGID pieces (buildings): vanilla beards terrain toward the building base, the raw noise probe does not know that (< 0 disables; 0 disables too). */
 		public int beardCompensation = 1;
-		/** Horizontal radius (Chebyshev, blocks) of the beard zone around building footprints. */
+		/** Horizontal radius (Chebyshev, blocks) of the beard zone around building footprints (step kernel mode only). */
 		public int beardRadius = 4;
+		/**
+		 * Shape of the beard compensation: "step" = the legacy flat +1 inside
+		 * beardRadius (default), "beard_thin" = the real vanilla closed form
+		 * (review 3 P1-B), whose blocks-per-density scale is
+		 * beardKernelBlocksPerDensity. Keep "step" until that factor has been
+		 * calibrated in game (review 3 section 7 T6): the closed form cuts
+		 * terrain above the building base plane, which changes the look.
+		 */
+		public String beardKernel = "step";
+		/**
+		 * Blocks of surface shift per unit of vanilla beard density
+		 * (beard_thin kernel mode only). NOT calibrated yet: 1.0 is a guess
+		 * consistent with the old +1 step at the field's peak; review 3
+		 * section 2.4 leaves the true density-to-blocks conversion to T6.
+		 */
+		public double beardKernelBlocksPerDensity = 1.0;
 		public String roadPiecesRegex = "^minecraft:village/([a-z_]+)/(streets|terminators)/";
 		public RoadSurfaceDetection roadSurfaceDetection = RoadSurfaceDetection.TEMPLATE_Y0_SOLID;
 	}

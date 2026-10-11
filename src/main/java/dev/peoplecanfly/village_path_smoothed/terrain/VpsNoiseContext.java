@@ -84,6 +84,10 @@ public final class VpsNoiseContext implements VpsProbe {
 		if (raw == VpsGenContext.NOISE_UNAVAILABLE || this.beardBoxes == null || config.roadSmoothing.beardCompensation <= 0) {
 			return raw;
 		}
+		if ("beard_thin".equals(config.roadSmoothing.beardKernel)) {
+			return BeardCompensation.compensateBeardThin(raw, this.beardBoxes, x, raw, z,
+					config.roadSmoothing.beardKernelBlocksPerDensity);
+		}
 		boolean near = BeardCompensation.isNearBuilding(this.beardBoxes, x, z, config.roadSmoothing.beardRadius);
 		return BeardCompensation.compensate(raw, near, config.roadSmoothing.beardCompensation);
 	}

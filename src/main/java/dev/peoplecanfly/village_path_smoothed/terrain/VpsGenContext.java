@@ -29,7 +29,9 @@ import java.util.concurrent.atomic.AtomicLong;
  *  - the noise base height everywhere else (a pure function of x/z, so the
  *    single solve of a village stays consistent no matter which chunk of the
  *    village triggers it). Unlike the heightmap the noise height ignores
- *    carved terrain, but it does include structure bearding and water surfaces.
+ *    carved terrain and structure bearding (the probe's BeardifierMarker is a
+ *    no-op - the beard compensation below exists for exactly that reason),
+ *    but it does include water surfaces.
  *
  * Heights returned by {@link #surfaceTopY} are "first air above surface",
  * matching vanilla GravityProcessor's reading; the vanilla road block sits at
@@ -40,7 +42,7 @@ public final class VpsGenContext implements VpsProbe {
 	public final ChunkGenerator generator;
 	public final RandomState randomState;
 	public final ChunkPos center;
-	/** {minX, maxX, minZ, maxZ} of RIGID piece boxes (beard sources), used to compensate the noise probe next to buildings. */
+	/** {minX, maxX, minZ, maxZ, minY, groundLevelDelta} of RIGID piece boxes (beard sources), used to compensate the noise probe next to buildings. */
 	private int[][] beardBoxes;
 
 	private VpsGenContext(WorldGenLevel level, ChunkGenerator generator, RandomState randomState, ChunkPos center, int[][] beardBoxes) {
@@ -164,16 +166,21 @@ public final class VpsGenContext implements VpsProbe {
 	 * {@link #NOISE_UNAVAILABLE} when no RandomState is available.
 	 *
 	 * The raw {@code getBaseHeight} evaluates noise with a no-op beardifier,
-	 * while real terrain next to RIGID pieces (buildings) is bearded upward by
-	 * roughly one block; without the compensation road segments anchored on
-	 * the raw noise sink by that block next to buildings (too small for a
-	 * kerb: bare dirt walls, report "parts of roads sit 1 block low"). Only
-	 * raises, never lowers; disabled with beardCompensation < 0.
+	 * so it does NOT see the terrain adaptation around RIGID pieces
+	 * (buildings) at all. Two approximations exist (see BeardCompensation):
+	 * the legacy flat +1 step inside beardRadius, and the real beard_thin
+	 * closed form behind the beardKernel switch - the latter is not enabled
+	 * by default because its density-to-blocks factor still needs in-game
+	 * calibration (review 3 section 2.4 / 7-T6).
 	 */
 	public int noiseSurfaceTopY(int x, int z, VillagePathSmoothedConfig config) {
 		int raw = noiseSurfaceTopY(x, z);
 		if (raw == NOISE_UNAVAILABLE || this.beardBoxes == null || config.roadSmoothing.beardCompensation <= 0) {
 			return raw;
+		}
+		if ("beard_thin".equals(config.roadSmoothing.beardKernel)) {
+			return BeardCompensation.compensateBeardThin(raw, this.beardBoxes, x, raw, z,
+					config.roadSmoothing.beardKernelBlocksPerDensity);
 		}
 		boolean near = BeardCompensation.isNearBuilding(this.beardBoxes, x, z, config.roadSmoothing.beardRadius);
 		return BeardCompensation.compensate(raw, near, config.roadSmoothing.beardCompensation);

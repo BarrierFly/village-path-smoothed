@@ -12,7 +12,6 @@ import dev.peoplecanfly.village_path_smoothed.compat.VpsCompat;
 import dev.peoplecanfly.village_path_smoothed.duck.StructureStartVpsAccess;
 import dev.peoplecanfly.village_path_smoothed.terrain.VpsGenContext;
 import net.minecraft.server.MinecraftServer;
-import net.minecraft.util.RandomSource;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.LevelHeightAccessor;
 import net.minecraft.world.level.WorldGenLevel;
@@ -49,8 +48,19 @@ public final class VpsPipeline {
 	public static final AtomicLong BUILDINGS_NO_ROAD_ACCESS = new AtomicLong();
 	public static final AtomicLong BUILDINGS_UNSERVED = new AtomicLong();
 	public static final AtomicLong OVERLAP_GUARDS = new AtomicLong();
-	public static final AtomicLong SOLVE_NON_CONVERGED = new AtomicLong();
 	public static final AtomicLong DOOR_PARITY_FALLBACK = new AtomicLong();
+	// Review 3 P0-A: the solver's residual diagnostics. Everything here used to
+	// be silent: contradictory candidate bands quietly kept the first-pass value
+	// and leftover |dP|>1 edges were never looked at again. The dead
+	// SOLVE_NON_CONVERGED counter (declared, never incremented) is replaced by
+	// these.
+	public static final AtomicLong SOLVE_CANDIDATE_CONTRADICTIONS = new AtomicLong();
+	public static final AtomicLong SOLVE_STEP_VIOLATIONS = new AtomicLong();
+	public static final AtomicLong SOLVE_WORST_STEP = new AtomicLong();
+	// Review 3 section 1: a village whose street widths all exceed
+	// maxExactSectionWidth decomposes into ONE giant region - arms = 0 - and the
+	// exact arm DP plus the seam phase never run for it. Worth watching.
+	public static final AtomicLong VILLAGES_WITHOUT_ARMS = new AtomicLong();
 	public static final AtomicLong BUILDING_FLOATING = new AtomicLong();
 	public static final AtomicLong BUILDING_BURIED = new AtomicLong();
 	public static final AtomicLong DEBUG_VILLAGER_BRAIN_SKIPS = new AtomicLong();
@@ -211,7 +221,15 @@ public final class VpsPipeline {
 		VpsGenContext ctx = VpsGenContext.capture(level, generator, triggerChunk);
 		RoadNetwork network = RoadCollector.collect(start, ctx, config);
 		if (config.roadSmoothing.enabled) {
-			RoadSmoother.solve(network, paramsFor(config));
+			RoadSmoother.SolveStats stats = RoadSmoother.solve(network, paramsFor(config));
+			SOLVE_CANDIDATE_CONTRADICTIONS.addAndGet(stats.candidateContradictions());
+			SOLVE_STEP_VIOLATIONS.addAndGet(stats.residualViolations());
+			SOLVE_WORST_STEP.accumulateAndGet(stats.worstStep(), Math::max);
+		}
+		if (!network.cells.isEmpty() && network.arms.isEmpty()) {
+			VILLAGES_WITHOUT_ARMS.incrementAndGet();
+			VillagePathSmoothed.LOGGER.warn("[VPS] village at {}: {} road cells but 0 arms - every street is wider than maxExactSectionWidth ({}), the whole village degrades into {} giant region(s) and the exact arm DP never runs",
+					start.getChunkPos(), network.cells.size(), config.roadSmoothing.maxExactSectionWidth, network.regions.size());
 		}
 		VpsVillageSolution solution = new VpsVillageSolution(network);
 		solution.solved = true;

@@ -186,4 +186,64 @@ public class BeardReferenceTest {
 		assertEquals("one block for any number of houses", 1, mod);
 		assertTrue("vanilla adds them up", Math.abs(vanilla) > Math.abs(beardThin(HOUSE, 114, BASE, PROBE_Z)));
 	}
+
+	// ------------------------------------------------------------------
+	// the production beard_thin closed form (review 3 P1-B)
+	// ------------------------------------------------------------------
+
+	/** Rows now carry {minX, maxX, minZ, maxZ, minY, groundLevelDelta}. */
+	private static int[][] house6() {
+		return new int[][]{{HOUSE[0], HOUSE[1], HOUSE[2], HOUSE[3], HOUSE[4], 0}};
+	}
+
+	@Test
+	public void productionClosedFormMatchesTheReference() {
+		for (int m = 0; m <= 12; m++) {
+			for (int p = -12; p <= 11; p += 2) {
+				double reference = beardThin(HOUSE, PROBE_X - m, BASE + p, PROBE_Z);
+				double production = BeardCompensation.beardThinDensity(house6(), PROBE_X - m, BASE + p, PROBE_Z);
+				assertEquals("m=" + m + " p=" + p, reference, production, 1e-12);
+			}
+		}
+	}
+
+	@Test
+	public void productionClosedFormRespectsTheGroundLevelDelta() {
+		int[] samePlane = {HOUSE[0], HOUSE[1], HOUSE[2], HOUSE[3], HOUSE[4] - 2, 2};
+		// minY - 2 plus groundLevelDelta + 2 is the same base plane
+		assertEquals(BeardCompensation.beardThinDensity(house6(), PROBE_X - 2, BASE, PROBE_Z),
+				BeardCompensation.beardThinDensity(new int[][]{samePlane}, PROBE_X - 2, BASE, PROBE_Z), 1e-12);
+		// and a real base shift moves the mirror plane with it: base 61 at y=60
+		// is p = -1, which the delta-0 reference only sees at y = 59
+		int[] raised = {HOUSE[0], HOUSE[1], HOUSE[2], HOUSE[3], HOUSE[4], 1};
+		assertEquals(beardThin(HOUSE, PROBE_X - 2, BASE - 1, PROBE_Z),
+				BeardCompensation.beardThinDensity(new int[][]{raised}, PROBE_X - 2, BASE, PROBE_Z), 1e-12);
+	}
+
+	@Test
+	public void blockConversionKeepsTheVanillaSign() {
+		// above the base plane the density is negative: the surface is cut
+		assertTrue(BeardCompensation.beardThinDensity(house6(), PROBE_X, BASE, PROBE_Z) < 0.0);
+		assertTrue("the conversion lowers above the base",
+				BeardCompensation.compensateBeardThin(100, house6(), PROBE_X, BASE, PROBE_Z, 1.0) < 100);
+		assertTrue("and fills below the base",
+				BeardCompensation.compensateBeardThin(100, house6(), PROBE_X, BASE - 1, PROBE_Z, 1.0) > 100);
+		// outside the kernel support nothing moves; a non-positive factor disables
+		assertEquals(100, BeardCompensation.compensateBeardThin(100, house6(), PROBE_X - 12, BASE, PROBE_Z, 1.0));
+		assertEquals(100, BeardCompensation.compensateBeardThin(100, house6(), PROBE_X, BASE, PROBE_Z, 0.0));
+		assertEquals(100, BeardCompensation.compensateBeardThin(100, null, PROBE_X, BASE, PROBE_Z, 1.0));
+	}
+
+	@Test
+	public void blockConversionIsDeterministicAndSumsOverHouses() {
+		int[][] two = {{HOUSE[0], HOUSE[1], HOUSE[2], HOUSE[3], HOUSE[4], 0},
+				{118, 128, 200, 210, 60, 0}};
+		double single = BeardCompensation.beardThinDensity(house6(), 114, BASE, PROBE_Z);
+		double both = BeardCompensation.beardThinDensity(two, 114, BASE, PROBE_Z);
+		assertEquals(2 * single, both, 1e-12);
+		for (int i = 0; i < 10; i++) {
+			assertEquals(BeardCompensation.compensateBeardThin(100, two, 114, BASE, PROBE_Z, 2.5),
+					BeardCompensation.compensateBeardThin(100, two, 114, BASE, PROBE_Z, 2.5));
+		}
+	}
 }

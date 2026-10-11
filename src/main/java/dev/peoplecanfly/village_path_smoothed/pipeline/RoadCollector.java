@@ -56,16 +56,19 @@ public final class RoadCollector {
 		Map<Long, RoadCell> cellsByPos = new HashMap<>();
 		int pieceCount = 0;
 
-		// RIGID piece boxes are the beard sources: vanilla raises the noise
+		// RIGID piece boxes are the beard sources: vanilla adapts the noise
 		// terrain toward their bases, so the noise probe must be compensated
-		// near them (BeardifierMarker is a no-op inside getBaseHeight)
+		// near them (BeardifierMarker is a no-op inside getBaseHeight). The
+		// vertical fields (minY + groundLevelDelta) match what vanilla
+		// Beardifier#compute uses for p = y - (minY + groundLevelDelta);
+		// review 3 P1-B needs them for the beard_thin closed form.
 		List<int[]> beardBoxes = new ArrayList<>();
 		for (StructurePiece piece : start.getPieces()) {
 			if (piece instanceof PoolElementStructurePiece poolPiece
 					&& poolPiece.getElement() instanceof SinglePoolElement
 					&& poolPiece.getElement().getProjection() == net.minecraft.world.level.levelgen.structure.pools.StructureTemplatePool.Projection.RIGID) {
 				BoundingBox box = piece.getBoundingBox();
-				beardBoxes.add(new int[]{box.minX(), box.maxX(), box.minZ(), box.maxZ()});
+				beardBoxes.add(new int[]{box.minX(), box.maxX(), box.minZ(), box.maxZ(), box.minY(), poolPiece.getGroundLevelDelta()});
 			}
 		}
 		ctx.setBeardBoxes(beardBoxes.toArray(new int[0][]));
@@ -256,10 +259,5 @@ public final class RoadCollector {
 				&& poolPiece.getElement() instanceof SinglePoolElement singleElement
 				&& ((SinglePoolElementVpsAccess) singleElement).village_path_smoothed$getTemplateLocation() != null
 				&& patternFor(config).matcher(((SinglePoolElementVpsAccess) singleElement).village_path_smoothed$getTemplateLocation()).find();
-	}
-
-	/** Unused but handy for tests/debug: the bounding box a piece occupies in world space. */
-	public static BoundingBox pieceBox(PoolElementStructurePiece piece) {
-		return piece.getBoundingBox();
 	}
 }

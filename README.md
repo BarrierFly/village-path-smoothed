@@ -98,11 +98,13 @@ ModMenu is installed) but optional. / 无必装依赖；装有 ModMenu 时会出
 | `roadSmoothing.roadShapeStage` | `T1_5` | `T1_5` solves the profile (and shifts buildings) during structure assembly; `T5` is the legacy feature-placement solve with no building move (fallback / A-B comparison) |
 | `roadSmoothing.maxBuildingShift` | `32` | cap on the building component vertical shift in blocks (`0` = unlimited, only the world height clamps) |
 | `roadSmoothing.buildingGuard` | `true` | diagnostic only: count floating/buried moved components (`/vps stats`); never repairs and never reverts a shift |
-| `roadSmoothing.beardCompensation` | `1` | legacy: blocks added to the noise probe next to buildings. With `roadShapeStage=T1_5` the buildings follow the road instead, so this is only a residual correction of the noise reference (`< 0` disables) |
-| `roadSmoothing.beardRadius` | `4` | legacy: horizontal radius of that beard zone around building footprints |
+| `roadSmoothing.beardCompensation` | `1` | legacy: blocks added to the noise probe next to buildings. With `roadShapeStage=T1_5` the buildings follow the road instead, so this is only a residual correction of the noise reference (`< 0` or `0` disables, in both kernel modes) |
+| `roadSmoothing.beardRadius` | `4` | legacy: horizontal radius of that beard zone around building footprints (step kernel mode only) |
+| `roadSmoothing.beardKernel` | `step` | shape of the beard compensation: `step` = flat +1 inside `beardRadius`; `beard_thin` = the real vanilla closed form (cuts above the building base plane, fills below) - experimental until the density-to-blocks factor is calibrated in game |
+| `roadSmoothing.beardKernelBlocksPerDensity` | `1.0` | `beard_thin` mode only: surface blocks per unit of vanilla beard density; not calibrated yet (review 3 section 7 T6) |
 | `roadSmoothing.allowCutIntoTerrain` | `true` | lets the road dig into slopes (sunken roads) |
 | `roadSmoothing.stepViolationPenalty` | `32` | soft-constraint penalty per half block of excess drop (cliff escape hatch) |
-| `roadSmoothing.dpWindowHalfUnits` | `16` | per-cell candidate half window in half blocks (auto-shrunk for wide slices) |
+| `roadSmoothing.dpWindowHalfUnits` | `16` | per-cell candidate half window in half blocks (auto-shrunk for wide slices); does NOT affect how much height difference a street/crossing seam can absorb - shrinking it below ~4 freezes the region solver to its seed and can leave shallow interior steps |
 | `roadSmoothing.maxExactSectionWidth` | `4` | slice width solved by the exact DP; wider areas use iterative minimisation |
 | `roadSmoothing.roadSurfaceDetection` | `TEMPLATE_Y0_SOLID` | `TEMPLATE_Y0_ROAD_MATERIAL` only accepts the style's own road block |
 | `roadSmoothing.maxFillLayers` | `8` | max consecutive fill layers when the road sits above the ground; beyond it the cell becomes a bridge deck instead (`< 0` = unlimited) |
@@ -117,7 +119,7 @@ ModMenu is installed) but optional. / 无必装依赖；装有 ModMenu 时会出
 
 - `/vps world on|off|show` — enable / disable / inspect road smoothing for the world the executor is in (per-world switch)
 - `/vps config show|reload` — print / reload the config
-- `/vps stats` — villages solved, average solve time, blocks placed, probe/write diagnostics
+- `/vps stats` — villages solved, average solve time, blocks placed, probe/write diagnostics, solver residual diagnostics (candidate contradictions, residual step violations, villages that degenerated into a single region)
 - `/vps dump [radius]` — rebuild + re-solve the road network of villages near
   you and print cell/arm/region counts (diagnostics)
 - `/vps debug villagerbrain [on|off]` — debug: toggle whether villagers skip

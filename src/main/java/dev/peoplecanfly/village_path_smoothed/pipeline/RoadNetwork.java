@@ -208,25 +208,6 @@ public final class RoadNetwork {
 		return toSortedArray(out);
 	}
 
-	private static int[] collectComponent(int start, boolean[] visited, int[][] neighbors) {
-		Deque<Integer> stack = new ArrayDeque<>();
-		List<Integer> out = new ArrayList<>();
-		stack.push(start);
-		visited[start] = true;
-		while (!stack.isEmpty()) {
-			int i = stack.pop();
-			out.add(i);
-			for (int dir = 0; dir < 4; dir++) {
-				int j = neighbors[i][dir];
-				if (j >= 0 && !visited[j]) {
-					visited[j] = true;
-					stack.push(j);
-				}
-			}
-		}
-		return toSortedArray(out);
-	}
-
 	private static int[] toSortedArray(List<Integer> values) {
 		int[] arr = new int[values.size()];
 		for (int i = 0; i < arr.length; i++) {

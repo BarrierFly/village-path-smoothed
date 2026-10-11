@@ -88,7 +88,7 @@ public final class RoadWriter {
 				} else {
 					VpsPipeline.SCAFFOLD_DRY.incrementAndGet();
 				}
-				placeScaffolding(cell, ctx, x, z, topY, crossing, config);
+				placeScaffolding(cell, ctx, x, z, topY, waterAtWt, config);
 				VpsPipeline.SCAFFOLDS_PLACED.incrementAndGet();
 				return;
 			}
@@ -276,6 +276,9 @@ public final class RoadWriter {
 	}
 
 	private static void placeScaffolding(RoadCell cell, VpsGenContext ctx, int x, int z, int topY, boolean waterlogged, VillagePathSmoothedConfig config) {
+		// waterlogged = water at the scaffold block itself; the caller used to
+		// pass the wider crossing predicate here, over-waterlogging scaffolds
+		// whose water is only below (review 3 F8-1)
 		int wt = topY - 1; // vanilla puts the planks at the water surface
 		BlockPos belowPos = new BlockPos(x, wt - 1, z);
 		BlockState below = ctx.blockState(x, wt - 1, z);

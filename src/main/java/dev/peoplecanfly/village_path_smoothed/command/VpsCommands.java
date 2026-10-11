@@ -186,6 +186,7 @@ public final class VpsCommands {
 		return String.format(
 				"[VPS] villages solved: %d (%.2f ms avg), road cells written: %d, kerbs: %d, railings: %d, walls: %d, scaffolds: %d (water-self %d / water-below %d / dry %d)"
 						+ ", probe skips: %d, floor-garbage probes: %d, clamped writes: %d, fallback re-anchors: %d, over-budget cells: %d"
+						+ ", solve contradictions: %d, step violations: %d (worst %d), villages without arms: %d"
 						+ ", T1.5 applied: %d (no-server %d), building components: %d, shifted: %d, unserved: %d, no-road: %d, overlap guards: %d, floating: %d, buried: %d",
 				solved,
 				solved > 0 ? nanos / 1_000_000.0 / solved : 0.0,
@@ -202,6 +203,10 @@ public final class VpsCommands {
 				RoadWriter.CLAMPED_WRITES.get(),
 				RoadWriter.FALLBACK_REANCHORS.get(),
 				RoadWriter.OVER_BUDGET_CELLS.get(),
+				VpsPipeline.SOLVE_CANDIDATE_CONTRADICTIONS.get(),
+				VpsPipeline.SOLVE_STEP_VIOLATIONS.get(),
+				VpsPipeline.SOLVE_WORST_STEP.get(),
+				VpsPipeline.VILLAGES_WITHOUT_ARMS.get(),
 				VpsPipeline.T15_APPLIED.get(),
 				VpsPipeline.T15_NO_SERVER.get(),
 				VpsPipeline.BUILDING_COMPONENTS.get(),

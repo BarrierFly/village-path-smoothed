@@ -58,8 +58,32 @@ import java.util.Map;
  * {@link SolveStats} instead of staying silent.
  */
 public final class RoadSmoother {
-	/** Upper bound on enumerated states per slice before the DP window shrinks. */
-	private static final int STATE_BUDGET = 30_000;
+	/**
+	 * Upper bound on enumerated states per slice before the DP window shrinks.
+	 *
+	 * <p>This is the single largest cost knob in the mod. Every slice of every
+	 * arm pays O(states * values) for the forward transform and again for the
+	 * backtrack, and both scale with the budget raised to the slice width, so a
+	 * village pays it hundreds of times. At the old value of 30_000 a 3-wide
+	 * street enumerates 31^3 = 29_791 states per slice - tens of millions of
+	 * operations per slice once the transform and the backtrack are counted -
+	 * which is what made village generation look like a hang rather than a
+	 * slowdown.
+	 *
+	 * <p>25^3 gives a 3-wide slice 15_625 states, a 1.9x cut against the old
+	 * budget, and the strided walk in {@link #transformMinPlus} takes another
+	 * ~2.7x off what is left (see there). Going lower is not free, and the
+	 * binding constraint is measured, not guessed: {@code RoadSmootherTest}
+	 * probe M2 - a street clamped between two junction regions across a terrace
+	 * wall - needs a candidate band at least 19 half units wide to reconcile the
+	 * two seams, and fails with violating edges at 18 (budget 6_000) while
+	 * passing at 20 (budget 8_000). Sitting one unit above that boundary would
+	 * buy a further 2x at the cost of a configuration the review-4 design is
+	 * specifically built around, so 25 is kept instead: six units of headroom,
+	 * still a 1.9x state cut. Widen it back towards 31_000 only together with
+	 * evidence that the M2 topology no longer occurs.
+	 */
+	private static final int STATE_BUDGET = 15_625;
 
 public record SolveParams(
 		Objective objective,
@@ -648,6 +672,11 @@ public record SolveParams(
 	 * Source positions are eliminated one by one; each elimination introduces
 	 * the target position it is coupled with. Intermediate domains stay the size
 	 * of one slice's state space, so the whole transform is O(width * states * values).
+	 *
+	 * <p>The inner sweep over {@code v} walks the flat array with a fixed stride
+	 * instead of re-encoding the mixed-radix index for every candidate value.
+	 * That re-encode was the dominant cost of the entire solve: it turned the
+	 * elimination step from O(states * values) into O(states * values * width).
 	 */
 	private static long[] transformMinPlus(long[] g, int[][] candS, int[][] candT, long[][][] kernels, int[] aligned) {
 		int w = candS.length;
@@ -662,6 +691,7 @@ public record SolveParams(
 		int[] tDimSlot = new int[2 * w]; // slot of the t dim introduced per position, -1
 		Arrays.fill(tDimSlot, -1);
 		int nextSlot = w;
+		long[] strides = new long[2 * w];
 
 		for (int pos = 0; pos < w; pos++) {
 			int tPos = aligned[pos];
@@ -675,8 +705,18 @@ public record SolveParams(
 			}
 			tDimSlot[pos] = slot;
 
-			long[] out = new long[(int) sizeOf(outDims)];
+			// Flat-index strides of the CURRENT domain: encodeMixedRadix sums
+			// coords[i] * strides[i], so holding every coordinate but coords[pos]
+			// fixed and sweeping v moves the index by exactly v * strides[pos].
+			strides[2 * w - 1] = 1;
+			for (int i = 2 * w - 2; i >= 0; i--) {
+				strides[i] = strides[i + 1] * dims[i + 1];
+			}
+			long step = strides[pos];
+
 			long outSize = sizeOf(outDims);
+			long[] out = new long[(int) outSize];
+			long[][] kernel = kernels[pos];
 			for (long outIdx = 0; outIdx < outSize; outIdx++) {
 				decodeMixedRadix(outDims, outIdx, coords);
 				int tValue = slot >= 0 ? coords[slot] : 0;
@@ -685,16 +725,20 @@ public record SolveParams(
 				if (slot >= 0) {
 					coords[slot] = 0;
 				}
+				// outDims[pos] is 1, so the decode above already left coords[pos]
+				// at 0 and the base index is complete without touching it
+				long base = 0;
+				for (int i = 0; i < 2 * w; i++) {
+					base += coords[i] * strides[i];
+				}
 				long best = Long.MAX_VALUE;
 				for (int v = 0; v < dims[pos]; v++) {
-					coords[pos] = v;
-					long k = kernels[pos] != null ? kernels[pos][v][tValue] : 0L;
-					long value = m[(int) encodeMixedRadix(dims, coords)] + k;
+					long k = kernel != null ? kernel[v][tValue] : 0L;
+					long value = m[(int) (base + v * step)] + k;
 					if (value < best) {
 						best = value;
 					}
 				}
-				coords[pos] = 0;
 				out[(int) outIdx] = best;
 			}
 			dims = outDims;
@@ -726,6 +770,10 @@ public record SolveParams(
 	/**
 	 * Argmin over source states of [ G(s) + K(s, fixed target state) ], with
 	 * per-step argmin tables so the predecessor state can be reconstructed.
+	 *
+	 * <p>Same strided walk as {@link #transformMinPlus}: the candidate sweep
+	 * over {@code v} advances the flat index by {@code strides[pos]} instead of
+	 * re-encoding the whole mixed-radix index once per value.
 	 */
 	private static int backtrackPredecessor(long[] g, int[][] candS, int[][] candT, int tState, long[][][] kernels, int[] aligned) {
 		int w = candS.length;
@@ -739,6 +787,7 @@ public record SolveParams(
 		}
 		long[] m = g;
 		int[] coords = new int[w];
+		long[] strides = new long[w];
 		int[][] argmins = new int[w][];
 		int[][] argminDims = new int[w][];
 
@@ -749,27 +798,38 @@ public record SolveParams(
 			int tPos = aligned[pos];
 			int tValue = tPos >= 0 ? tIndices[tPos] : 0;
 
-			long[] out = new long[(int) sizeOf(outDims)];
-			argmins[pos] = new int[out.length];
-			argminDims[pos] = outDims;
+			strides[w - 1] = 1;
+			for (int i = w - 2; i >= 0; i--) {
+				strides[i] = strides[i + 1] * dims[i + 1];
+			}
+			long step = strides[pos];
+
 			long outSize = sizeOf(outDims);
+			long[] out = new long[(int) outSize];
+			int[] argmin = new int[(int) outSize];
+			long[][] kernel = kernels[pos];
 			for (long outIdx = 0; outIdx < outSize; outIdx++) {
 				decodeMixedRadix(outDims, outIdx, coords);
+				// outDims[pos] is 1, so the decode already left coords[pos] at 0
+				long base = 0;
+				for (int i = 0; i < w; i++) {
+					base += coords[i] * strides[i];
+				}
 				long best = Long.MAX_VALUE;
 				int bestV = 0;
 				for (int v = 0; v < dims[pos]; v++) {
-					coords[pos] = v;
-					long k = kernels[pos] != null ? kernels[pos][v][tValue] : 0L;
-					long value = m[(int) encodeMixedRadix(dims, coords)] + k;
+					long k = kernel != null ? kernel[v][tValue] : 0L;
+					long value = m[(int) (base + v * step)] + k;
 					if (value < best) {
 						best = value;
 						bestV = v;
 					}
 				}
-				coords[pos] = 0;
 				out[(int) outIdx] = best;
-				argmins[pos][(int) outIdx] = bestV;
+				argmin[(int) outIdx] = bestV;
 			}
+			argmins[pos] = argmin;
+			argminDims[pos] = outDims;
 			dims = outDims;
 			m = out;
 		}

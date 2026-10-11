@@ -54,10 +54,20 @@ public final class VpsPlacementContext {
 	 * The suppression decision for one block going through the processor chain.
 	 * The mask lookup only happens while a context is live, so the pass-through
 	 * path costs one thread-local read and nothing else.
+	 *
+	 * <p>The layer test runs before the mask lookup and before the counters.
+	 * {@link PlacementPolicy#decide} short-circuits on it too, but by then this
+	 * method has already paid a hash lookup on the road mask and a contended
+	 * {@link java.util.concurrent.atomic.AtomicLong} increment - and this runs
+	 * for every block of every piece the start places. The rule itself still
+	 * lives in {@link PlacementPolicy#isRoadLayer} so there is exactly one copy.
 	 */
 	public static PlacementPolicy.Decision decide(int templateY, int worldX, int worldZ) {
 		RoadNetwork network = NETWORK.get();
 		if (network == null) {
+			return PlacementPolicy.Decision.PASS_THROUGH;
+		}
+		if (!PlacementPolicy.isRoadLayer(templateY)) {
 			return PlacementPolicy.Decision.PASS_THROUGH;
 		}
 		boolean claimed = network.cellAt(worldX, worldZ) >= 0;

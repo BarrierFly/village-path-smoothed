@@ -35,6 +35,23 @@ public final class PlacementPolicy {
 	}
 
 	/**
+	 * Is this template layer one the mod can ever own? y != 0 is decoration or
+	 * terrain the gravity processor also carries (street lamps are separate
+	 * pieces and never reach here); only the road layer is suppressed, so a
+	 * future template with more layers keeps its content.
+	 *
+	 * <p>Split out of {@link #decide} so the hot caller can reject the layer
+	 * before it pays for a mask lookup or a diagnostic counter. Keeping the rule
+	 * here rather than inlining {@code templateY != 0} at the call site is what
+	 * stops the two copies from drifting apart - the call site is on the
+	 * per-block processor path, where a stale duplicate would either suppress
+	 * decoration or pay for lookups it never uses.
+	 */
+	public static boolean isRoadLayer(int templateY) {
+		return templateY == 0;
+	}
+
+	/**
 	 * @param contextActive false when no village is being placed on this thread,
 	 *        i.e. a non-village structure or a world with the switch off
 	 * @param templateY the block's y inside the piece template, before any
@@ -46,11 +63,7 @@ public final class PlacementPolicy {
 			// not ours: zero behaviour change, not even a mask lookup
 			return Decision.PASS_THROUGH;
 		}
-		// y != 0 is decoration or terrain the gravity processor also carries
-		// (street lamps are separate pieces and never reach here); only the road
-		// layer is suppressed, so a future template with more layers keeps its
-		// content
-		if (templateY != 0) {
+		if (!isRoadLayer(templateY)) {
 			return Decision.PASS_THROUGH;
 		}
 		// an unclaimed cell means the probe failed and the cell was dropped from

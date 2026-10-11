@@ -18,6 +18,8 @@ import net.minecraft.world.level.block.state.BlockState;
 import dev.peoplecanfly.village_path_smoothed.VillagePathSmoothed;
 import dev.peoplecanfly.village_path_smoothed.VillagePathSmoothedConfig;
 
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -44,6 +46,17 @@ public final class VpsGenContext implements VpsProbe {
 	public final ChunkPos center;
 	/** {minX, maxX, minZ, maxZ, minY, groundLevelDelta} of RIGID piece boxes (beard sources), used to compensate the noise probe next to buildings. */
 	private int[][] beardBoxes;
+	/**
+	 * Memoised RAW {@code getBaseHeight} results. Outside the +/-1 chunk window
+	 * every road cell falls through to the noise probe, and the collector asks
+	 * for each column up to three times (the height itself plus the two halves
+	 * of the water-column anchor check), so a village pays tens of thousands of
+	 * multi-octave noise evaluations without this. Only the uncompensated value
+	 * is cached: it is a pure function of x/z for a fixed RandomState, while the
+	 * beard compensation layered on top of it depends on {@link #beardBoxes}.
+	 */
+	private final Map<Long, Integer> noiseSurfaceCache = new HashMap<>();
+	private final Map<Long, Boolean> noiseWaterCache = new HashMap<>();
 
 	private VpsGenContext(WorldGenLevel level, ChunkGenerator generator, RandomState randomState, ChunkPos center, int[][] beardBoxes) {
 		this.level = level;
@@ -109,17 +122,36 @@ public final class VpsGenContext implements VpsProbe {
 		return this.level.getHeight(Heightmap.Types.WORLD_SURFACE_WG, x, z);
 	}
 
+	/** Room for the default 20k-cell village cap plus the anchor lookups. */
+	private static final int PROBE_CACHE_LIMIT = 1 << 17;
+
+	/** Packs an x/z column into a cache key. Duplicated from RoadCell (terrain must not import pipeline). */
+	private static long columnKey(int x, int z) {
+		return ((long) x & 0xFFFFFFFFL) | ((long) z << 32);
+	}
+
 	/** Noise-based height; returns {@link #NOISE_UNAVAILABLE} when no RandomState is available. */
 	public int noiseSurfaceTopY(int x, int z) {
 		if (this.randomState == null) {
 			return NOISE_UNAVAILABLE;
 		}
+		long key = columnKey(x, z);
+		Integer cached = this.noiseSurfaceCache.get(key);
+		if (cached != null) {
+			return cached;
+		}
+		int value;
 		try {
-			return this.generator.getBaseHeight(x, z, Heightmap.Types.WORLD_SURFACE_WG, this.level, this.randomState);
+			value = this.generator.getBaseHeight(x, z, Heightmap.Types.WORLD_SURFACE_WG, this.level, this.randomState);
 		} catch (Throwable t) {
 			VillagePathSmoothed.LOGGER.debug("[VPS] noise height probe failed at {} {}", x, z, t);
-			return NOISE_UNAVAILABLE;
+			value = NOISE_UNAVAILABLE;
 		}
+		if (this.noiseSurfaceCache.size() >= PROBE_CACHE_LIMIT) {
+			this.noiseSurfaceCache.clear();
+		}
+		this.noiseSurfaceCache.put(key, value);
+		return value;
 	}
 
 	/**
@@ -133,13 +165,26 @@ public final class VpsGenContext implements VpsProbe {
 		if (this.randomState == null) {
 			return false;
 		}
+		long key = columnKey(x, z);
+		Boolean cached = this.noiseWaterCache.get(key);
+		if (cached != null) {
+			return cached;
+		}
+		boolean hasWater;
 		try {
 			int floor = this.generator.getBaseHeight(x, z, Heightmap.Types.OCEAN_FLOOR_WG, this.level, this.randomState);
-			int surface = this.generator.getBaseHeight(x, z, Heightmap.Types.WORLD_SURFACE_WG, this.level, this.randomState);
-			return surface > floor;
+			// shared with noiseSurfaceTopY, so the surface half is a cache hit on
+			// every column the collector has already asked about
+			int surface = noiseSurfaceTopY(x, z);
+			hasWater = surface > floor;
 		} catch (Throwable t) {
-			return false;
+			hasWater = false;
 		}
+		if (this.noiseWaterCache.size() >= PROBE_CACHE_LIMIT) {
+			this.noiseWaterCache.clear();
+		}
+		this.noiseWaterCache.put(key, hasWater);
+		return hasWater;
 	}
 
 	/**

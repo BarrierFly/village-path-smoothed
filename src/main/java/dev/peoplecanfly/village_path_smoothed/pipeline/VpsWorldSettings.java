@@ -13,10 +13,10 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.world.level.storage.LevelResource;
 
 import java.io.IOException;
+import java.lang.ref.WeakReference;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Collections;
 import java.util.Map;
 import java.util.WeakHashMap;
 
@@ -30,8 +30,31 @@ import java.util.WeakHashMap;
 public final class VpsWorldSettings {
 	private static final String FILE_NAME = VillagePathSmoothed.MOD_ID + ".json";
 	private static final Gson GSON = new GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create();
-	/** One MinecraftServer instance per running world; weak keys drop closed servers. */
-	private static final Map<MinecraftServer, VpsWorldSettings> CACHE = Collections.synchronizedMap(new WeakHashMap<>());
+	/**
+	 * One MinecraftServer instance per running world; weak keys drop closed
+	 * servers. Guarded by its own monitor, which only the first load of a world
+	 * ever takes - see {@link #get}.
+	 */
+	private static final Map<MinecraftServer, VpsWorldSettings> CACHE = new WeakHashMap<>();
+
+	/**
+	 * Lock-free fast path for the worldgen gate.
+	 *
+	 * <p>{@link #get} is called from {@code StructureStart#placeInChunk}, i.e.
+	 * once per chunk per structure on every worldgen worker thread. Routing that
+	 * through a monitor turns the lookup into a lock convoy between the workers
+	 * even though there is normally exactly one server running and its answer
+	 * never changes. This holds the most recent server/answer pair so the steady
+	 * state is a reference compare.
+	 *
+	 * <p>The server is held through a {@link WeakReference} so the fast path
+	 * cannot keep a closed server alive - that job still belongs to the
+	 * WeakHashMap above, and this only avoids its monitor.
+	 */
+	private static volatile ServerAnswer lastAnswer;
+
+	private record ServerAnswer(WeakReference<MinecraftServer> server, VpsWorldSettings settings) {
+	}
 
 	/** The world the create-world screen is about to create, armed when "Create" is pressed. */
 	private record PendingChoice(String worldName, boolean enabled) {
@@ -100,18 +123,36 @@ public final class VpsWorldSettings {
 	}
 
 	public static VpsWorldSettings get(MinecraftServer server) {
+		ServerAnswer fast = lastAnswer;
+		if (fast != null && fast.server().get() == server) {
+			return fast.settings();
+		}
+		return loadLocked(server);
+	}
+
+	/**
+	 * Slow path, taken once per server. The file I/O stays inside the monitor:
+	 * it only happens for a world whose settings have never been read, so no
+	 * worldgen thread ever queues behind a disk read.
+	 */
+	private static VpsWorldSettings loadLocked(MinecraftServer server) {
 		synchronized (CACHE) {
 			VpsWorldSettings settings = CACHE.get(server);
 			if (settings == null) {
 				settings = load(server);
 				CACHE.put(server, settings);
 			}
+			lastAnswer = new ServerAnswer(new WeakReference<>(server), settings);
 			return settings;
 		}
 	}
 
 	public static void save(MinecraftServer server, VpsWorldSettings settings) {
-		CACHE.put(server, settings);
+		synchronized (CACHE) {
+			CACHE.put(server, settings);
+		}
+		// the fast path caches the instance, so it has to follow the replacement
+		lastAnswer = new ServerAnswer(new WeakReference<>(server), settings);
 		write(file(server), settings);
 	}
 

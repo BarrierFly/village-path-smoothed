@@ -120,6 +120,20 @@ public final class T15Planner {
 		// NOT repeated (a second pass would be circular: the road moved, so the
 		// buildings would move, so the road would move); this only corrects the
 		// road, which is what the write stage consumes.
+		//
+		// Nothing moved -> nothing to correct. The re-collect is a full second
+		// RoadCollector#collect plus a full second RoadSmoother#solve, i.e. the
+		// single most expensive thing this planner does, and when `shifted` is
+		// empty every piece box, every beard box and therefore the whole road
+		// network is bit-for-bit what the first pass already produced. Most
+		// villages never shift anything, so this guard removes the second solve
+		// from the common path entirely. It is safe rather than merely cheap:
+		// solution.network already holds the first pass's network, and nothing
+		// between the two passes mutates it when dy == 0 for every component.
+		if (shifted.isEmpty()) {
+			return solution;
+		}
+
 		RoadNetwork resolved = RoadCollector.collect(start, ctx, config);
 		if (config.roadSmoothing.enabled) {
 			RoadSmoother.solve(resolved, VpsPipeline.paramsFor(config));

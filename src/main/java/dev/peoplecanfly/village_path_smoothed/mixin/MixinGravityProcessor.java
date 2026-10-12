@@ -44,7 +44,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  */
 @Mixin(GravityProcessor.class)
 public abstract class MixinGravityProcessor {
-	@Inject(method = "processBlock", at = @At("RETURN"))
+	@Inject(method = "processBlock", at = @At("RETURN"), cancellable = true)
 	private static void village_path_smoothed$suppressClaimedRoadLayer(
 			LevelReader level,
 			BlockPos targetPosition,

@@ -60,14 +60,37 @@ public final class T15Planner {
 			LevelHeightAccessor heightAccessor,
 			VillagePathSmoothedConfig config
 	) {
+		// Fix plan v2, R1 precondition (§7.5.4 finding 1): the T1.5 path used to
+		// discard the SolveStats and never touched VILLAGES_SOLVED, so
+		// step violations / worst step / villages solved were dead counters in
+		// every T1.5-solved world (the default stage). Measure and accumulate
+		// here, mirroring VpsPipeline#solveVillage.
+		long begin = System.nanoTime();
+		try {
+			return planInner(start, generator, randomState, templateManager, chunkPos, heightAccessor, config);
+		} finally {
+			VpsPipeline.SOLVE_NANOS.addAndGet(System.nanoTime() - begin);
+		}
+	}
+
+	private static VpsVillageSolution planInner(
+			StructureStart start,
+			ChunkGenerator generator,
+			RandomState randomState,
+			StructureTemplateManager templateManager,
+			ChunkPos chunkPos,
+			LevelHeightAccessor heightAccessor,
+			VillagePathSmoothedConfig config
+	) {
 		VpsNoiseContext ctx = new VpsNoiseContext(generator, randomState, heightAccessor);
 		RoadNetwork network = RoadCollector.collect(start, ctx, config);
 		if (config.roadSmoothing.enabled) {
-			RoadSmoother.solve(network, VpsPipeline.paramsFor(config));
+			VpsPipeline.accumulateSolveStats(RoadSmoother.solve(network, VpsPipeline.paramsFor(config)));
 		}
 		VpsVillageSolution solution = new VpsVillageSolution(network);
 		solution.solved = true;
 		solution.t15Applied = true;
+		VpsPipeline.VILLAGES_SOLVED.incrementAndGet();
 
 		if (!config.roadSmoothing.enabled) {
 			return solution;
@@ -136,7 +159,7 @@ public final class T15Planner {
 
 		RoadNetwork resolved = RoadCollector.collect(start, ctx, config);
 		if (config.roadSmoothing.enabled) {
-			RoadSmoother.solve(resolved, VpsPipeline.paramsFor(config));
+			VpsPipeline.accumulateSolveStats(RoadSmoother.solve(resolved, VpsPipeline.paramsFor(config)));
 		}
 		solution.network = resolved;
 		T15_RESOLVED_AFTER_SHIFT.incrementAndGet();

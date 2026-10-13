@@ -41,11 +41,11 @@ public final class RoadNetwork {
 	/** Region cell index arrays. */
 	public final List<int[]> regions = new ArrayList<>();
 	/**
-	 * Cells that belong to a region core (review 4). The region solver owns the
-	 * reference of exactly these cells; arm cells - including arms that fall back
-	 * to the region solver because their band blew the state budget - keep the
-	 * arm reference computed by {@link RoadReference}, which is what stops a
-	 * fallback arm from being re-flattened against raw terrain.
+	 * Cells that belong to a region core. The region solver owns the seed of
+	 * exactly these cells; arm cells - including arms that fall back to the
+	 * region solver because their band blew the state budget - keep the phase-1
+	 * arm solution, and the ICM re-optimises them from boundary references like
+	 * any other cell.
 	 */
 	public final BitSet regionCells = new BitSet();
 

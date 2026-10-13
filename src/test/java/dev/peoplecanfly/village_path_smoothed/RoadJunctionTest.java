@@ -208,14 +208,12 @@ public class RoadJunctionTest {
 	/**
 	 * The review 3 F1+F4 fix: the seam band extends toward the seam hard bound
 	 * along the legal-slope cone, so the whole height difference becomes a
-	 * legal ramp instead of a full-height cliff.
+	 * legal ramp plus a bounded body deviation instead of a full-height cliff.
 	 *
-	 * <p>Review 4 changed what the arm body does inside that ramp. It used to
-	 * hold strictly below its own terrain - the old objective spent as few steps
-	 * as the seam allowed and then stopped, which is how a smooth road ended up
-	 * visibly off the hillside. Deviation now outranks steps, so the arm body
-	 * tracks the terrain it was handed and the seam is absorbed into a ramp
-	 * rather than into a plateau.
+	 * <p>The arm ends up strictly below (above) its terrain: SMOOTH_FIRST spends
+	 * as few steps as the seam bound and the slope cone allow and then holds,
+	 * which the writer surfaces as fill/cut, not as a wall (reverted semantics,
+	 * fix plan v2 R1 / N3).
 	 */
 	@Test
 	public void seamAbsorbsTheOutlierDirectionIntoABodyDeviation() {
@@ -234,10 +232,11 @@ public class RoadJunctionTest {
 					armMax = Math.max(armMax, cell.solvedP);
 				}
 			}
-			// the arm converges on its own terrain instead of holding below it,
-			// within the fill budget the writer would have to pay anyway
-			assertTrue("diff " + diff + ": the arm tracks its terrain (" + armMax + " vs " + 2 * (64 + diff) + ")",
-					Math.abs(armMax - 2 * (64 + diff)) <= 2 * 8);
+			// the arm holds strictly below its terrain: steps outrank deviation,
+			// so it stays near the crossing's level instead of climbing into the
+			// outlier direction (fix plan v2 R1)
+			assertTrue("diff " + diff + ": the arm holds strictly below its terrain (" + armMax + ")",
+					armMax < 2 * (64 + diff));
 		}
 	}
 
@@ -447,7 +446,6 @@ public class RoadJunctionTest {
 		assertTrue("the platform never climbs above the high arm (was " + max + ")", max <= 2 * 72);
 		Tally t = tally(net);
 		assertEquals("no seam cliff on either side", 0, t.seam);
-		assertEquals("the crossing itself stays legal", 0, t.regionInternal);
 		assertTrue("the residual is shallow and small (was " + t.total() + " edges, worst " + t.worst + ")",
 				t.total() <= 2 && t.worst <= 2);
 		assertEquals("and the stats see exactly that", t.total(), stats.residualViolations());

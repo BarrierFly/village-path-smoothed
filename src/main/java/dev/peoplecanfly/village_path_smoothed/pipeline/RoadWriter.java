@@ -41,7 +41,13 @@ public final class RoadWriter {
 
 	/** Aggregated diagnostic: cells clamped to a dimension bound instead of being written at the solved height. */
 	public static final AtomicLong CLAMPED_WRITES = new AtomicLong();
-	/** Aggregated diagnostic: cells whose target walk surface is beyond any affordable fill/cut and were snapped back onto the real surface with the correct parity. */
+	/**
+	 * Aggregated diagnostic: cells whose solved walk surface is beyond any
+	 * affordable fill/cut. Observation only since fix plan v2 R3 (decision N7):
+	 * the solved height is kept and rendered (bridge deck above the surface,
+	 * tunnel/open cut below), never snapped back onto the real surface. A
+	 * non-zero value means the probe or the solver was off for those columns.
+	 */
 	public static final AtomicLong FALLBACK_REANCHORS = new AtomicLong();
 	/** Aggregated diagnostic: cells whose fill/cut exceeded the configured cap (bridge deck / tunnel). */
 	public static final AtomicLong OVER_BUDGET_CELLS = new AtomicLong();
@@ -177,22 +183,21 @@ public final class RoadWriter {
 			roadTopBlockY = (p - 1) / 2;
 			slab = true;
 		}
-		// ---- fallback re-anchor (A5): only when the target is beyond every
-		// affordable fill/cut (no terrain shaping exists any more, so long
-		// grades are carried by the fill/cut budget; a cell that no budget can
-		// reach snaps back onto the real surface with the CORRECT parity).
-		// Even P -> whole block at topY-1 (walk at topY); odd P -> bottom slab
-		// at topY-1 (walk at topY-0.5). This is the safety net for hidden
-		// carvers / badly distorted noise, and keeps "never dig a trench, never
-		// float a slab" true.
+		// ---- over-budget observation (fix plan v2 R3, decision N7): the writer
+		// is a renderer, not a second solver. A cell whose solved walk surface
+		// is beyond every affordable fill/cut is COUNTED and warned about, and
+		// the solved height is written as-is: above the surface the fill cap
+		// renders it as a bridge deck, below it the clear cap decides tunnel
+		// vs open cut. The old snap onto the real surface is gone - it
+		// manufactured a |dP| >= 2 step against the neighbouring solved cells
+		// (exactly the drop class N1 forbids) to hide a probe error that this
+		// counter now exposes instead.
 		if (config.roadSmoothing.enabled
 				&& RoadWritePolicy.overBudget(p, topY, config.roadSmoothing.maxFillLayers, config.roadSmoothing.maxClearLayers)) {
-			slab = RoadWritePolicy.fallbackSlab(p);
-			roadTopBlockY = topY - 1;
 			FALLBACK_REANCHORS.incrementAndGet();
 			if (!warnedFallbackReanchors) {
 				warnedFallbackReanchors = true;
-				VillagePathSmoothed.LOGGER.warn("[VPS] road cell at {} {} re-anchored: solved walk surface {} is beyond the fill/cut budget (real surface {}); the noise anchor was likely off", x, z, p / 2.0, topY);
+				VillagePathSmoothed.LOGGER.warn("[VPS] road cell at {} {} solved walk surface {} is beyond the fill/cut budget (real surface {}); kept the solved height - observation, not corrected; a non-zero count means the probe or solver was off", x, z, p / 2.0, topY);
 			}
 		}
 		roadTopBlockY = Math.max(ctx.getMinY(), Math.min(ctx.getMaxY(), roadTopBlockY));

@@ -75,21 +75,28 @@ public final class VpsCommands {
 								dump(context.getSource(), IntegerArgumentType.getInteger(context, "radius")))))
 				.then(Commands.literal("debug")
 						.then(Commands.literal("villagerbrain")
-								.then(Commands.literal("on").executes(context -> setVillagerBrainDebug(context.getSource(), true)))
-								.then(Commands.literal("off").executes(context -> setVillagerBrainDebug(context.getSource(), false)))
+								.then(Commands.literal("freeze")
+										.then(Commands.literal("on").executes(context -> setVillagerBrainFreeze(context.getSource(), true, false)))
+										.then(Commands.literal("off").executes(context -> setVillagerBrainFreeze(context.getSource(), false, false))))
+								// G1: the legacy bare on/off are kept for one version and point at the new verb
+								.then(Commands.literal("on").executes(context -> setVillagerBrainFreeze(context.getSource(), true, true)))
+								.then(Commands.literal("off").executes(context -> setVillagerBrainFreeze(context.getSource(), false, true)))
 								.executes(context -> {
-									boolean on = VillagePathSmoothedConfig.get().debug.disableVillagerBrains;
-									context.getSource().sendSystemMessage(Component.literal("[VPS] villager brain disabled: " + on
+									boolean active = VillagePathSmoothedConfig.get().debug.disableVillagerBrains;
+									context.getSource().sendSystemMessage(Component.literal("[VPS] villager freeze: " + (active ? "ACTIVE" : "INACTIVE")
+											+ " - " + (active ? "villagers stand still (brain tick skipped)" : "villagers behave normally")
 											+ " (brain ticks skipped so far: " + VpsPipeline.DEBUG_VILLAGER_BRAIN_SKIPS.get() + ")"));
 									return 1;
 								})));
 	}
 
-	private static int setVillagerBrainDebug(CommandSourceStack source, boolean disabled) {
-		VillagePathSmoothedConfig.get().debug.disableVillagerBrains = disabled;
+	/** G1: unambiguous verbs - the flag freezes villagers, it does not "disable their brains" in either direction. */
+	private static int setVillagerBrainFreeze(CommandSourceStack source, boolean freeze, boolean legacySyntax) {
+		VillagePathSmoothedConfig.get().debug.disableVillagerBrains = freeze;
 		VillagePathSmoothedConfig.save();
-		source.sendSystemMessage(Component.literal("[VPS] villager brain " + (disabled ? "DISABLED (debug)" : "enabled")
-				+ " - applies to every villager tick from now on"));
+		String state = freeze ? "villagers stand still (brain tick skipped)" : "villagers behave normally";
+		String legacyHint = legacySyntax ? " [legacy syntax; use /vps debug villagerbrain freeze " + (freeze ? "on" : "off") + "]" : "";
+		source.sendSystemMessage(Component.literal("[VPS] " + state + " from now on" + legacyHint));
 		return 1;
 	}
 
@@ -185,10 +192,12 @@ public final class VpsCommands {
 		long nanos = VpsPipeline.SOLVE_NANOS.get();
 		return String.format(
 				"[VPS] villages solved: %d (%.2f ms avg), road cells written: %d, kerbs: %d, railings: %d, scaffolds: %d (water-self %d / water-below %d / dry %d)"
-						+ ", probe skips: %d, floor-garbage probes: %d, clamped writes: %d, fallback re-anchors: %d, over-budget cells: %d, surface fallbacks: %d"
-						+ ", solve contradictions: %d, step violations: %d (worst %d), span slices: %d (illegal %d), villages without arms: %d"
+						+ ", probe skips: %d, floor-garbage probes: %d, probe boundary switches: %d, probe mismatch columns: %d"
+						+ ", clamped writes: %d, fallback re-anchors: %d, over-budget cells: %d, surface fallbacks: %d"
+						+ ", solve contradictions: %d, step violations: %d (worst %d), water anchor deviations: %d, villages without arms: %d"
 						+ ", suppressed vanilla road blocks: %d (passed through: %d)"
-						+ ", T1.5 applied: %d (no-server %d), building components: %d, shifted: %d, unserved: %d, no-road: %d, overlap guards: %d, floating: %d, buried: %d",
+						+ ", T1.5 applied: %d (no-server %d), building components: %d, shifted: %d, unserved: %d, no-road: %d, overlap guards: %d, floating: %d, buried: %d"
+						+ ", villager freeze: %s (brain ticks skipped: %d)",
 				solved,
 				solved > 0 ? nanos / 1_000_000.0 / solved : 0.0,
 				VpsPipeline.ROAD_CELLS_WRITTEN.get(),
@@ -200,6 +209,8 @@ public final class VpsCommands {
 				VpsPipeline.SCAFFOLD_DRY.get(),
 				RoadCollector.PROBE_SKIPPED_CELLS.get(),
 				VpsGenContext.FLOOR_GARBAGE_HITS.get(),
+				RoadCollector.PROBE_BOUNDARY_SWITCHES.get(),
+				RoadCollector.PROBE_MISMATCH_COLUMNS.get(),
 				RoadWriter.CLAMPED_WRITES.get(),
 				RoadWriter.FALLBACK_REANCHORS.get(),
 				RoadWriter.OVER_BUDGET_CELLS.get(),
@@ -207,8 +218,7 @@ public final class VpsCommands {
 				VpsPipeline.SOLVE_CANDIDATE_CONTRADICTIONS.get(),
 				VpsPipeline.SOLVE_STEP_VIOLATIONS.get(),
 				VpsPipeline.SOLVE_WORST_STEP.get(),
-				VpsPipeline.SOLVE_SPAN_SLICES.get(),
-				VpsPipeline.SOLVE_ILLEGAL_SPANS.get(),
+				VpsPipeline.WATER_ANCHOR_DEVIATIONS.get(),
 				VpsPipeline.VILLAGES_WITHOUT_ARMS.get(),
 				VpsPipeline.SUPPRESSED_VANILLA_ROAD_BLOCKS.get(),
 				VpsPipeline.SUPPRESSION_PASSED_THROUGH.get(),
@@ -220,6 +230,8 @@ public final class VpsCommands {
 				VpsPipeline.BUILDINGS_NO_ROAD_ACCESS.get(),
 				VpsPipeline.OVERLAP_GUARDS.get(),
 				VpsPipeline.BUILDING_FLOATING.get(),
-				VpsPipeline.BUILDING_BURIED.get());
+				VpsPipeline.BUILDING_BURIED.get(),
+				VillagePathSmoothedConfig.get().debug.disableVillagerBrains ? "ACTIVE" : "INACTIVE",
+				VpsPipeline.DEBUG_VILLAGER_BRAIN_SKIPS.get());
 	}
 }

@@ -18,23 +18,29 @@ public final class RoadCell {
 	public final int x;
 	public final int z;
 	public final String style;
-	/** Vanilla walk surface P0 = 2 * surfaceTopY, probed at collect time. */
-	public final int baseP;
-	/** Water-crossing cell: its walk surface is fixed to the water surface. */
+	/**
+	 * Vanilla walk surface P0 = 2 * surfaceTopY, probed at collect time. The
+	 * deviation objectives measure against this value. Not final only because
+	 * the probe-boundary alignment pass (real-heightmap columns pulling their
+	 * noise-probed neighbours onto the real value) rewrites it before the
+	 * network is solved.
+	 */
+	public int baseP;
+	/**
+	 * Water-crossing cell: the water surface is its PREFERRED walk surface, not
+	 * a fixed anchor. The solver treats it like any other cell (the water
+	 * surface is its baseP, so deviating from it costs deviation), and a
+	 * solution that leaves it for a smoother profile is counted in
+	 * {@code SolveStats#waterAnchorDeviations()}.
+	 */
 	public final boolean anchor;
 	/**
-	 * Reference profile P_ref, in the same half-block units (review 4 section
-	 * 5.3). This is the profile the road is supposed to follow - the terrain
-	 * wherever a legal slope plus the fill/cut budget can afford it, and a level
-	 * span anchored on the piece ends wherever it cannot (canyon, terrace). It
-	 * is what the solver measures deviation against; without it the objective
-	 * has no way to tell "follow a 1-block bump" (review 4 section 3.1) from
-	 * "plunge into a 12-block canyon" (review 4 section 5.2).
-	 *
-	 * <p>Defaults to {@link #baseP} until {@link RoadReference} or the region
-	 * solver fills it in, so a solve that never runs stays correct.
+	 * True when {@link #baseP} came from the real heightmap (the column's chunk
+	 * is inside the reliably readable +/-1 chunk window); false for noise-probed
+	 * columns. Set by {@link RoadCollector} and consumed by the probe-boundary
+	 * alignment pass; purely diagnostic otherwise.
 	 */
-	public int refP;
+	public boolean realHeight;
 	/** Solved walk surface P = 2 * S; equals baseP until the solver runs. */
 	public int solvedP;
 
@@ -45,7 +51,6 @@ public final class RoadCell {
 		this.style = style;
 		this.baseP = baseP;
 		this.anchor = anchor;
-		this.refP = baseP;
 		this.solvedP = baseP;
 	}
 

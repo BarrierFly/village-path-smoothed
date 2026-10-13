@@ -46,6 +46,15 @@ import java.util.regex.Pattern;
 public final class RoadCollector {
 	/** Cells dropped because their height probe failed or read a floor-level garbage value; they stay vanilla. */
 	public static final AtomicLong PROBE_SKIPPED_CELLS = new AtomicLong();
+	/** Fix plan v2 R5.3: 4-adjacency edges whose two ends use different probe calibers (real heightmap vs noise). */
+	public static final AtomicLong PROBE_BOUNDARY_SWITCHES = new AtomicLong();
+	/** Fix plan v2 R5.3: columns rewritten by the boundary alignment pass (distinct cells). */
+	public static final AtomicLong PROBE_MISMATCH_COLUMNS = new AtomicLong();
+	/** Fix plan v2 R5.2: alignment pass iteration cap. */
+	static final int PROBE_ALIGNMENT_ROUNDS = 4;
+
+	private static final int[] DIR_DX = {-1, 1, 0, 0};
+	private static final int[] DIR_DZ = {0, 0, -1, 1};
 
 	private RoadCollector() {
 	}
@@ -108,7 +117,80 @@ public final class RoadCollector {
 			VillagePathSmoothed.LOGGER.warn("[VPS] village at {} has {} road cells (>{}, cap); skipping it", start.getChunkPos(), cellsByPos.size(), max);
 			return RoadNetwork.build(new ArrayList<>(), config.roadSmoothing.maxExactSectionWidth);
 		}
-		return RoadNetwork.build(new ArrayList<>(cellsByPos.values()), config.roadSmoothing.maxExactSectionWidth);
+		List<RoadCell> cells = new ArrayList<>(cellsByPos.values());
+		alignProbeBoundaries(cells);
+		return RoadNetwork.build(cells, config.roadSmoothing.maxExactSectionWidth);
+	}
+
+	/**
+	 * Fix plan v2 R5: one alignment pass over the probed heights, run after all
+	 * pieces are collected and before the network is built.
+	 *
+	 * <p>The +/-1 chunk real-heightmap window cannot be widened (vanilla's
+	 * WorldGenRegion pins reads to the generating step's direct dependencies),
+	 * so a road network mixes both probe calibers: real columns inside the
+	 * window, noise columns outside. The two disagree systematically at the
+	 * boundary (the noise probe misses carvers and structure bearding), and the
+	 * hard caliber switch used to bake a step into the network that the solver
+	 * then had to explain away. Instead, every noise column directly adjacent
+	 * to a real column whose baseP differs by 2 or more half units inherits the
+	 * real value, iterated up to {@value #PROBE_ALIGNMENT_ROUNDS} rounds or
+	 * until nothing changes. Pure - operates on the collected cells only, so it
+	 * is unit tested without Minecraft (ProbeBoundaryAlignmentTest).
+	 *
+	 * <p>On the T1.5 path (VpsNoiseContext) every column is noise-probed, so
+	 * the pass is a no-op there by construction.
+	 *
+	 * @param cells the collected road cells, modified in place; solvedP is kept
+	 *              in sync with baseP until the solver runs
+	 */
+	public static void alignProbeBoundaries(List<RoadCell> cells) {
+		if (cells.isEmpty()) {
+			return;
+		}
+		Map<Long, Integer> index = new HashMap<>();
+		for (int i = 0; i < cells.size(); i++) {
+			index.put(RoadCell.packedXZ(cells.get(i).x, cells.get(i).z), i);
+		}
+		// diagnostic: how many 4-adjacency edges cross the probe caliber boundary
+		for (int i = 0; i < cells.size(); i++) {
+			RoadCell a = cells.get(i);
+			for (int dir = 0; dir < 4; dir++) {
+				int j = index.getOrDefault(RoadCell.packedXZ(a.x + DIR_DX[dir], a.z + DIR_DZ[dir]), -1);
+				if (j > i && cells.get(j).realHeight != a.realHeight) {
+					PROBE_BOUNDARY_SWITCHES.incrementAndGet();
+				}
+			}
+		}
+		boolean[] rewritten = new boolean[cells.size()];
+		for (int round = 0; round < PROBE_ALIGNMENT_ROUNDS; round++) {
+			boolean changed = false;
+			for (int i = 0; i < cells.size(); i++) {
+				RoadCell a = cells.get(i);
+				if (a.realHeight) {
+					continue; // real columns are the truth; they never move
+				}
+				for (int dir = 0; dir < 4; dir++) {
+					int j = index.getOrDefault(RoadCell.packedXZ(a.x + DIR_DX[dir], a.z + DIR_DZ[dir]), -1);
+					if (j < 0) {
+						continue;
+					}
+					RoadCell b = cells.get(j);
+					if (b.realHeight && Math.abs(a.baseP - b.baseP) >= 2) {
+						a.baseP = b.baseP;
+						a.solvedP = b.baseP; // stays in sync until the solver runs
+						if (!rewritten[i]) {
+							rewritten[i] = true;
+							PROBE_MISMATCH_COLUMNS.incrementAndGet();
+						}
+						changed = true;
+					}
+				}
+			}
+			if (!changed) {
+				return;
+			}
+		}
 	}
 
 	private static String styleGroup(java.util.regex.Matcher matcher) {
@@ -215,7 +297,9 @@ public final class RoadCollector {
 				// noise water column (surface above ocean floor)
 				anchor = ctx.noiseHasWaterColumn(x, z);
 			}
-			cellsByPos.put(key, new RoadCell(x, z, style, 2 * surfaceTopY, anchor));
+			RoadCell cell = new RoadCell(x, z, style, 2 * surfaceTopY, anchor);
+			cell.realHeight = ctx.hasRealHeight(x, z);
+			cellsByPos.put(key, cell);
 		}
 	}
 

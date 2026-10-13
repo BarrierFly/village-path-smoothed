@@ -75,9 +75,11 @@ public final class RoadWritePolicy {
 	/**
 	 * True when the solved walk surface {@code p} (half units) is beyond the
 	 * affordable fill (road above the surface) or cut (road below) cap by more
-	 * than 2 whole blocks; the writer then snaps the cell onto the real surface
-	 * with the correct parity (A5). The relevant cap is chosen by direction and
-	 * a negative cap means unlimited (never triggers).
+	 * than 2 whole blocks. Since fix plan v2 R3 this is an observation flag
+	 * only: the caller counts the cell and renders the solved height as-is
+	 * (bridge deck / tunnel per the caps); it no longer snaps anything. The
+	 * relevant cap is chosen by direction and a negative cap means unlimited
+	 * (never triggers).
 	 */
 	public static boolean overBudget(int p, int surfaceTopY, int maxFillLayers, int maxClearLayers) {
 		int diff = p - 2 * surfaceTopY; // half units, positive = road above the surface (fill)
@@ -86,10 +88,5 @@ public final class RoadWritePolicy {
 			return false;
 		}
 		return Math.abs(diff) > 2 * (budget + 2);
-	}
-
-	/** Fallback parity: odd P is a bottom slab, even P a whole block (both at surfaceTopY - 1). */
-	public static boolean fallbackSlab(int p) {
-		return (p & 1) != 0;
 	}
 }

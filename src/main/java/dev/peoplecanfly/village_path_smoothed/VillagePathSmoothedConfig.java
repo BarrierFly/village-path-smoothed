@@ -42,15 +42,22 @@ public final class VillagePathSmoothedConfig {
 
 	public static class RoadSmoothing {
 		public boolean enabled = true;
-		/** Max consecutive fill layers when the road sits above the ground; beyond it the cell becomes a bridge deck (< 0 = unlimited). */
-		public int maxFillLayers = 8;
-		/** Max layers cleared above the road when it sits below the ground; beyond it the cell tunnels and the kerb lines the roof (< 0 = unlimited). */
-		public int maxClearLayers = 6;
+		/**
+		 * Max consecutive fill layers when the road sits above the ground; beyond it the cell becomes a bridge deck (< 0 = unlimited).
+		 * Writer-side only (fix plan v2 R2): fill/clear caps decide how a road whose height is already fixed is PUT OUT
+		 * (landfill vs bridge deck, clearing vs tunnel lining) and never influence the solve.
+		 */
+		public int maxFillLayers = 3;
+		/**
+		 * Max layers cleared above the road when it sits below the ground; beyond it the cell tunnels and the kerb lines the roof (< 0 = unlimited).
+		 * Writer-side only, see maxFillLayers (fix plan v2 R2).
+		 */
+		public int maxClearLayers = -1;
 		public Objective objective = Objective.SMOOTH_FIRST;
 		/** T1.5 forward decision: solve the road profile (and shift RIGID building components) during structure assembly; T5 = legacy solve at feature placement (no building move). */
 		public RoadShapeStage roadShapeStage = RoadShapeStage.T1_5;
-		/** Cap on the building component vertical shift in whole blocks (0 = unlimited, only the world height clamps). */
-		public int maxBuildingShift = 32;
+		/** Cap on the building component vertical shift in whole blocks (0 = unlimited, only the world height clamps; fix plan v2 R7/N6 default). */
+		public int maxBuildingShift = 0;
 		/** Diagnostic only: count floating/buried building components at write time; never repairs and never reverts a shift. */
 		public boolean buildingGuard = true;
 		/** Weight w1 of the HYBRID objective (w2 = 1). */
@@ -72,8 +79,13 @@ public final class VillagePathSmoothedConfig {
 		public int icmRounds = 4;
 		public boolean allowCutIntoTerrain = true;
 		public String fillMaterial = "STYLE_ROAD";
-		/** Blocks added to the noise-probed height next to RIGID pieces (buildings): vanilla beards terrain toward the building base, the raw noise probe does not know that (< 0 disables; 0 disables too). */
-		public int beardCompensation = 1;
+		/**
+		 * Blocks added to the noise-probed height next to RIGID pieces (buildings). Default 0 since fix plan v2 R6 (N11):
+		 * the +1 step compensated the beard but made doorways sit on a 1-block noise bump the real heightmap columns
+		 * do not have. The config item is kept so the compensation can be re-enabled for comparisons (< 0 or 0 disables,
+		 * in both kernel modes).
+		 */
+		public int beardCompensation = 0;
 		/** Horizontal radius (Chebyshev, blocks) of the beard zone around building footprints (step kernel mode only). */
 		public int beardRadius = 4;
 		/**

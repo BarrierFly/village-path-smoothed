@@ -37,11 +37,11 @@ water use scaffolding, and dangerous edges get leaf railings.
    - `dirt_path` roads use **mud brick slabs**, the desert `smooth_sandstone`
      road uses **smooth sandstone slabs**; slabs are always bottom slabs and
      only appear where a half-step is needed;
-   - the road follows the **reference profile** (see "Reference profile" below),
-     and the default objective (`SMOOTH_FIRST`) ranks *cliff penalty >
-     deviation from the reference > total step count* — so "smooth" means
-     "changes height as little as the terrain allows at half-block pace", not
-     "flat": a 1-block mound is stepped over with slabs instead of being levelled;
+   - the default objective (`SMOOTH_FIRST`) ranks *cliff penalty > total step
+     count > deviation from the terrain* — so "smooth" means "as few half-block
+     steps as possible": short bumps are levelled wherever the candidate band
+     allows it, sustained grades are followed at half-block pace (see
+     "Terrain chase bands" below);
    - continuous 1-block-per-cell slopes produce *sunken roads*: the path cuts
      into the slope at half-block pace and the kerbs (below) hold the walls;
    - long grades that cannot be carried by fill/cut become **bridge decks**
@@ -49,15 +49,14 @@ water use scaffolding, and dangerous edges get leaf railings.
      into per-cell steps; cliffs that are geometrically impossible for
      half-steps get one short, vanilla-style jump (soft-constraint penalty,
      counted in `/vps stats`).
-2. **Reference profile / 参考剖面** — before the solver runs, each street piece
-   gets a reference profile `P_ref`: the terrain wherever a legal half-block
-   slope plus the fill/clear budget can afford it, and a **level span anchored
-   on the piece's ends** wherever it cannot. This is what lets one rule produce
-   both "follow the 1-block mound" and "bridge the 12-block canyon": the two
-   differ by feature *scale*, not by a weight, so the distinction is structural
-   and the cost model only ever measures deviation from it. A canyon therefore
-   gets a bridge deck because the profile spans it, not because bridging is
-   cheap. Spans are counted (`span slices` in `/vps stats`).
+2. **Terrain chase bands / 地形追线候选带** — per-column candidates come from a
+   hull around two legal chase lines over the terrain plus the column's own
+   probed height, so on sustained slopes the band follows the terrain instead
+   of running out of room. There is **no separate reference profile** any more
+   (reverted, fix plan v2 R1): the cost model measures deviation from raw
+   terrain (each column's probed walk surface), and where the road must leave
+   the terrain the seam-band extension toward the region keeps a legal ramp
+   reachable.
 3. **Buildings follow the road / 建筑随路** — before the village's bounding box
    is frozen, each RIGID building component is shifted vertically so its base
    meets the median adjacent road walk surface (up to `maxBuildingShift`). The
@@ -129,11 +128,11 @@ ModMenu is installed) but optional. / 无必装依赖；装有 ModMenu 时会出
 | Option | Default | Meaning |
 |---|---|---|
 | `enabled` (global) | `true` | seed default only - worlds created while the create-screen toggle was untouched start with this; every world's own switch lives in `<world>/village_path_smoothed.json` and overrides it, change in-game with `/vps world on\|off` |
-| `roadSmoothing.objective` | `SMOOTH_FIRST` | `SMOOTH_FIRST` = strict lexicographic *cliff penalty > deviation from the reference profile > total steps*; `MIN_DEVIATION` weighs deviation and steps together; `SHORTEST_CATCHUP` hugs the terrain and catches up as fast as legal steps allow; `HYBRID` blends both (`hybridWeightDeviation`) |
+| `roadSmoothing.objective` | `SMOOTH_FIRST` | `SMOOTH_FIRST` = strict lexicographic *cliff penalty > total steps > deviation from the terrain*; `MIN_DEVIATION` weighs deviation and steps together; `SHORTEST_CATCHUP` hugs the terrain and catches up as fast as legal steps allow; `HYBRID` blends both (`hybridWeightDeviation`) |
 | `roadSmoothing.roadShapeStage` | `T1_5` | `T1_5` solves the profile (and shifts buildings) during structure assembly; `T5` is the legacy feature-placement solve with no building move (fallback / A-B comparison) |
-| `roadSmoothing.maxBuildingShift` | `32` | cap on the building component vertical shift in blocks (`0` = unlimited, only the world height clamps) |
+| `roadSmoothing.maxBuildingShift` | `0` | cap on the building component vertical shift in blocks (`0` = unlimited, only the world height clamps; fix plan v2 R7 default) |
 | `roadSmoothing.buildingGuard` | `true` | diagnostic only: count floating/buried moved components (`/vps stats`); never repairs and never reverts a shift |
-| `roadSmoothing.beardCompensation` | `1` | legacy: blocks added to the noise probe next to buildings. With `roadShapeStage=T1_5` the buildings follow the road instead, so this is only a residual correction of the noise reference (`< 0` or `0` disables, in both kernel modes) |
+| `roadSmoothing.beardCompensation` | `0` | legacy: blocks added to the noise probe next to buildings. Default 0 since fix plan v2 R6: the +1 step compensated the beard but made doorways sit on a 1-block bump that real-heightmap columns do not have. Keep 0; raise only for A-B comparisons (`< 0` or `0` disables, in both kernel modes) |
 | `roadSmoothing.beardRadius` | `4` | legacy: horizontal radius of that beard zone around building footprints (step kernel mode only) |
 | `roadSmoothing.beardKernel` | `step` | shape of the beard compensation: `step` = flat +1 inside `beardRadius`; `beard_thin` = the real vanilla closed form (cuts above the building base plane, fills below) - experimental until the density-to-blocks factor is calibrated in game |
 | `roadSmoothing.beardKernelBlocksPerDensity` | `1.0` | `beard_thin` mode only: surface blocks per unit of vanilla beard density; not calibrated yet (review 3 section 7 T6) |
@@ -142,8 +141,8 @@ ModMenu is installed) but optional. / 无必装依赖；装有 ModMenu 时会出
 | `roadSmoothing.dpWindowHalfUnits` | `16` | per-cell candidate half window in half blocks (auto-shrunk for wide slices) |
 | `roadSmoothing.maxExactSectionWidth` | `4` | slice width solved by the exact DP; wider areas use iterative minimisation |
 | `roadSmoothing.roadSurfaceDetection` | `TEMPLATE_Y0_SOLID` | `TEMPLATE_Y0_ROAD_MATERIAL` only accepts the style's own road block |
-| `roadSmoothing.maxFillLayers` | `8` | max consecutive fill layers when the road sits above the ground; beyond it the cell becomes a bridge deck instead (`< 0` = unlimited). Also the upper half of the reference profile's envelope: terrain further above the piece's own gradient than this is a **span**, not a follow. |
-| `roadSmoothing.maxClearLayers` | `6` | max layers cleared above the road when it sits below the ground; beyond it the cell tunnels and the kerb material lines the roof (`< 0` = unlimited). Lower half of the reference envelope, same way. |
+| `roadSmoothing.maxFillLayers` | `3` | max consecutive fill layers when the road sits above the ground; beyond it the cell becomes a bridge deck instead (`< 0` = unlimited). Writer-side only (fix plan v2 R2): it decides how a road whose height is already fixed is put out (landfill vs bridge deck) and never influences the solve |
+| `roadSmoothing.maxClearLayers` | `-1` | max layers cleared above the road when it sits below the ground; beyond it the cell tunnels and the kerb material lines the roof (`< 0` = unlimited clear up to the vanilla surface). Writer-side only, same as `maxFillLayers` (fix plan v2 R2) |
 | `kerb.minDropHeight` | `1` | "side terrain at least N+1 whole blocks above the road" triggers a kerb (walk surfaces compared in half-block units) |
 | `kerb.replaceableBlocks` | `["#minecraft:dirt"]` | blocks the kerb may replace; add e.g. `minecraft:sand` for desert walls |
 | `waterCrossing.enabled` | `true` | scaffolding bridges; disable to keep the vanilla road over water |
@@ -154,15 +153,18 @@ ModMenu is installed) but optional. / 无必装依赖；装有 ModMenu 时会出
 - `/vps world on|off|show` — enable / disable / inspect road smoothing for the world the executor is in (per-world switch)
 - `/vps config show|reload` — print / reload the config
 - `/vps stats` — villages solved, average solve time, blocks placed, probe/write
-  diagnostics, solver residual diagnostics (candidate contradictions, residual
-  step violations and their worst step, reference span slices), the
-  vanilla-block suppression counters, and villages that degenerated into a
-  single region
+  diagnostics (including the probe caliber boundary switches and the mismatch
+  columns the alignment pass rewrote), solver residual diagnostics (candidate
+  contradictions, residual step violations and their worst step, water anchor
+  deviations), the vanilla-block suppression counters, and villages that
+  degenerated into a single region
 - `/vps dump [radius]` — rebuild + re-solve the road network of villages near
   you and print cell/arm/region counts (diagnostics)
-- `/vps debug villagerbrain [on|off]` — debug: toggle whether villagers skip
-  their brain tick (they stand still while you inspect generated roads); state
-  is saved to the global config and applies from the next tick
+- `/vps debug villagerbrain freeze on|off` — debug: freeze villagers (they
+  stand still while you inspect generated roads); the bare `on|off` forms still
+  work for one version and print the new syntax. State is saved to the global
+  config and applies from the next tick; the freeze state and skip count also
+  appear at the end of `/vps stats`
 
 ## How it works / 原理
 
@@ -189,16 +191,15 @@ solving at feature placement with the real heightmap and no building move.
 
 Two things are worth spelling out:
 
-- **The reference profile.** The solver does not measure deviation from raw
-  terrain; it measures it from a per-piece reference. The reference is the
-  terrain wherever a legal half-block slope plus the fill/clear budget can
-  afford it, and a level span between the piece's ends wherever it cannot. That
-  is what makes "step over a 1-block mound" and "bridge a 12-block canyon" the
-  same rule: they differ by feature scale, and the scale test lives in the
-  reference instead of in a weight. Everything the solver does afterwards —
-  candidate bands, the ICM's candidate window, the cost model's deviation term
-  — is anchored on that reference, which is also why a canyon is *reachable* as
-  a candidate at all.
+- **The terrain chase band (no reference profile).** The solver measures
+  deviation from raw terrain - each column's probed walk surface. Candidate
+  values come from a hull around two legal chase lines over that terrain, and
+  in phase 3 the band extends toward the region's seam bound along the
+  legal-slope cone, so a legal ramp is always reachable and an outlier
+  direction becomes a body deviation instead of a full-height seam cliff.
+  Water-crossing columns carry the water surface as their preferred height
+  (their baseP), not as a fixed anchor: a smoother profile may leave the water
+  level, and every such cell is counted (`water anchor deviations`).
 - **The mod writes the road rather than overwriting it.** The placement chain
   hook drops the vanilla street layer on every column the mask claims, so the
   road block is placed exactly once and no second road can be left underneath
@@ -218,11 +219,11 @@ Two things are worth spelling out:
 
 两点值得展开：
 
-- **参考剖面**：求解器量的不是与原地形的偏差，而是与"每段路的参考剖面"的偏差。
-  参考剖面 = 合法半格坡度 + 填挖预算跟得上的地方取地形，跟不上的地方取两端之间
-  的**平跨**。这样"上 1 格小丘"和"跨 12 格峡谷"就是同一条规则——两者差的是特征
-  尺度，而尺度判据放在参考剖面里而不是放在权重里。候选带、ICM 候选窗、成本模型
-  的偏差项全部锚在参考剖面上，峡谷桥面解也因此才进了候选集。
+- **地形追线候选带**：求解器量的就是与原地形的偏差（每列探得的行走面）。候选值来自
+  两条沿地形的合法追线围成的包络；phase 3 里候选带沿合法坡度锥向区域接缝界延伸，
+  合法坡道总是可达，离群方向变成带内偏移而不是整高接缝悬崖。过水列的水面高度是
+  首选值（即其 baseP）而非固定锚：更平的解可以偏离水面，偏离会计数
+  （`water anchor deviations`）。
 - **路是本 mod 写的，不是覆盖出来的**：放置链挂点会丢弃掩膜认领列上的原版街道
   路块，路块只由 writer 落一次，下方不会再残留第二层路；未被认领的列保留原版路。
 
@@ -249,11 +250,15 @@ Two things are worth spelling out:
    (`/vps stats` counts them, `buildingGuard`). This is accepted by design (the
    road profile wins); set `roadShapeStage=T5` to disable the shift entirely.
 6. Long grades are carried by fill/cut up to `maxFillLayers` / `maxClearLayers`
-   (bridge decks / lined tunnels); a cell whose target is beyond even that is
-   snapped back onto the real surface with the correct parity (counted as
-   `fallback re-anchors`). Where the reference profile declares a span, the
-   profile is above that budget **by construction**, so those cells always come
-   out as a bridge deck or a lined tunnel rather than as a re-anchor.
+   (bridge decks / lined tunnels). A cell whose solved height is beyond even
+   that **keeps its solved height** and is rendered as a deck or a tunnel; it
+   is only counted (`fallback re-anchors`, fix plan v2 R3) - the writer never
+   corrects the solver. A non-zero count therefore means the probe or solver
+   was off for those columns: over carvers, and everywhere outside the
+   +/-1 chunk real-heightmap window (the T1.5 path probes pure noise), the
+   noise height can be wrong by many blocks, and those cells come out as
+   floating decks or open cuts by design (N5) until the probe error is
+   addressed.
 7. The per-world switch only affects chunks generated after it changes: an
    enable/disable boundary leaves one side vanilla and the other smoothed, and
    already-generated villages are never rewritten. A claimed column whose road
@@ -294,13 +299,15 @@ Two things are worth spelling out:
 见上方双语说明。要点：
 
 - **功能**：路面平滑化（半砖台阶，顺向/横向 ≤ 半格；默认 `SMOOTH_FIRST` 目标函数按
-  **断崖 > 对参考剖面的偏差 > 总台阶数** 排序，坡地下沉路段 + 包边收壁，断崖软约束
-  兜底且计数）；参考剖面（地形在填挖预算内就跟随地形，出去就是两端之间的平跨——
-  小丘跟随、峡谷架桥是同一条规则）；路肩包边（土类方块换村庄风格石材，到地表顶、
+  **断崖 > 总台阶数 > 对地形的偏差** 排序，坡地下沉路段 + 包边收壁，断崖软约束
+  兜底且计数）；地形追线候选带（无独立参考剖面，偏差直接对地形量，接缝带向区域
+  侧延伸保证合法坡道可达）；路肩包边（土类方块换村庄风格石材，到地表顶、
   无上限）；树叶护栏（每条侧列只由最高的那格路负责，不会再出现"护栏+包边"同列）；
-  过水段脚手架（`distance` 有支撑 0 / 无支撑 1，`waterlogged=true`）。
+  过水段脚手架（`distance` 有支撑 0 / 无支撑 1，`waterlogged=true`；过水锚点为软
+  约束，偏离水面会被计数）。
   路面由本 mod **写入**而非覆盖：认领列上的原版街道路块在放置链里被丢弃，未认领列
-  保留原版路，因此不会再出现上下两层路。
+  保留原版路，因此不会再出现上下两层路。写入端只渲染不解题（R3）：超预算格保留
+  解算高度并计数，不再吸附回真实地表。
 - **支持版本**：1.19.4 / 1.20.1 / 1.21.1 / 1.21.10 / 1.21.11（主）/ 26.3。
 - **配置**：`config/village_path_smoothed.json`，`/vps config reload` 热重载；
   ModMenu 提供配置屏幕（可选）。

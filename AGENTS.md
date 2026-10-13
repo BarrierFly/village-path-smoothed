@@ -35,7 +35,6 @@ src/main/java/dev/peoplecanfly/village_path_smoothed/
 │   ├── RoadCollector        # templates -> road mask (MC-touching, VpsProbe)
 │   ├── RoadNetwork          # mask -> arms/regions decomposition (pure)
 │   ├── RoadSmoother         # arm slice DP + region ICM (pure, unit tested)
-│   ├── RoadReference        # reference profile P_ref: follow-vs-span per piece (pure, unit tested)
 │   ├── PlacementPolicy      # the one suppress/pass-through decision (pure, unit tested)
 │   ├── VpsPlacementContext  # ThreadLocal road mask live during one placeInChunk
 │   ├── RoadMaterialTable    # style -> blocks (MC-touching)
@@ -93,23 +92,31 @@ Rules:
   mod used to place after vanilla. Unclaimed cells (probe failed, cap hit) keep
   the vanilla road on purpose. Reconcile the two sides with
   `SUPPRESSED_VANILLA_ROAD_BLOCKS` vs `ROAD_CELLS_WRITTEN` in `/vps stats`.
-- **Deviation is measured against the reference profile, never raw terrain.**
-  `RoadReference` decides per piece and per slice whether the terrain is the
-  reference (inside the fill/clear envelope and legally reachable from every
-  hard value) or the reference is a level span between the piece's ends. Every
-  downstream consumer follows: the arm candidate band is the chase hull of the
-  reference *target*, the ICM candidate window is centred on `refP`, the cost
-  model reads `cell.refP`. Changing one of those back to terrain silently
-  resurrects "level the 1-block mound" or "plunge into the canyon".
-- **SMOOTH_FIRST ranks deviation ABOVE steps.** Cliff penalty on top, deviation
-  in the middle, total step count at the bottom. Swapping the lower two back
-  is what made `smoothFirstMinimisesTotalStepsOverDeviation` true, i.e. what
-  made the road run visibly off rolling ground.
-- **Candidate bands are narrowed against the seam cone, never merged with it.**
-  A union widens the band by up to the arm length on every slice, which pushed
-  wide arms past the state budget and into the region fallback. If narrowing
-  makes the band empty, the band keeps the reference and the cliff penalty
-  counts the difference - that is the intended degradation.
+- **Deviation is measured against raw terrain (each cell's `baseP`).** There is
+  no reference profile (fix plan v2 R1 removed it with the rest of `c74d392`'s
+  core mechanism): the chase lines track the terrain, the ICM candidate window
+  is centred on `baseP`, and the cost model reads `cell.baseP`. Re-anchoring
+  any of those on a synthetic profile reintroduces the "solver chases a
+  profile with its own drops" failure the revert removed (S2/S3).
+- **SMOOTH_FIRST ranks total step count ABOVE deviation.** Cliff penalty on
+  top, total step count in the middle, deviation from terrain at the bottom
+  (fix plan v2 R1 / N3 - the review-4 swap is reverted). The candidate band is
+  what keeps the road from flattening sustained grades: on a long climb the
+  flat line simply is not a candidate.
+- **The seam band extends TOWARD the seam, never narrows against it.** Phase 3
+  merges the seam cells' own hard bound into their band outright and grows
+  interior cells' bands toward the seam interval along the legal-slope cone
+  (one half unit per slice of distance, review 3 P0-A). The review-4 variant
+  that INTERSECTED the band with a per-slice cone depended on the reference
+  profile carrying the seam height; with the terrain-chase band it empties the
+  seam cell's candidates and resurrects the seam cliff (measured: 12 failing
+  tests, all seam violations; fix plan v2 A6 deviation, approved by the user).
+- **The writer is a renderer, not a second solver (fix plan v2 R3 / N7).** An
+  over-budget cell (`RoadWritePolicy#overBudget`) keeps its solved height and
+  is rendered as a bridge deck (fill cap) or tunnel/open cut (clear cap); the
+  writer only counts it (`FALLBACK_REANCHORS`) and warns. Never reintroduce
+  the snap onto the real surface: it manufactured a `|dP| >= 2` step against
+  the neighbouring solved cells - exactly the drop class N1 forbids.
 - **All drop criteria are computed in half-block walk-surface units** (`S = 2 *
   walk surface`); never use `roadTopBlockY + 1` as the walk surface (it is 0.5
   too high for a slab). The pure helpers live in `RoadWritePolicy`
@@ -137,7 +144,11 @@ Rules:
   chunk (`WorldGenRegion`); beyond that use the noise base height. T1.5 uses
   noise everywhere (`VpsNoiseContext`), so the decision is a pure function of
   the seed. The solved profile is cached on the `StructureStart` (duck interface
-  `StructureStartVpsAccess`) so the village is solved exactly once.
+  `StructureStartVpsAccess`) so the village is solved exactly once. The two
+  calibers meet at the window edge: `RoadCollector#alignProbeBoundaries` pulls
+  noise-probed columns directly adjacent to a disagreeing real column onto the
+  real value before the network is built (fix plan v2 R5); on the T1.5 path
+  every column is noise, so the pass is a no-op there.
 - Write blocks with `Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE` (vanilla
   structure flags): no client updates during worldgen and heightmaps stay
   untouched (so our own probes stay consistent).
@@ -148,8 +159,10 @@ Rules:
   it and the config can extend it).
 - Slabs are always **bottom** slabs; no stairs, no orientation states - road
   placement must stay rotation-independent.
-- Water-crossing cells are fixed anchors at the water surface; the solver may
-  never move them.
+- Water-crossing cells carry the water surface as their PREFERRED height (their
+  `baseP`), not as a fixed anchor (fix plan v2 R4 / N8): the solver may leave
+  it for a smoother profile, and every such cell is counted
+  (`WATER_ANCHOR_DEVIATIONS`, `water anchor deviations` in `/vps stats`).
 - `/vps` is registered by mixin into `Commands#<init>` because the mod
   deliberately does not depend on fabric-api.
 - Client mixins (CreateWorldScreen toggle) live in the mixin config's

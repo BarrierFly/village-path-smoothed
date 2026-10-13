@@ -63,12 +63,10 @@ public final class VpsPipeline {
 	public static final AtomicLong SOLVE_CANDIDATE_CONTRADICTIONS = new AtomicLong();
 	public static final AtomicLong SOLVE_STEP_VIOLATIONS = new AtomicLong();
 	public static final AtomicLong SOLVE_WORST_STEP = new AtomicLong();
-	// Review 4 section 5.3: slices whose reference is a level span instead of
-	// the terrain, i.e. the places the writer will turn into a bridge deck or a
-	// lined tunnel. Spans whose two ends could not be joined legally are a
-	// separate count: those are the ones that keep a residual drop.
-	public static final AtomicLong SOLVE_SPAN_SLICES = new AtomicLong();
-	public static final AtomicLong SOLVE_ILLEGAL_SPANS = new AtomicLong();
+	// Fix plan v2 R4.3: water-crossing cells whose solved surface deviates from
+	// the water surface (their preferred height). The anchor is soft, so this
+	// counts how often the solver traded the water level for smoothness.
+	public static final AtomicLong WATER_ANCHOR_DEVIATIONS = new AtomicLong();
 	// Review 4 section 9: vanilla street blocks dropped from the placement chain
 	// on claimed cells. Reconciliation rule: suppressed ~= road cells written
 	// minus the anchor cells (anchors keep their vanilla block by decision),
@@ -274,12 +272,8 @@ public final class VpsPipeline {
 		RoadNetwork network = RoadCollector.collect(start, ctx, config);
 		if (config.roadSmoothing.enabled) {
 			RoadSmoother.SolveStats stats = RoadSmoother.solve(network, paramsFor(config));
-			SOLVE_CANDIDATE_CONTRADICTIONS.addAndGet(stats.candidateContradictions());
-			SOLVE_STEP_VIOLATIONS.addAndGet(stats.residualViolations());
-			SOLVE_WORST_STEP.accumulateAndGet(stats.worstStep(), Math::max);
-			SOLVE_SPAN_SLICES.addAndGet(stats.spanSlices());
+			accumulateSolveStats(stats);
 		}
-		SOLVE_ILLEGAL_SPANS.addAndGet(RoadReference.illegalDrops());
 		if (!network.cells.isEmpty() && network.arms.isEmpty()) {
 			VILLAGES_WITHOUT_ARMS.incrementAndGet();
 			VillagePathSmoothed.LOGGER.warn("[VPS] village at {}: {} road cells but 0 arms - every street is wider than maxExactSectionWidth ({}), the whole village degrades into {} giant region(s) and the exact arm DP never runs",
@@ -306,34 +300,25 @@ public final class VpsPipeline {
 		return solution;
 	}
 
+	/** One shared accumulation point for the T5 and T1.5 solve paths (fix plan v2, R1 precondition). */
+	public static void accumulateSolveStats(RoadSmoother.SolveStats stats) {
+		SOLVE_CANDIDATE_CONTRADICTIONS.addAndGet(stats.candidateContradictions());
+		SOLVE_STEP_VIOLATIONS.addAndGet(stats.residualViolations());
+		SOLVE_WORST_STEP.accumulateAndGet(stats.worstStep(), Math::max);
+		WATER_ANCHOR_DEVIATIONS.addAndGet(stats.waterAnchorDeviations());
+	}
+
 	public static RoadSmoother.SolveParams paramsFor(VillagePathSmoothedConfig config) {
 		var smoothing = config.roadSmoothing;
 		int hybridWeight = (int) Math.round(Math.max(0.0, smoothing.hybridWeightDeviation) * 16);
 		int window = Math.max(1, Math.min(smoothing.dpWindowHalfUnits, 64));
-		// The reference profile's envelope is the writer's own budget, not a
-		// separate knob: RoadWritePolicy#overBudget snaps a cell back onto the
-		// real surface once the solved profile is more than cap+2 blocks away
-		// from it, so measuring the reference against anything else would let
-		// the solver aim at a height the writer then throws away.
-		int fillBudget2 = budget2(smoothing.maxFillLayers);
-		int clearBudget2 = budget2(smoothing.maxClearLayers);
 		return new RoadSmoother.SolveParams(
 				smoothing.objective,
 				hybridWeight,
 				Math.max(0, smoothing.stepViolationPenalty),
 				window,
 				Math.max(0, Math.min(smoothing.icmRounds, 64)),
-				smoothing.allowCutIntoTerrain,
-				fillBudget2,
-				clearBudget2
+				smoothing.allowCutIntoTerrain
 		);
-	}
-
-	/** Fill/clear envelope in half units; a negative cap means unlimited (never a span). */
-	private static int budget2(int layers) {
-		if (layers < 0) {
-			return -1;
-		}
-		return 2 * (Math.max(0, layers) + 2);
 	}
 }

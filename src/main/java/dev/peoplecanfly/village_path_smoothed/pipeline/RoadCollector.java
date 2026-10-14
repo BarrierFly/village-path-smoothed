@@ -67,12 +67,57 @@ public final class RoadCollector {
 	/** Widest break (plan gapWidth): sum for an average, max for the worst village. */
 	public static final AtomicLong GAP_WIDTH_SUM = new AtomicLong();
 	public static final AtomicLong GAP_WIDTH_MAX = new AtomicLong();
+	/** Matches the {@code town_centers} template folder (fix plan v4 D5-c). */
+	private static final Pattern TOWN_CENTERS = Pattern.compile("/town_centers/");
 	/** Fix plan v2 R5.3: 4-adjacency edges whose two ends use different probe calibers (real heightmap vs noise). */
 	public static final AtomicLong PROBE_BOUNDARY_SWITCHES = new AtomicLong();
 	/** Fix plan v2 R5.3: columns rewritten by the boundary alignment pass (distinct cells). */
 	public static final AtomicLong PROBE_MISMATCH_COLUMNS = new AtomicLong();
 	/** Fix plan v2 R5.2: alignment pass iteration cap. */
 	static final int PROBE_ALIGNMENT_ROUNDS = 4;
+
+	/**
+	 * Road materials accepted on a {@code town_centers} y=0 cell (fix plan v4
+	 * D5-c).
+	 *
+	 * <p>Deliberately narrower than the street rule. Street templates <em>are</em>
+	 * roads, so "any solid y=0 block" is safe there; a centre piece's y=0 layer
+	 * also holds the fountain basin, the water, the bell and the logs, and a
+	 * claimed column has its vanilla y=0 block suppressed by the gravity processor
+	 * and rewritten by the road writer. Taking only the plaza material keeps the
+	 * fountain itself vanilla while the ground around it joins the road network.
+	 *
+	 * <p>Lazy on purpose: touching {@link Blocks} in this class's static
+	 * initialiser would break every pure unit test that only wants
+	 * {@link #alignProbeBoundaries}, because the block registry needs the game
+	 * bootstrap.
+	 */
+	private static final class TownCenterMaterials {
+		private static final java.util.Set<Block> ROAD = java.util.Set.of(
+				Blocks.DIRT_PATH,
+				Blocks.GRASS_BLOCK,
+				Blocks.DIRT,
+				Blocks.COARSE_DIRT,
+				Blocks.ROOTED_DIRT,
+				Blocks.COBBLESTONE,
+				Blocks.MOSSY_COBBLESTONE,
+				Blocks.STONE_BRICKS,
+				Blocks.SANDSTONE,
+				Blocks.SMOOTH_SANDSTONE,
+				Blocks.ANDESITE,
+				Blocks.POLISHED_ANDESITE,
+				Blocks.STONE,
+				Blocks.COBBLED_DEEPSLATE
+		);
+
+		private TownCenterMaterials() {
+		}
+	}
+
+	/** Cells taken from a {@code town_centers} piece (fix plan v4 D5-c). */
+	public static final AtomicLong TOWN_CENTER_CELLS = new AtomicLong();
+	/** Centre-piece cells skipped because their y=0 block is not road material. */
+	public static final AtomicLong TOWN_CENTER_NON_ROAD_SKIPPED = new AtomicLong();
 
 	private static final int[] DIR_DX = {-1, 1, 0, 0};
 	private static final int[] DIR_DZ = {0, 0, -1, 1};
@@ -122,6 +167,7 @@ public final class RoadCollector {
 			if (style == null) {
 				continue;
 			}
+			boolean townCentre = TOWN_CENTERS.matcher(location).find();
 			if (templateManager == null) {
 				templateManager = ((PoolElementStructurePieceVpsAccess) poolPiece).village_path_smoothed$getTemplateManager();
 			}
@@ -129,7 +175,7 @@ public final class RoadCollector {
 				continue;
 			}
 			pieceCount++;
-			collectPiece(poolPiece, singleElement, location, style, templateManager, ctx, config, cellsByPos);
+			collectPiece(poolPiece, singleElement, location, style, townCentre, templateManager, ctx, config, cellsByPos);
 		}
 
 		VillagePathSmoothed.LOGGER.debug("[VPS] village at {}: {} street pieces, {} road cells", start.getChunkPos(), pieceCount, cellsByPos.size());
@@ -268,6 +314,7 @@ public final class RoadCollector {
 			SinglePoolElement element,
 			String location,
 			String style,
+			boolean townCentre,
 			StructureTemplateManager templateManager,
 			VpsProbe ctx,
 			VillagePathSmoothedConfig config,
@@ -300,7 +347,13 @@ public final class RoadCollector {
 			if (infoPos.getY() != 0) {
 				continue;
 			}
-			if (!isRoadSurfaceCell(infoState, style, config)) {
+			if (townCentre) {
+				// fix plan v4 D5-c: only the plaza joins the mask
+				if (!config.roadSmoothing.includeTownCentersRoadMaterials || !TownCenterMaterials.ROAD.contains(infoState.getBlock())) {
+					TOWN_CENTER_NON_ROAD_SKIPPED.incrementAndGet();
+					continue;
+				}
+			} else if (!isRoadSurfaceCell(infoState, style, config)) {
 				continue;
 			}
 			// world position of the template cell for this piece (pivot ZERO, no mirror,
@@ -373,6 +426,9 @@ public final class RoadCollector {
 			RoadCell cell = new RoadCell(x, z, style, 2 * surfaceTopY, anchor);
 			cell.realHeight = realHeight;
 			cellsByPos.put(key, cell);
+			if (townCentre) {
+				TOWN_CENTER_CELLS.incrementAndGet();
+			}
 		}
 	}
 

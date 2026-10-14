@@ -47,6 +47,15 @@ public final class T15Planner {
 	 */
 	public static final java.util.concurrent.atomic.AtomicLong T15_RESOLVED_AFTER_SHIFT =
 			new java.util.concurrent.atomic.AtomicLong();
+	/**
+	 * Fix plan v4 D10: cells whose solved surface changed between the first solve
+	 * and the post-shift re-solve. The building shift is applied once and the road
+	 * re-solved once (a second iteration could cycle: road -> building -> road), so
+	 * the road and the buildings are consistent only up to this much. It is a
+	 * known residual, recorded rather than iterated away.
+	 */
+	public static final java.util.concurrent.atomic.AtomicLong T15_RESOLVE_DELTA_CELLS =
+			new java.util.concurrent.atomic.AtomicLong();
 
 	private T15Planner() {
 	}
@@ -161,6 +170,7 @@ public final class T15Planner {
 		if (config.roadSmoothing.enabled) {
 			VpsPipeline.accumulateSolveStats(RoadSmoother.solve(resolved, VpsPipeline.paramsFor(config)));
 		}
+		T15_RESOLVE_DELTA_CELLS.addAndGet(countProfileDelta(network, resolved));
 		solution.network = resolved;
 		T15_RESOLVED_AFTER_SHIFT.incrementAndGet();
 
@@ -169,6 +179,26 @@ public final class T15Planner {
 					chunkPos, network.cells.size(), components.size(), shifted.size(), resolved.cells.size());
 		}
 		return solution;
+	}
+
+	/**
+	 * How many cells ended up at a different height after the post-shift re-solve
+	 * (fix plan v4 D10). Compared by world position, not by list index: the two
+	 * networks are rebuilt from scratch and only the positions are comparable.
+	 */
+	private static int countProfileDelta(RoadNetwork before, RoadNetwork after) {
+		java.util.Map<Long, Integer> previous = new java.util.HashMap<>();
+		for (RoadCell cell : before.cells) {
+			previous.put(RoadCell.packedXZ(cell.x, cell.z), cell.solvedP);
+		}
+		int changed = 0;
+		for (RoadCell cell : after.cells) {
+			Integer old = previous.get(RoadCell.packedXZ(cell.x, cell.z));
+			if (old != null && old != cell.solvedP) {
+				changed++;
+			}
+		}
+		return changed;
 	}
 
 	/**

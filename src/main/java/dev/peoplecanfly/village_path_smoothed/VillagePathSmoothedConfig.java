@@ -132,7 +132,24 @@ public final class VillagePathSmoothedConfig {
 		 * section 2.4 leaves the true density-to-blocks conversion to T6.
 		 */
 		public double beardKernelBlocksPerDensity = 1.0;
-		public String roadPiecesRegex = "^minecraft:village/([a-z_]+)/(streets|terminators)/";
+		/**
+		 * Pieces whose y=0 cells may join the road mask. {@code town_centers}
+		 * adds the meeting points and fountains (fix plan v4 D5-c): the plaza
+		 * around a centre piece then shares one 1-Lipschitz solution with the
+		 * streets instead of being snapped to the median of its neighbours, which
+		 * is what made the fountain surroundings the worst-looking spot in the
+		 * village. Only road-material cells are taken (see
+		 * {@code includeTownCentersRoadMaterials}), so the fountain's basin,
+		 * bell and logs keep their vanilla blocks and the piece's y=0 layer is
+		 * never suppressed where it is not road.
+		 */
+		public String roadPiecesRegex = "^minecraft:village/([a-z_]+)/(streets|terminators|town_centers)/";
+		/**
+		 * Road-material test for {@code town_centers} cells. A centre piece's y=0
+		 * layer holds the plaza (dirt path / smooth sandstone) next to the
+		 * fountain's cobblestone, water and bell; only the plaza joins the mask.
+		 */
+		public boolean includeTownCentersRoadMaterials = true;
 		public RoadSurfaceDetection roadSurfaceDetection = RoadSurfaceDetection.TEMPLATE_Y0_SOLID;
 	}
 

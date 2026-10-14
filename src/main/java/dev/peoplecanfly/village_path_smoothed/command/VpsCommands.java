@@ -227,12 +227,12 @@ public final class VpsCommands {
 		long splitVillages = RoadCollector.NETWORKS_SPLIT.get();
 		return String.format(
 				"[VPS] villages solved: %d (%.2f ms avg)%n"
-						+ "  roads      : cells written %d, kerbs %d, railings %d, scaffolds %d (water-self %d / water-below %d / dry %d)%n"
+						+ "  roads      : cells written %d, kerbs %d, railings %d (skipped: water %d / door %d), scaffolds %d (water-self %d / water-below %d / dry %d), water bridges %d%n"
 						+ "  integrity  : dropped cells %d (noise-reprobed %d), split masks %d (solved per component), largest component %s%%, widest break avg %s / max %d%n"
 						+ "  defects    : writer overrides %d, nudged to the surface %d, refused %d (out of world %d), surface fallbacks %d, over-budget %d, edge drops > 1 block %d (worst %d half units)%n"
 						+ "  solve      : contradictions %d, step violations %d (worst %d), seam re-solves refused %d, polish moved %d (max delta %d half units, p90 %d, midpoint conflicts %d), water anchor deviations %d, villages without arms %d%n"
 						+ "  suppression: vanilla road blocks dropped %d (passed through %d)%n"
-						+ "  buildings  : T1.5 applied %d (no-server %d), components %d, shifted %d, no-road %d, overlap guards %d, floating %d, buried %d, re-solved after shift %d (%d cells changed)%n"
+						+ "  buildings  : T1.5 applied %d (no-server %d), components %d, shifted %d, no-road %d, overlap guards %d, floating %d, buried %d, re-solved after shift %d (%d cells changed), road cells yielded %d%n"
 						+ "  centres    : town-centre plaza cells %d (non-road cells skipped %d)%n"
 						+ "  model gap  : written surface vs real terrain: mean %s half units, worst %d, over threshold %d, cut below terrain %d, fill above %d%n"
 						+ "  misc       : floor-garbage probes %d, probe boundary switches %d, probe mismatch columns %d, villager freeze: %s (brain ticks skipped: %d)",
@@ -241,10 +241,13 @@ public final class VpsCommands {
 				VpsPipeline.ROAD_CELLS_WRITTEN.get(),
 				VpsPipeline.KERBS_PLACED.get(),
 				VpsPipeline.RAILINGS_PLACED.get(),
+				RoadWriter.RAILINGS_SKIPPED_AT_WATER.get(),
+				RoadWriter.RAILINGS_SKIPPED_AT_DOOR.get(),
 				VpsPipeline.SCAFFOLDS_PLACED.get(),
 				VpsPipeline.SCAFFOLD_WATER_SELF.get(),
 				VpsPipeline.SCAFFOLD_WATER_BELOW.get(),
 				VpsPipeline.SCAFFOLD_DRY.get(),
+				RoadWriter.WATER_BRIDGE_CELLS.get(),
 				RoadCollector.PROBE_SKIPPED_CELLS.get(),
 				RoadCollector.NOISE_FALLBACK_CELLS.get(),
 				splitVillages,
@@ -281,6 +284,7 @@ public final class VpsCommands {
 				VpsPipeline.BUILDING_BURIED.get(),
 				T15Planner.T15_RESOLVED_AFTER_SHIFT.get(),
 				T15Planner.T15_RESOLVE_DELTA_CELLS.get(),
+				RoadWriter.BUILDING_CELLS_SKIPPED.get(),
 				RoadCollector.TOWN_CENTER_CELLS.get(),
 				RoadCollector.TOWN_CENTER_NON_ROAD_SKIPPED.get(),
 				RoadWriter.FILL_ABOVE_TERRAIN_CELLS.get(),

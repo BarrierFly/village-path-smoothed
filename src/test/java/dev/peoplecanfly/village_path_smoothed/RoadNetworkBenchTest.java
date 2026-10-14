@@ -588,7 +588,13 @@ public class RoadNetworkBenchTest {
 						neighbourSurfaces(net, cell), nearEntrance(cell));
 			}
 			hasWritten[i] = column.written();
-			written[i] = RoadWritePolicy.crossingWalkSurface2(crossing, column.walkSurface2(), column.slab());
+			// the water rule the writer applies (user decision 2026-10-15): a
+			// crossing is raised to the water surface (scaffold) when at or below
+			// it, and keeps its solved surface as a bridge deck when above. The
+			// bench's surfaceTopY convention makes the water surface 2 * realTop.
+			written[i] = crossing
+					? RoadWritePolicy.crossingWrittenWalkSurface2(column.walkSurface2(), 2 * realTop)
+					: column.walkSurface2();
 			crossingCells[i] = column.written() && crossing;
 			if (column.written() && column.overrodeSolved()) {
 				m.writeOverrideCells++;

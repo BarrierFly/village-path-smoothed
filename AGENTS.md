@@ -138,15 +138,49 @@ Rules:
   cell's **solved** surface; a solved height outside the world is refused, not
   clamped. What is left of the old "snap onto the real surface" behaviour is the
   guarded single-cell nudge below.
-- **A water crossing's scaffold IS the walk surface (user decision 2026-10-14).**
-  `RoadWritePolicy.crossingWalkSurface2`: the scaffold replaces the road block at
-  the road block's Y, which is what makes a crossing read as a plank bridge. The
-  old rule (scaffold as support *under* the road block) put it one block under
-  the water surface and out of sight. A scaffold is a full block, so a crossing
-  cell whose solved surface is a slab tops out half a block above it; that half
-  step is **accepted** and is modelled in `RoadNetworkBenchTest` as
-  `crossingViolEdg` (exempted from the continuity gate, counted separately). Do
-  not "fix" it by snapping the solved height - that breaks the half-step chain.
+- **A water crossing is never below the water surface (user decision
+  2026-10-15).** `RoadWritePolicy.crossingWrittenWalkSurface2(profile, water)` is
+  `max(profile, water)` over the water surface `2 * surfaceTopY`:
+  - profile **at or below** the water -> raised to the water surface; the
+    **scaffold IS the walk surface** there (user decision 2026-10-14): it
+    replaces the road block at the water block's Y, which is what makes a
+    crossing read as a plank bridge. The old rule (scaffold as support *under*
+    the road block) put it one block under the water surface and out of sight.
+  - profile **above** the water -> the solved surface is kept and the cell is a
+    **forced bridge deck**: no scaffold and **no support fill from the waterbed**,
+    however shallow the water is (`WATER_BRIDGE_CELLS`). Never stack a dirt
+    causeway up from the bottom.
+  A scaffold is a full block, so at the water surface a crossing cell whose
+  solved surface is a slab is written half a block high; that half step is
+  **accepted** and modelled in `RoadNetworkBenchTest` as `crossingViolEdg`
+  (exempted from the continuity gate). Do not "fix" it by snapping the solved
+  height - that breaks the half-step chain.
+- **Clearing runs to `min(clear cap, real surface top)` (user decision
+  2026-10-15).** `RoadWriter#clearAbove` / `RoadWritePolicy#clearTopY` end at
+  `min(road + maxClearLayers, WORLD_SURFACE_WG - 1)`, not at the first air of the
+  contiguous ceiling probe: a cave inside the cap is cleared through, so the
+  clear is exhaustive within the cap. `maxClearLayers < 0` (the default) means
+  "up to the real surface top". The contiguous-ceiling probe `ceilingSurfaceTopY`
+  stays only for the over-budget observation; the tunnel-roof lining is decided
+  against the real surface top now.
+- **Railing at water (user decision 2026-10-15).** Beside a water side column the
+  drop threshold is overridden: no railing while the road walk surface is **not
+  above** the water surface, and a railing as soon as it is above it - even half
+  a block (`RAILINGS_SKIPPED_AT_WATER` counts the suppressed ones). Detection
+  scans the side column at the road block's Y and one below.
+- **No railing on a movable building's door front (user decision 2026-10-15).**
+  `BuildingComponents#doorFronts` derives, for every non-RIGID junction (a
+  connection to a street/terminator/centre), the block one step outside the wall
+  along the footprint-centre-to-junction axis. The writer skips railings on that
+  cell (within one block) so a doorway can never be fenced in
+  (`RAILINGS_SKIPPED_AT_DOOR`); `railing.skipAtBuildingDoors` gates it.
+- **Plan A: a building always wins its column (user decision 2026-10-15).**
+  `VpsVillageSolution#buildingBoxes` carries the 3D boxes of every movable piece
+  (read after the T1.5 shift, so they describe where the buildings really are).
+  `RoadWriter#insideBuilding` skips a claimed column whose road block lands inside
+  one - no road block, no support fill, no clear - so smoothing can never
+  overwrite a building body (`BUILDING_CELLS_SKIPPED`, and the column yields).
+  `roadSmoothing.protectBuildings` gates it.
 - **Every fill/cut decision is a per-cell directional probe, never the heightmap
   top (user decision 2026-10-14).** `terrain/ColumnScan` + `VpsGenContext`:
   `groundSurfaceTopY` scans **down** from the road block for the first standable

@@ -141,6 +141,10 @@ public final class T15Planner {
 		VpsPipeline.BUILDING_COMPONENTS.addAndGet(components.size());
 		syncJunctions(pieces, components);
 		solution.shiftedComponents = shifted.toArray(new int[0][]);
+		// read after the shift: the boxes must describe where the buildings really
+		// are, because the writer uses them to refuse a road column (plan A).
+		solution.buildingBoxes = BuildingComponents.movableBoxes(pieces);
+		solution.doorFronts = BuildingComponents.doorFronts(pieces);
 
 		// Review 4 section 7 (P1): close the probe gap that the move just opened.
 		// The road profile was solved against beard boxes taken BEFORE the shift,

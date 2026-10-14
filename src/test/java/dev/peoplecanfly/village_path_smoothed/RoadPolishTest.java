@@ -209,21 +209,19 @@ public class RoadPolishTest {
 	}
 
 	/**
-	 * User decision 2026-10-14: a water crossing's scaffolding <b>is</b> its walk
-	 * surface - the scaffold replaces the road block. A full block tops out half a
-	 * unit above a slab, so a crossing cell whose solved surface is a slab is
-	 * written half a block high; that is the accepted price of a visible bridge.
+	 * User decision 2026-10-15: a water crossing is never below the water surface.
+	 * A profile at or below it is raised to the water surface (the scaffold sits
+	 * there); a profile above it keeps its solved surface and becomes a bridge deck.
 	 */
 	@Test
-	public void aWaterCrossingScaffoldIsTheWalkSurface() {
-		// not a crossing: the ordinary road block / slab walk surface passes through
-		assertEquals("whole block, not a crossing", 140, RoadWritePolicy.crossingWalkSurface2(false, 140, false));
-		assertEquals("slab, not a crossing", 141, RoadWritePolicy.crossingWalkSurface2(false, 141, true));
-		// a crossing: a full scaffold block, so a slab cell tops out half a unit higher
-		assertEquals("whole block at a crossing is unchanged", 140, RoadWritePolicy.crossingWalkSurface2(true, 140, false));
-		assertEquals("slab at a crossing becomes a full block", 142, RoadWritePolicy.crossingWalkSurface2(true, 141, true));
-		// a nudged slab cell (walk surface 139) at a crossing still lands on a whole block
-		assertEquals(140, RoadWritePolicy.crossingWalkSurface2(true, 139, true));
+	public void aWaterCrossingIsNeverBelowTheWaterSurface() {
+		// profile at the water surface: unchanged
+		assertEquals("at the water surface stays", 140, RoadWritePolicy.crossingWrittenWalkSurface2(140, 140));
+		// profile below water: raised to the water surface
+		assertEquals("below water is raised", 140, RoadWritePolicy.crossingWrittenWalkSurface2(138, 140));
+		// profile above water (even a slab half a unit up): kept, bridge deck
+		assertEquals("above water is kept", 141, RoadWritePolicy.crossingWrittenWalkSurface2(141, 140));
+		assertEquals("well above water is kept", 150, RoadWritePolicy.crossingWrittenWalkSurface2(150, 140));
 	}
 
 	/** The neighbour-legality rule itself, stated on its own. */

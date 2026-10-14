@@ -79,6 +79,66 @@ public final class BuildingComponents {
 		}
 	}
 
+	/**
+	 * 3D bounding boxes {minX, maxX, minY, maxY, minZ, maxZ} of every movable
+	 * piece (buildings + the hay pile). The writer refuses to write a road column
+	 * whose road block would land inside one of these: the building always wins
+	 * (plan A, user decision 2026-10-15). The boxes are read live off the pieces,
+	 * so on the T1.5 path they already reflect any vertical shift.
+	 */
+	public static int[][] movableBoxes(List<StructurePiece> pieces) {
+		List<int[]> out = new ArrayList<>();
+		for (StructurePiece piece : pieces) {
+			if (isMovable(piece)) {
+				BoundingBox box = piece.getBoundingBox();
+				out.add(new int[]{box.minX(), box.maxX(), box.minY(), box.maxY(), box.minZ(), box.maxZ()});
+			}
+		}
+		return out.toArray(new int[0][]);
+	}
+
+	/**
+	 * Door-front cells {frontX, frontZ, outwardDX, outwardDZ} of every movable
+	 * piece: one block outside each non-RIGID junction, i.e. each connection to a
+	 * street/terminator/centre piece rather than to another building. The outward
+	 * axis is the dominant axis from the footprint centre to the junction source
+	 * (the junction stores only the building-side position, not the direction), so
+	 * the door front is the first block outside the wall.
+	 *
+	 * <p>The writer suppresses the railing on the door front so a doorway can never
+	 * be fenced in (user decision 2026-10-15).
+	 */
+	public static int[][] doorFronts(List<StructurePiece> pieces) {
+		List<int[]> out = new ArrayList<>();
+		for (StructurePiece piece : pieces) {
+			if (!isMovable(piece) || !(piece instanceof PoolElementStructurePiece pool)) {
+				continue;
+			}
+			BoundingBox box = piece.getBoundingBox();
+			int cx = (box.minX() + box.maxX()) / 2;
+			int cz = (box.minZ() + box.maxZ()) / 2;
+			for (JigsawJunction junction : pool.getJunctions()) {
+				if (junction.getDestProjection() == StructureTemplatePool.Projection.RIGID) {
+					continue; // attaches to another building, not a door
+				}
+				int sx = junction.getSourceX();
+				int sz = junction.getSourceZ();
+				int dx = Integer.compare(sx, cx);
+				int dz = Integer.compare(sz, cz);
+				if (Math.abs(sx - cx) < Math.abs(sz - cz)) {
+					dx = 0; // z is the dominant axis
+				} else {
+					dz = 0; // x is the dominant axis (ties pick x)
+				}
+				if (dx == 0 && dz == 0) {
+					continue; // junction at the footprint centre: no direction to derive
+				}
+				out.add(new int[]{sx + dx, sz + dz, dx, dz});
+			}
+		}
+		return out.toArray(new int[0][]);
+	}
+
 	public static List<Component> group(List<StructurePiece> pieces) {
 		int n = pieces.size();
 		boolean[] rigid = new boolean[n];

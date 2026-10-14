@@ -88,6 +88,14 @@ public final class VillagePathSmoothedConfig {
 		public int surfaceDeviationWarnBlocks = 4;
 		/** Diagnostic only: count floating/buried building components at write time; never repairs and never reverts a shift. */
 		public boolean buildingGuard = true;
+		/**
+		 * Plan A (user decision 2026-10-15): the writer refuses to write the road
+		 * block, the support fill or the upward clear for a claimed column whose
+		 * road block would land inside a movable building's 3D bounding box. A
+		 * smoothed road therefore never overwrites a building body; skipped columns
+		 * are counted ({@code building cells skipped} in {@code /vps stats}).
+		 */
+		public boolean protectBuildings = true;
 		/** Weight w1 of the HYBRID objective (w2 = 1). */
 		public double hybridWeightDeviation = 8.0;
 		/** Soft-constraint penalty per half-block of |dP| above 1 (cliff escape hatch). */
@@ -180,6 +188,12 @@ public final class VillagePathSmoothedConfig {
 	public static class Railing {
 		public boolean enabled = true;
 		public int minDropHeight = 1;
+		/**
+		 * User decision 2026-10-15: no railing on the single block in front of a
+		 * movable building's door, so a doorway can never be fenced in. Only the
+		 * door-front cell is skipped; the rest of the edge is unaffected.
+		 */
+		public boolean skipAtBuildingDoors = true;
 		public BlockByStyle leavesByStyle = new BlockByStyle(
 				"minecraft:oak_leaves",
 				"minecraft:acacia_leaves",

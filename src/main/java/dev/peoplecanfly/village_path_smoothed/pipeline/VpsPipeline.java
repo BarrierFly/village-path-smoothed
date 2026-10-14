@@ -128,7 +128,8 @@ public final class VpsPipeline {
 			solution.guardChecked = true;
 			runBuildingGuard(solution, ctx, config);
 		}
-		RoadWriter.write(solution.network, ctx, chunkBB, config, solution.shiftedComponents, String.valueOf(start.getChunkPos()));
+		RoadWriter.write(solution.network, ctx, chunkBB, config, solution.shiftedComponents,
+				solution.buildingBoxes, solution.doorFronts, String.valueOf(start.getChunkPos()));
 	}
 
 	/**
@@ -295,6 +296,9 @@ public final class VpsPipeline {
 		}
 		VpsVillageSolution solution = new VpsVillageSolution(network);
 		solution.solved = true;
+		// T5 never moves buildings, so the boxes are already final here
+		solution.buildingBoxes = BuildingComponents.movableBoxes(start.getPieces());
+		solution.doorFronts = BuildingComponents.doorFronts(start.getPieces());
 
 		long nanos = System.nanoTime() - begin;
 		SOLVE_NANOS.addAndGet(nanos);

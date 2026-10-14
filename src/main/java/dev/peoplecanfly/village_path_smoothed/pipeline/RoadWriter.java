@@ -87,6 +87,24 @@ public final class RoadWriter {
 	public static final AtomicLong FALLBACK_REANCHORS = new AtomicLong();
 	/** Aggregated diagnostic: cells whose fill/cut exceeded the configured cap (bridge deck / tunnel). */
 	public static final AtomicLong OVER_BUDGET_CELLS = new AtomicLong();
+	/**
+	 * Plan A (user decision 2026-10-15): claimed road cells skipped entirely
+	 * because their road block would land inside a movable building's 3D box, so
+	 * the building body is never overwritten. Non-zero is the count of columns the
+	 * road yields to a building.
+	 */
+	public static final AtomicLong BUILDING_CELLS_SKIPPED = new AtomicLong();
+	/**
+	 * User decision 2026-10-15: water-crossing cells whose solved surface is
+	 * above the water surface. They are rendered as a bridge deck with no support
+	 * fill from the waterbed (never a dirt causeway), unlike an at-water crossing
+	 * which keeps the scaffold.
+	 */
+	public static final AtomicLong WATER_BRIDGE_CELLS = new AtomicLong();
+	/** Railings suppressed on a movable building's door front (user decision 2026-10-15). */
+	public static final AtomicLong RAILINGS_SKIPPED_AT_DOOR = new AtomicLong();
+	/** Railings suppressed beside water because the road is not above the water surface (user decision 2026-10-15). */
+	public static final AtomicLong RAILINGS_SKIPPED_AT_WATER = new AtomicLong();
 	private static volatile boolean warnedClampedWrites;
 	private static volatile boolean warnedFallbackReanchors;
 
@@ -99,7 +117,7 @@ public final class RoadWriter {
 	 *        cell may take the single-cell surface nudge (never at a building door)
 	 */
 	public static void write(RoadNetwork net, VpsGenContext ctx, BoundingBox chunkBB, VillagePathSmoothedConfig config,
-			int[][] shiftedComponents, String village) {
+			int[][] shiftedComponents, int[][] buildingBoxes, int[][] doorFronts, String village) {
 		RoadMaterialTable table = RoadMaterialTable.create(config);
 		List<Block> kerbExtras = resolveKerbExtras(config);
 		// Review 4 section 9.3: with the vanilla street layer suppressed on every
@@ -115,7 +133,8 @@ public final class RoadWriter {
 				continue; // written when this cell's own chunk generates
 			}
 			try {
-				writeCell(net, cell, ctx, config, table, kerbExtras, sideColumnOwner, shiftedComponents, village);
+				writeCell(net, cell, ctx, config, table, kerbExtras, sideColumnOwner, shiftedComponents,
+						buildingBoxes, doorFronts, village);
 			} catch (Throwable t) {
 				VillagePathSmoothed.LOGGER.debug("[VPS] failed to write road cell {} {}", cell.x, cell.z, t);
 				// Review 4 risk R3: the cell's vanilla block is NOT there to fall
@@ -220,35 +239,42 @@ public final class RoadWriter {
 
 	private static void writeCell(RoadNetwork net, RoadCell cell, VpsGenContext ctx, VillagePathSmoothedConfig config,
 			RoadMaterialTable table, List<Block> kerbExtras, Map<Long, Integer> sideColumnOwner, int[][] shiftedComponents,
-			String village) {
+			int[][] buildingBoxes, int[][] doorFronts, String village) {
 		int x = cell.x;
 		int z = cell.z;
+
+		// ---- plan A (user decision 2026-10-15): a building always wins. A claimed
+		// column whose road block would land inside a movable building's 3D box is
+		// skipped entirely - no road block, no support fill, no upward clear - so
+		// smoothing can never overwrite a building body. Counted so the yield is
+		// visible in /vps stats.
+		if (config.roadSmoothing.protectBuildings && insideBuilding(buildingBoxes, x, z, cell.solvedP)) {
+			BUILDING_CELLS_SKIPPED.incrementAndGet();
+			return;
+		}
+
 		RoadMaterialTable.StyleMaterials materials = table.forStyle(cell.style);
 		int minY = ctx.getMinY();
 		int maxY = ctx.getMaxY();
 		// The raw heightmap read now only feeds the observations (the model-vs-real
-		// deviation and the refused-write warning) and the crossing predicate. Every
-		// FILL/CUT decision comes from the directional probes below (user decision
-		// 2026-10-14): the heightmap top is shadowed by canopies and overhangs, so it
-		// is the wrong surface for a road that runs through a multi-layer column.
+		// deviation and the refused-write warning), the crossing predicate and the
+		// upward clear end. Every FILL/CUT decision comes from the directional probes
+		// below (user decision 2026-10-14).
 		int heightTopY = ctx.realSurfaceTopY(x, z);
 
-		// ---- water crossing: scaffolding. The predicate is unchanged (water at the
-		// heightmap surface or one below); what changed is that the scaffold is now
-		// the crossing's WALK SURFACE, not the support under the road block.
+		// ---- water crossing. The predicate is unchanged (water at the heightmap
+		// surface or one below). What is new (user decision 2026-10-15):
+		//   * the crossing surface is never below the water surface - a profile below
+		//     it is raised to the water surface;
+		//   * AT the water surface the cell keeps its scaffold as before;
+		//   * ABOVE the water surface it is always a bridge deck - no scaffold and no
+		//     support fill from the waterbed, however shallow the water is.
+		// The water-surface walk surface is 2 * heightTopY: the surface block sits at
+		// heightTopY - 1 and a full block on it tops out at heightTopY.
 		int wt = heightTopY - 1; // vanilla puts the planks at the water surface
 		boolean waterAtWt = config.waterCrossing.enabled && isWater(ctx, x, wt, z);
 		boolean waterBelow = config.waterCrossing.enabled && isWater(ctx, x, wt - 1, z);
 		boolean crossing = config.waterCrossing.enabled && WaterCrossings.isCrossing(waterAtWt, waterBelow);
-		if (crossing) {
-			if (waterAtWt) {
-				VpsPipeline.SCAFFOLD_WATER_SELF.incrementAndGet();
-			} else if (waterBelow) {
-				VpsPipeline.SCAFFOLD_WATER_BELOW.incrementAndGet();
-			} else {
-				VpsPipeline.SCAFFOLD_DRY.incrementAndGet();
-			}
-		}
 
 		// ---- fix plan v4 D6-b: the writer never decides a height on its own.
 		// A cell that cannot carry its solved height (outside the dimension bounds)
@@ -276,13 +302,36 @@ public final class RoadWriter {
 		// village has no terrain yet), so the written surface can differ from the
 		// real one by a lot. That difference is MEASURED here - the writer is the
 		// only place both heights exist - and warned about, never corrected.
-		int writtenWalkSurface2 = RoadWritePolicy.crossingWalkSurface2(crossing, column.walkSurface2(), column.slab());
+		// The crossing surface is the water surface (scaffold) when the profile is
+		// at or below it, and the solved surface (bridge) when it is above. A
+		// profile below the water is raised to the water surface, so a crossing is
+		// never below water (user decision 2026-10-15).
+		int waterWalkSurface2 = 2 * heightTopY;
+		int profileWalkSurface2 = column.walkSurface2();
+		boolean aboveWater = crossing && profileWalkSurface2 > waterWalkSurface2;
+		boolean scaffold = crossing && !aboveWater;
+		int writtenWalkSurface2 = crossing
+				? RoadWritePolicy.crossingWrittenWalkSurface2(profileWalkSurface2, waterWalkSurface2)
+				: profileWalkSurface2;
+		if (crossing) {
+			if (scaffold) {
+				if (waterAtWt) {
+					VpsPipeline.SCAFFOLD_WATER_SELF.incrementAndGet();
+				} else if (waterBelow) {
+					VpsPipeline.SCAFFOLD_WATER_BELOW.incrementAndGet();
+				} else {
+					VpsPipeline.SCAFFOLD_DRY.incrementAndGet();
+				}
+			} else {
+				WATER_BRIDGE_CELLS.incrementAndGet();
+			}
+		}
 		recordDeviation(cell, heightTopY, writtenWalkSurface2, config, village);
 		if (column.overrodeSolved()) {
 			OVERRIDDEN_WRITES.incrementAndGet();
 		}
 		boolean slab = column.slab();
-		int roadTopBlockY = RoadWritePolicy.roadBlockY(writtenWalkSurface2, crossing ? false : slab);
+		int roadTopBlockY = RoadWritePolicy.roadBlockY(writtenWalkSurface2, scaffold ? false : slab);
 
 		// Per-cell directional probes (user decision 2026-10-14). Both start at the
 		// road block: a standable block there means the road is cut into terrain
@@ -299,7 +348,7 @@ public final class RoadWriter {
 		// manufactured a |dP| >= 2 step against the neighbouring solved cells
 		// (exactly the drop class N1 forbids) to hide a probe error that this
 		// counter now exposes instead.
-		if (config.roadSmoothing.enabled
+		if (config.roadSmoothing.enabled && !aboveWater
 				&& RoadWritePolicy.overBudget(cell.solvedP, groundTopY, ceilingTopY,
 						config.roadSmoothing.maxFillLayers, config.roadSmoothing.maxClearLayers)) {
 			FALLBACK_REANCHORS.incrementAndGet();
@@ -320,30 +369,11 @@ public final class RoadWriter {
 				}
 			}
 
-			// Support below the walk surface, down to the ground the downward probe
-			// found (never above it); when the fill exceeds maxFillLayers the column
-			// becomes a bridge deck instead (whole-block road: the single road block;
-			// slab road: the road slab rides on an upside-down top slab of the same
-			// material). The deck stays at the SOLVED height so the half-step
-			// constraint to neighbouring cells is preserved.
-			int fillLayers = roadTopBlockY - groundTopY;
-			boolean bridge = RoadWritePolicy.bridgeDeck(fillLayers, config.roadSmoothing.maxFillLayers);
-			if (bridge) {
-				OVER_BUDGET_CELLS.incrementAndGet();
-			} else {
-				fillSupport(ctx, x, z, groundTopY, roadTopBlockY, materials, config);
-			}
-
-			if (crossing) {
-				// The scaffold IS the crossing's walk surface (user decision
-				// 2026-10-14): replacing the road block is what makes a water
-				// crossing read as a plank bridge instead of a road with an
-				// invisible support block below it. On a slab cell the scaffold
-				// tops out half a block above the solved surface - accepted.
-				placeScaffolding(ctx, x, z, roadTopBlockY, isWater(ctx, x, roadTopBlockY, z), config);
-				VpsPipeline.SCAFFOLDS_PLACED.incrementAndGet();
-			} else {
-				if (bridge && slab) {
+			if (aboveWater) {
+				// A crossing above the water is always a bridge deck: no scaffold
+				// and no support fill from the waterbed, however close the bottom is
+				// (user decision 2026-10-15). The deck stays at the solved height.
+				if (slab) {
 					setBlock(ctx, x, roadTopBlockY - 1, z, materials.slabBlock
 							.defaultBlockState()
 							.setValue(SlabBlock.TYPE, SlabType.TOP));
@@ -352,16 +382,47 @@ public final class RoadWriter {
 						? materials.slabBlock.defaultBlockState()
 						: roadBlock.defaultBlockState();
 				setBlock(ctx, x, roadTopBlockY, z, roadState);
+			} else {
+				// Support below the walk surface, down to the ground the downward
+				// probe found (never above it); when the fill exceeds maxFillLayers
+				// the column becomes a bridge deck instead (whole-block road: the
+				// single road block; slab road: the road slab rides on an
+				// upside-down top slab of the same material).
+				int fillLayers = roadTopBlockY - groundTopY;
+				boolean bridge = RoadWritePolicy.bridgeDeck(fillLayers, config.roadSmoothing.maxFillLayers);
+				if (bridge) {
+					OVER_BUDGET_CELLS.incrementAndGet();
+				} else {
+					fillSupport(ctx, x, z, groundTopY, roadTopBlockY, materials, config);
+				}
+
+				if (scaffold) {
+					// The scaffold IS the crossing's walk surface (user decision
+					// 2026-10-14): replacing the road block is what makes a water
+					// crossing read as a plank bridge instead of a road with an
+					// invisible support block below it. Only AT the water surface
+					// now; a crossing above it takes the bridge branch above.
+					placeScaffolding(ctx, x, z, roadTopBlockY, isWater(ctx, x, roadTopBlockY, z), config);
+					VpsPipeline.SCAFFOLDS_PLACED.incrementAndGet();
+				} else {
+					if (bridge && slab) {
+						setBlock(ctx, x, roadTopBlockY - 1, z, materials.slabBlock
+								.defaultBlockState()
+								.setValue(SlabBlock.TYPE, SlabType.TOP));
+					}
+					BlockState roadState = slab
+							? materials.slabBlock.defaultBlockState()
+							: roadBlock.defaultBlockState();
+					setBlock(ctx, x, roadTopBlockY, z, roadState);
+				}
 			}
-			// clear whatever the vanilla generation left above the road block
-			// (old road block, grass patch holes, planks) - this also restores the
-			// grass patch holes (Q12) because the road block is written over them;
-			// the clearing ceiling comes from the upward probe, so a canopy above an
-			// open road is left alone while real terrain is cleared. With a clear cap
-			// the remaining terrain becomes a tunnel roof lined with the kerb material
-			clearAbove(ctx, x, z, roadTopBlockY, ceilingTopY, config);
-			int clearTop = RoadWritePolicy.clearTopY(roadTopBlockY, ceilingTopY, config.roadSmoothing.maxClearLayers);
-			if (RoadWritePolicy.tunnelRoof(roadTopBlockY, ceilingTopY, clearTop, config.roadSmoothing.maxClearLayers)) {
+			// Clear upward to min(clear cap, real surface top): never stop at the
+			// first air, so a cave inside the cap is cleared out too (user decision
+			// 2026-10-15). The real surface top replaces the contiguous-ceiling
+			// probe as the clear end.
+			clearAbove(ctx, x, z, roadTopBlockY, heightTopY, config);
+			int clearTop = RoadWritePolicy.clearTopY(roadTopBlockY, heightTopY, config.roadSmoothing.maxClearLayers);
+			if (RoadWritePolicy.tunnelRoof(roadTopBlockY, heightTopY, clearTop, config.roadSmoothing.maxClearLayers)) {
 				OVER_BUDGET_CELLS.incrementAndGet();
 				// line the tunnel roof with the style's kerb material (report:
 				// "包边覆盖隧道顶"; the side kerb below keeps replacing #dirt only)
@@ -371,7 +432,7 @@ public final class RoadWriter {
 		VpsPipeline.ROAD_CELLS_WRITTEN.incrementAndGet();
 
 		// ---- kerbs and railings on side edges (5.5)
-		applyKerbsAndRailings(net, cell, ctx, config, materials, kerbExtras, roadTopBlockY, writtenWalkSurface2, sideColumnOwner);
+		applyKerbsAndRailings(net, cell, ctx, config, materials, kerbExtras, roadTopBlockY, writtenWalkSurface2, sideColumnOwner, doorFronts);
 	}
 
 	/** Support fill from the ground block up to (not including) the road block. */
@@ -510,7 +571,7 @@ public final class RoadWriter {
 	 */
 	private static void applyKerbsAndRailings(RoadNetwork net, RoadCell cell, VpsGenContext ctx, VillagePathSmoothedConfig config,
 			RoadMaterialTable.StyleMaterials materials, List<Block> kerbExtras, int roadTopBlockY, int writtenWalkSurface2,
-			Map<Long, Integer> sideColumnOwner) {
+			Map<Long, Integer> sideColumnOwner, int[][] doorFronts) {
 		int sRoad2 = writtenWalkSurface2;
 		for (int dir = 0; dir < 4; dir++) {
 			int outX = cell.x + SIDE_DX[dir];
@@ -556,10 +617,78 @@ public final class RoadWriter {
 			if (config.kerb.enabled && RoadWritePolicy.kerbApplies(sSide2, sRoad2, config.kerb.minDropHeight)) {
 				placeKerb(ctx, outX, outZ, roadTopBlockY, sideSurfaceTopY, materials, kerbExtras);
 			}
-			if (config.railing.enabled && RoadWritePolicy.railingApplies(sSide2, sRoad2, config.railing.minDropHeight)) {
+
+			if (!config.railing.enabled) {
+				continue;
+			}
+			// User decision 2026-10-15: the single block in front of a movable
+			// building's door is never fenced, so a doorway cannot be closed off. It
+			// overrides both the drop rule and the water rule below.
+			if (config.railing.skipAtBuildingDoors && doorFrontBlocksRailing(doorFronts, outX, outZ)) {
+				RAILINGS_SKIPPED_AT_DOOR.incrementAndGet();
+				continue;
+			}
+			// User decision 2026-10-15: a water side column overrides the drop
+			// threshold - no railing while the road is not above the water surface,
+			// a railing as soon as it is (even half a block). This is what stops a
+			// railing from being planted into the water beside a water-level road.
+			Integer waterTopY = sideWaterTopY(ctx, outX, outZ, roadTopBlockY);
+			if (waterTopY != null) {
+				int waterWalkSurface2 = 2 * (waterTopY + 1);
+				if (sRoad2 > waterWalkSurface2) {
+					placeRailing(ctx, outX, outZ, roadTopBlockY + 1, materials);
+				} else {
+					RAILINGS_SKIPPED_AT_WATER.incrementAndGet();
+				}
+				continue;
+			}
+			if (RoadWritePolicy.railingApplies(sSide2, sRoad2, config.railing.minDropHeight)) {
 				placeRailing(ctx, outX, outZ, roadTopBlockY + 1, materials);
 			}
 		}
+	}
+
+	/** Highest water block at the side column within two blocks below the road block, or null when dry there. */
+	private static Integer sideWaterTopY(VpsGenContext ctx, int x, int z, int roadTopBlockY) {
+		for (int dy = 0; dy <= 1; dy++) {
+			if (isWater(ctx, x, roadTopBlockY - dy, z)) {
+				return roadTopBlockY - dy;
+			}
+		}
+		return null;
+	}
+
+	/** True when the side column is the door front of a movable building (within one block). */
+	private static boolean doorFrontBlocksRailing(int[][] doorFronts, int x, int z) {
+		if (doorFronts == null) {
+			return false;
+		}
+		for (int[] door : doorFronts) {
+			if (Math.abs(x - door[0]) <= 1 && Math.abs(z - door[1]) <= 1) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Plan A (user decision 2026-10-15): true when the cell's road block would
+	 * land inside a movable building's 3D box {minX,maxX,minY,maxY,minZ,maxZ}.
+	 * The Y test keeps a road that passes well below a building's basement (or
+	 * well above it) from being skipped.
+	 */
+	private static boolean insideBuilding(int[][] buildingBoxes, int x, int z, int solvedP) {
+		if (buildingBoxes == null) {
+			return false;
+		}
+		int blockY = RoadWritePolicy.roadTopBlockY(solvedP);
+		for (int[] box : buildingBoxes) {
+			if (x >= box[0] && x <= box[1] && z >= box[4] && z <= box[5]
+					&& blockY >= box[2] - 1 && blockY <= box[3] + 1) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/** Replaces dirt-tag blocks on the side column from the road block up to the side surface (Q07/Q08: no upper limit). */

@@ -98,29 +98,22 @@ public final class RoadWritePolicy {
 	}
 
 	/**
-	 * Where the scaffolding of a water crossing goes (user decision 2026-10-14).
+	 * Walk surface a water crossing is written at (user decision 2026-10-15).
 	 *
-	 * <p>The scaffold used to be support <em>under</em> the profile road block
-	 * (fix plan v4 D6-b), which put it one block under the water surface and out
-	 * of sight. It is now the crossing's <b>walk surface</b> - the scaffold
-	 * replaces the road block at the solved height, which is what makes the
-	 * crossing read as a plank bridge again.
+	 * <p>A crossing is never below the water surface: a profile at or below it is
+	 * raised to {@code waterWalkSurface2}, where the scaffold sits (the scaffold is
+	 * the crossing's walk surface, user decision 2026-10-14). A profile above the
+	 * water keeps its solved surface and becomes a bridge deck - the writer places
+	 * no scaffolding and no support fill from the waterbed there, however shallow
+	 * the water is.
 	 *
-	 * <p>The known cost: a scaffold is a full block, so on a cell whose solved
-	 * surface is a half-block (a bottom slab) the crossing tops out half a block
-	 * above the solved surface. The user accepted that; do not "fix" it by
-	 * snapping the solved height, which would break the half-step chain the
-	 * whole solver exists for.
-	 *
-	 * @return the walk surface in half-block units ({@code S = 2 * surface}):
-	 *         the full scaffold's top, or {@code writtenWalkSurface2} unchanged
-	 *         for the road block when the cell is not a crossing
+	 * @param profileWalkSurface2 the cell's written walk surface before the water rule
+	 * @param waterWalkSurface2 the water surface in walk units ({@code 2 * surfaceTopY})
+	 * @return {@code max(profile, water)}: the scaffold top at or below water, the
+	 *         solved (bridge) surface above it
 	 */
-	public static int crossingWalkSurface2(boolean crossing, int writtenWalkSurface2, boolean slab) {
-		if (!crossing) {
-			return writtenWalkSurface2;
-		}
-		return roadWalkSurface2(roadBlockY(writtenWalkSurface2, slab), false);
+	public static int crossingWrittenWalkSurface2(int profileWalkSurface2, int waterWalkSurface2) {
+		return Math.max(profileWalkSurface2, waterWalkSurface2);
 	}
 
 	/**

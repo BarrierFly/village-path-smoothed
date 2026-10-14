@@ -204,7 +204,7 @@ public final class VpsCommands {
 				"[VPS] villages solved: %d (%.2f ms avg)%n"
 						+ "  roads      : cells written %d, kerbs %d, railings %d, scaffolds %d (water-self %d / water-below %d / dry %d)%n"
 						+ "  integrity  : dropped cells %d (noise-reprobed %d), split masks %d, declined %d, largest component %s%%, widest break avg %s / max %d%n"
-						+ "  defects    : writer overrides %d, clamped %d, surface fallbacks %d, over-budget %d, edge drops > 1 block %d (worst %d half units)%n"
+						+ "  defects    : writer overrides %d, nudged to the surface %d, refused %d (out of world %d), surface fallbacks %d, over-budget %d, edge drops > 1 block %d (worst %d half units)%n"
 						+ "  solve      : contradictions %d, step violations %d (worst %d), seam re-solves refused %d, water anchor deviations %d, villages without arms %d%n"
 						+ "  suppression: vanilla road blocks dropped %d (passed through %d)%n"
 						+ "  buildings  : T1.5 applied %d (no-server %d), components %d, shifted %d, unserved %d, no-road %d, overlap guards %d, floating %d, buried %d%n"
@@ -226,6 +226,8 @@ public final class VpsCommands {
 				splitVillages > 0 ? String.format("%.1f", (double) gapSum / splitVillages) : "-",
 				RoadCollector.GAP_WIDTH_MAX.get(),
 				RoadWriter.OVERRIDDEN_WRITES.get(),
+				RoadWriter.NUDGED_WRITES.get(),
+				RoadWriter.REFUSED_WRITES.get(),
 				RoadWriter.CLAMPED_WRITES.get(),
 				VpsPipeline.SURFACE_FALLBACK_WRITES.get(),
 				RoadWriter.OVER_BUDGET_CELLS.get(),

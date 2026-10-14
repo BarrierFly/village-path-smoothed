@@ -436,6 +436,8 @@ public class RoadNetworkBenchTest {
 		int intViolEdg;
 		int intWorstP;
 		int writeOverrideCells;
+		int writeNudgedCells;
+		int nudgedAtEntrance;
 		int writeRefusedCells;
 		int edgeViolEdg;
 		int edgeWorstDrop;
@@ -542,6 +544,13 @@ public class RoadNetworkBenchTest {
 	 * Writer-side measurement. The written walk surface comes from
 	 * {@link RoadWritePolicy}, i.e. the same functions the writer calls, so this
 	 * covers the per-cell overrides of fix plan v4 F7 instead of restating them.
+	 *
+	 * <p>Three outcomes per cell: the solved surface is written (the only case a
+	 * strict reading of "the writer may not decide a height" allows), the guarded
+	 * single-cell surface nudge is written (legal only when it keeps every
+	 * neighbour within half a block and is not at a building door), or the cell is
+	 * refused. {@code writtenViolEdg} is the gate: whatever combination of the
+	 * three happened, the road in the world must still be continuous.
 	 */
 	private static void measureWriter(RoadNetwork net, Height real, Metrics m) {
 		int[] written = new int[net.cells.size()];
@@ -555,13 +564,24 @@ public class RoadNetworkBenchTest {
 			RoadWritePolicy.Column column = waterAtRoadBlock || waterBelow
 					? RoadWritePolicy.waterCrossingColumn(cell.solvedP, realTop, true, waterAtRoadBlock, waterBelow, MIN_Y, MAX_Y)
 					: RoadWritePolicy.profileColumn(cell.solvedP, MIN_Y, MAX_Y);
+			if (!column.written()) {
+				column = RoadWritePolicy.surfaceNudgeColumn(cell.solvedP, realTop, MIN_Y, MAX_Y,
+						neighbourSurfaces(net, cell), nearEntrance(cell));
+			}
 			hasWritten[i] = column.written();
 			written[i] = column.walkSurface2();
-			if (column.overrodeSolved()) {
+			if (column.written() && column.overrodeSolved()) {
 				m.writeOverrideCells++;
+			}
+			if (column.written() && column.walkSurface2() != cell.solvedP) {
+				m.writeNudgedCells++;
+				if (nearEntrance(cell)) {
+					m.nudgedAtEntrance++;
+				}
 			}
 			if (!column.written()) {
 				m.writeRefusedCells++;
+				continue;
 			}
 			int dev = Math.abs(written[i] - 2 * realTop);
 			devs.add(dev);
@@ -597,6 +617,30 @@ public class RoadNetworkBenchTest {
 				}
 			}
 		}
+	}
+
+	/** The bench's buildings, as footprints: the writer never nudges beside one. */
+	private static final int[][] BUILDINGS = {{-20, 0, 5, 5}, {30, 22, 5, 5}};
+
+	private static boolean nearEntrance(RoadCell cell) {
+		for (int[] b : BUILDINGS) {
+			if (Math.abs(cell.x - b[0]) <= b[2] + 1 && Math.abs(cell.z - b[1]) <= b[3] + 1) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private static int[] neighbourSurfaces(RoadNetwork net, RoadCell cell) {
+		int[] out = new int[4];
+		int n = 0;
+		for (int dir = 0; dir < 4; dir++) {
+			int j = net.neighbors[cell.index][dir];
+			if (j >= 0) {
+				out[n++] = net.cells.get(j).solvedP;
+			}
+		}
+		return n == 0 ? null : java.util.Arrays.copyOf(out, n);
 	}
 
 	private static boolean crossesChunkBoundary(RoadCell a, RoadCell b) {
@@ -711,21 +755,23 @@ public class RoadNetworkBenchTest {
 	}
 
 	/**
-	 * Fix plan v4 M5 / X-a(1): the writer may not decide a height. A legal mask
-	 * solution that the writer then overrides is exactly the "chunks do not
-	 * match" symptom, and it is invisible to {@code intViolEdg}.
+	 * Fix plan v4 M5 / X-a(1): the written road may not step. A legal mask
+ * solution that the writer then breaks is exactly the "chunks do not match"
+	 * symptom, and it is invisible to {@code intViolEdg}. The single-cell surface
+ * nudge is allowed (AGENTS.md, 2026-10-14), so the gate is continuity plus the
+ * nudge's own two criteria: never at a building door, and never a step.
 	 */
 	@Test
-	public void theWriterNeverOverridesTheSolution() {
+	public void theWrittenRoadIsContinuousAndOnlyNudgesWhereItIsLegal() {
 		for (NetworkShape network : NETWORKS) {
 			for (SolverPath path : PATHS) {
 				for (TerrainShape terrain : TERRAINS) {
 					Metrics m = measure(mask(network, terrain), terrain, path);
 					String where = network + "/" + path + "/" + terrain;
-					assertEquals(where + ": no writer-side height override", 0, m.writeOverrideCells);
-					assertEquals(where + ": no refused column", 0, m.writeRefusedCells);
 					assertEquals(where + ": the written road is legal", 0, m.writtenViolEdg);
 					assertEquals(where + ": the worst written step is 0", 0, m.writtenWorst);
+					assertEquals(where + ": no column refused outright", 0, m.writeRefusedCells);
+					assertEquals(where + ": a nudge never happens beside a building door", 0, m.nudgedAtEntrance);
 				}
 			}
 		}
@@ -914,12 +960,13 @@ public class RoadNetworkBenchTest {
 							m.stepsPerCell <= 1.0);
 					report.append(String.format(
 							"%-22s cells=%4d comps=%d declined=%s solve=%dms steps/cell=%.2f dev/cell=%.2f overBud=%.1f%% maxDev=%d devP99=%d climbP99=%d"
-									+ " | edgeViol=%d edgeWorst=%d bareEdge=%d"
+									+ " | edgeViol=%d edgeWorst=%d bareEdge=%d writeOverride=%d nudged=%d nudgedAtDoor=%d refused=%d"
 									+ " | devVsReal p50/p95/p99/max=%d/%d/%d/%d overWarn=%d cutBelow=%d fillAbove=%d%n",
 							where, m.cells, m.components, m.declined, m.solveNanos / 1000000,
 							m.stepsPerCell, m.devPerCell, 100 * m.overBudgetRatio,
 							(int) m.maxDev, (int) m.devP99, (int) m.armClimbP99,
 							m.edgeViolEdg, m.edgeWorstDrop, m.bareEdgeBlocks,
+							m.writeOverrideCells, m.writeNudgedCells, m.nudgedAtEntrance, m.writeRefusedCells,
 							m.devVsRealP50, m.devVsRealP95, m.devVsRealP99, m.devVsRealMax,
 							m.devOverThresholdCells, m.cutBelowTerrainCells, m.fillAboveTerrainCells));
 				}

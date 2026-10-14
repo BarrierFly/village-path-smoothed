@@ -29,17 +29,23 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Rewrites road cells inside one chunk's writable area (plan sections 5.4-5.6).
+	 * Rewrite road cells inside one chunk's writable area (plan sections 5.4-5.6).
  *
- * Slabs are always bottom slabs (no stairs, no orientation), so placement is
+ * <p>Slabs are always bottom slabs (no stairs, no orientation), so placement is
  * independent of the piece rotation. Writing uses the vanilla structure flags
  * (UPDATE_CLIENTS | UPDATE_KNOWN_SHAPE): no client updates during worldgen and
  * heightmaps are left alone, exactly like StructureTemplate#placeInWorld.
+ *
+ * <p>Fix plan v4 D6-b: every column's height comes from {@link RoadWritePolicy}
+ * and is the cell's <em>solved</em> surface. A cell that cannot carry it is
+ * offered the single-cell surface nudge (AGENTS.md, 2026-10-14) and otherwise
+ * refused; a per-cell exception takes the same path instead of silently pinning
+ * the column to the terrain.
  */
 public final class RoadWriter {
 	private static final int WRITE_FLAGS = Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE;
 
-	/** Aggregated diagnostic: cells clamped to a dimension bound instead of being written at the solved height. */
+	/** Aggregated diagnostic: cells whose solved height was outside the world bounds and the nudge was refused. */
 	public static final AtomicLong CLAMPED_WRITES = new AtomicLong();
 	/**
 	 * Fix plan v4 F7 / M1: cells whose written walk surface is not the cell's
@@ -48,6 +54,21 @@ public final class RoadWriter {
 	 * the mask can be perfectly legal and the world still wrong.
 	 */
 	public static final AtomicLong OVERRIDDEN_WRITES = new AtomicLong();
+	/**
+	 * Fix plan v4 D6-b: cells written at the real surface because their solved
+	 * height could not be used (out of bounds, or their profile write threw).
+	 * Legal only under the AGENTS.md nudge rule - never a step against a
+	 * neighbour, never beside a building door - and counted so a spike is visible.
+	 */
+	public static final AtomicLong NUDGED_WRITES = new AtomicLong();
+	/**
+	 * Fix plan v4 D6-b: cells the writer refused outright, i.e. it wrote nothing
+	 * where a claimed column used to get a road block. Should stay at zero; a
+	 * non-zero value means a solved height left the world bounds and the nudge
+	 * was not legal either.
+	 */
+	public static final AtomicLong REFUSED_WRITES = new AtomicLong();
+	private static final AtomicLong REFUSED_WARNED = new AtomicLong();
 	/**
 	 * Fix plan v4 D4-a: side columns beside the road where the lateral drop is
 	 * more than one whole block, plus the worst such drop in half-block units.
@@ -72,7 +93,13 @@ public final class RoadWriter {
 	private RoadWriter() {
 	}
 
-	public static void write(RoadNetwork net, VpsGenContext ctx, BoundingBox chunkBB, VillagePathSmoothedConfig config) {
+	/**
+	 * @param shiftedComponents footprints {minX, maxX, minZ, maxZ, baseY} of the
+	 *        RIGID components T1.5 moved, or an empty array. They decide whether a
+	 *        cell may take the single-cell surface nudge (never at a building door)
+	 */
+	public static void write(RoadNetwork net, VpsGenContext ctx, BoundingBox chunkBB, VillagePathSmoothedConfig config,
+			int[][] shiftedComponents) {
 		RoadMaterialTable table = RoadMaterialTable.create(config);
 		List<Block> kerbExtras = resolveKerbExtras(config);
 		// Review 4 section 9.3: with the vanilla street layer suppressed on every
@@ -88,14 +115,16 @@ public final class RoadWriter {
 				continue; // written when this cell's own chunk generates
 			}
 			try {
-				writeCell(net, cell, ctx, config, table, kerbExtras, sideColumnOwner);
+				writeCell(net, cell, ctx, config, table, kerbExtras, sideColumnOwner, shiftedComponents);
 			} catch (Throwable t) {
 				VillagePathSmoothed.LOGGER.debug("[VPS] failed to write road cell {} {}", cell.x, cell.z, t);
 				// Review 4 risk R3: the cell's vanilla block is NOT there to fall
 				// back on any more (it was suppressed), so a per-cell failure has
-				// to leave something behind itself. The real surface is the only
-				// height that is trustworthy at write time.
-				writeSurfaceFallback(cell, ctx, config, table);
+				// to leave something behind itself. Fix plan v4 D6-b replaces the
+				// unconditional surface pin with the same guarded nudge every other
+				// fallback uses: it is the only height that is trustworthy at write
+				// time, and it is only used when it cannot step.
+				writeSurfaceFallback(net, cell, ctx, config, table, shiftedComponents);
 			}
 		}
 	}
@@ -128,14 +157,28 @@ public final class RoadWriter {
 	}
 
 	/**
-	 * Last-resort road block at the real surface, used when the profile write
-	 * threw. Deliberately the simplest possible column: no slab parity games,
-	 * no kerbs, no railings - just a road surface where vanilla would have put
-	 * one, so a claimed cell is never a hole in the world.
+	 * Last-resort road block when the profile write threw.
+	 *
+	 * <p>Deliberately the simplest possible column: no slab parity games, no
+	 * kerbs, no railings. The height is the real surface, but it is no longer
+	 * taken unconditionally - fix plan v4 D6-b routes it through the same
+	 * {@link RoadWritePolicy#surfaceNudgeColumn} guard as every other fallback,
+	 * so a cell whose write threw cannot become a step against its neighbours
+	 * either. It is refused (and counted) when the nudge is not legal, which is
+	 * the one case where a claimed column has no road block at all.
 	 */
-	private static void writeSurfaceFallback(RoadCell cell, VpsGenContext ctx, VillagePathSmoothedConfig config, RoadMaterialTable table) {
+	private static void writeSurfaceFallback(RoadNetwork net, RoadCell cell, VpsGenContext ctx,
+			VillagePathSmoothedConfig config, RoadMaterialTable table, int[][] shiftedComponents) {
 		try {
 			int topY = ctx.realSurfaceTopY(cell.x, cell.z);
+			RoadWritePolicy.Column column = RoadWritePolicy.surfaceNudgeColumn(cell.solvedP, topY,
+					ctx.getMinY(), ctx.getMaxY(), neighbourSurfaces(net, cell),
+					nearBuildingEntrance(shiftedComponents, cell.x, cell.z));
+			if (!column.written()) {
+				REFUSED_WRITES.incrementAndGet();
+				warnRefused(cell, topY);
+				return;
+			}
 			Block road = table.forStyle(cell.style).roadBlock;
 			Block configured = "STYLE_ROAD".equals(config.roadSmoothing.fillMaterial)
 					? null
@@ -143,9 +186,10 @@ public final class RoadWriter {
 			if (configured != null) {
 				road = configured;
 			}
-			setBlock(ctx, cell.x, topY - 1, cell.z, road.defaultBlockState());
+			setBlock(ctx, cell.x, RoadWritePolicy.roadBlockY(column.walkSurface2(), column.slab()), cell.z,
+					road.defaultBlockState());
 			VpsPipeline.SURFACE_FALLBACK_WRITES.incrementAndGet();
-			OVERRIDDEN_WRITES.incrementAndGet();
+			NUDGED_WRITES.incrementAndGet();
 		} catch (Throwable t) {
 			VillagePathSmoothed.LOGGER.debug("[VPS] surface fallback failed at {} {}", cell.x, cell.z, t);
 		}
@@ -155,49 +199,56 @@ public final class RoadWriter {
 	private static final int[] SIDE_DZ = {0, 0, -1, 1};
 
 	private static void writeCell(RoadNetwork net, RoadCell cell, VpsGenContext ctx, VillagePathSmoothedConfig config,
-			RoadMaterialTable table, List<Block> kerbExtras, Map<Long, Integer> sideColumnOwner) {
+			RoadMaterialTable table, List<Block> kerbExtras, Map<Long, Integer> sideColumnOwner, int[][] shiftedComponents) {
 		int x = cell.x;
 		int z = cell.z;
 		int topY = ctx.realSurfaceTopY(x, z);
 		RoadMaterialTable.StyleMaterials materials = table.forStyle(cell.style);
+		int minY = ctx.getMinY();
+		int maxY = ctx.getMaxY();
 
 		// ---- water crossing: scaffolding instead of the vanilla planks (5.6)
-		if (config.waterCrossing.enabled) {
-			int wt = topY - 1; // vanilla puts the planks at the water surface
-			boolean waterAtWt = isWater(ctx, x, wt, z);
-			boolean waterBelow = isWater(ctx, x, wt - 1, z);
-			boolean crossing = WaterCrossings.isCrossing(waterAtWt, waterBelow);
-			// Review 4 section 9.3: the dry-plank signal is gone. It used to be
-			// "a block that already is planks", which only existed because vanilla
-			// had placed its street layer first; with that layer suppressed on
-			// claimed columns, street_plains can no longer turn a claimed cell
-			// into planks and the check would never fire again. The fluid
-			// predicate was always the real signal; the dry branch only ever
-			// existed to count a vanilla behaviour that is now gone.
-			if (crossing) {
-				if (waterAtWt) {
-					VpsPipeline.SCAFFOLD_WATER_SELF.incrementAndGet();
-				} else if (waterBelow) {
-					VpsPipeline.SCAFFOLD_WATER_BELOW.incrementAndGet();
-				} else {
-					VpsPipeline.SCAFFOLD_DRY.incrementAndGet();
-				}
-				// the scaffold lands on the vanilla surface height, not on the
-				// solved profile: one of the three per-cell overrides of F7, and
-				// the reason a water crossing is a step against its solved
-				// neighbours. Counted until fix plan v4 D6-b (M5) moves it onto
-				// the solved height.
-				OVERRIDDEN_WRITES.incrementAndGet();
-				placeScaffolding(cell, ctx, x, z, topY, waterAtWt, config);
-				VpsPipeline.SCAFFOLDS_PLACED.incrementAndGet();
-				return;
+		int wt = topY - 1; // vanilla puts the planks at the water surface
+		boolean waterAtWt = config.waterCrossing.enabled && isWater(ctx, x, wt, z);
+		boolean waterBelow = config.waterCrossing.enabled && isWater(ctx, x, wt - 1, z);
+		boolean crossing = config.waterCrossing.enabled && WaterCrossings.isCrossing(waterAtWt, waterBelow);
+		if (crossing) {
+			if (waterAtWt) {
+				VpsPipeline.SCAFFOLD_WATER_SELF.incrementAndGet();
+			} else if (waterBelow) {
+				VpsPipeline.SCAFFOLD_WATER_BELOW.incrementAndGet();
+			} else {
+				VpsPipeline.SCAFFOLD_DRY.incrementAndGet();
 			}
 		}
 
-		// ---- profile rewrite (5.4); skipped when smoothing is disabled
-		int p = cell.solvedP;
-		boolean slab = (p & 1) != 0;
-		int roadTopBlockY = RoadWritePolicy.roadTopBlockY(p);
+		// ---- fix plan v4 D6-b: the writer never decides a height on its own.
+		// Both branches read the cell's solved surface; a cell that cannot carry it
+		// (outside the dimension bounds) or whose profile write threw is offered the
+		// single-cell surface nudge, and refused outright when that would step.
+		RoadWritePolicy.Column column = crossing
+				? RoadWritePolicy.waterCrossingColumn(cell.solvedP, topY, config.waterCrossing.enabled, waterAtWt, waterBelow, minY, maxY)
+				: RoadWritePolicy.profileColumn(cell.solvedP, minY, maxY);
+		if (!column.written()) {
+			column = RoadWritePolicy.surfaceNudgeColumn(cell.solvedP, topY, minY, maxY,
+					neighbourSurfaces(net, cell), nearBuildingEntrance(shiftedComponents, x, z));
+			if (column.written()) {
+				NUDGED_WRITES.incrementAndGet();
+			} else {
+				// the old behaviour wrote the clamped height; keeping the counter so a
+				// regression to "clamp and write" is still visible in /vps stats
+				CLAMPED_WRITES.incrementAndGet();
+				REFUSED_WRITES.incrementAndGet();
+				warnRefused(cell, topY);
+				return;
+			}
+		}
+		if (column.overrodeSolved()) {
+			OVERRIDDEN_WRITES.incrementAndGet();
+		}
+		boolean slab = column.slab();
+		int roadTopBlockY = RoadWritePolicy.roadBlockY(column.walkSurface2(), slab);
+
 		// ---- over-budget observation (fix plan v2 R3, decision N7): the writer
 		// is a renderer, not a second solver. A cell whose solved walk surface
 		// is beyond every affordable fill/cut is COUNTED and warned about, and
@@ -208,25 +259,27 @@ public final class RoadWriter {
 		// (exactly the drop class N1 forbids) to hide a probe error that this
 		// counter now exposes instead.
 		if (config.roadSmoothing.enabled
-				&& RoadWritePolicy.overBudget(p, topY, config.roadSmoothing.maxFillLayers, config.roadSmoothing.maxClearLayers)) {
+				&& RoadWritePolicy.overBudget(cell.solvedP, topY, config.roadSmoothing.maxFillLayers, config.roadSmoothing.maxClearLayers)) {
 			FALLBACK_REANCHORS.incrementAndGet();
 			if (!warnedFallbackReanchors) {
 				warnedFallbackReanchors = true;
-				VillagePathSmoothed.LOGGER.warn("[VPS] road cell at {} {} solved walk surface {} is beyond the fill/cut budget (real surface {}); kept the solved height - observation, not corrected; a non-zero count means the probe or solver was off", x, z, p / 2.0, topY);
+				VillagePathSmoothed.LOGGER.warn("[VPS] road cell at {} {} solved walk surface {} is beyond the fill/cut budget (real surface {}); kept the solved height - observation, not corrected; a non-zero count means the probe or solver was off", x, z, cell.solvedP / 2.0, topY);
 			}
 		}
-		roadTopBlockY = Math.max(ctx.getMinY(), Math.min(ctx.getMaxY(), roadTopBlockY));
-		// Report 2.3/5-④: silent clamping was garbage-in-garbage-out with zero
-		// log clues. The probe-side garbage filters (VpsGenContext/RoadCollector)
-		// should keep this near zero now; counting + a throttled warn keeps any
-		// residual case diagnosable
-		if (roadTopBlockY <= ctx.getMinY() || roadTopBlockY >= ctx.getMaxY()) {
-			CLAMPED_WRITES.incrementAndGet();
-			OVERRIDDEN_WRITES.incrementAndGet();
-			if (!warnedClampedWrites) {
-				warnedClampedWrites = true;
-				VillagePathSmoothed.LOGGER.warn("[VPS] road cell at {} {} clamps to a dimension bound (y={}); this normally means a garbage height survived the probe filters", x, z, roadTopBlockY);
+
+		if (crossing) {
+			// the scaffold carries the solved road height, and the column below it
+			// is filled or cleared exactly like a normal road column
+			placeScaffolding(ctx, x, z, roadTopBlockY, isWater(ctx, x, roadTopBlockY, z), config);
+			if (roadTopBlockY > topY - 1) {
+				fillSupport(ctx, x, z, topY, roadTopBlockY, materials, config);
+			} else if (roadTopBlockY < topY - 1) {
+				clearAbove(ctx, x, z, roadTopBlockY, topY, config);
 			}
+			VpsPipeline.SCAFFOLDS_PLACED.incrementAndGet();
+			VpsPipeline.ROAD_CELLS_WRITTEN.incrementAndGet();
+			applyKerbsAndRailings(net, cell, ctx, config, materials, kerbExtras, roadTopBlockY, slab, sideColumnOwner);
+			return;
 		}
 
 		if (config.roadSmoothing.enabled) {
@@ -262,9 +315,7 @@ public final class RoadWriter {
 				applyKerbsAndRailings(net, cell, ctx, config, materials, kerbExtras, roadTopBlockY, slab, sideColumnOwner);
 				return;
 			}
-			for (int y = topY - 1; y < roadTopBlockY; y++) {
-				setBlock(ctx, x, y, z, roadBlock.defaultBlockState());
-			}
+			fillSupport(ctx, x, z, topY, roadTopBlockY, materials, config);
 			// road block itself (replaces the vanilla road block / grass patch hole)
 			BlockState roadState = slab
 					? materials.slabBlock.defaultBlockState()
@@ -275,21 +326,81 @@ public final class RoadWriter {
 			// grass patch holes (Q12) because the road block is written over them;
 			// with a clear cap the remaining terrain becomes a tunnel roof lined
 			// with the kerb material
-			int clearTop = RoadWritePolicy.clearTopY(roadTopBlockY, topY, config.roadSmoothing.maxClearLayers);
-			for (int y = roadTopBlockY + 1; y <= clearTop; y++) {
-				setBlock(ctx, x, y, z, Blocks.AIR.defaultBlockState());
-			}
-			if (RoadWritePolicy.tunnelRoof(roadTopBlockY, topY, clearTop, config.roadSmoothing.maxClearLayers)) {
+			clearAbove(ctx, x, z, roadTopBlockY, topY, config);
+			if (RoadWritePolicy.tunnelRoof(roadTopBlockY, topY, RoadWritePolicy.clearTopY(roadTopBlockY, topY, config.roadSmoothing.maxClearLayers), config.roadSmoothing.maxClearLayers)) {
 				OVER_BUDGET_CELLS.incrementAndGet();
 				// line the tunnel roof with the style's kerb material (report:
 				// "包边覆盖隧道顶"; the side kerb below keeps replacing #dirt only)
-				setBlock(ctx, x, clearTop + 1, z, materials.kerbBlock.defaultBlockState());
+				setBlock(ctx, x, RoadWritePolicy.clearTopY(roadTopBlockY, topY, config.roadSmoothing.maxClearLayers) + 1, z, materials.kerbBlock.defaultBlockState());
 			}
 		}
 		VpsPipeline.ROAD_CELLS_WRITTEN.incrementAndGet();
 
 		// ---- kerbs and railings on side edges (5.5)
 		applyKerbsAndRailings(net, cell, ctx, config, materials, kerbExtras, roadTopBlockY, slab, sideColumnOwner);
+	}
+
+	/** Support fill between the real surface and the road block (never above the surface). */
+	private static void fillSupport(VpsGenContext ctx, int x, int z, int topY, int roadTopBlockY,
+			RoadMaterialTable.StyleMaterials materials, VillagePathSmoothedConfig config) {
+		Block roadBlock = materials.roadBlock;
+		if (!"STYLE_ROAD".equals(config.roadSmoothing.fillMaterial)) {
+			Block configured = VpsCompat.blockById(config.roadSmoothing.fillMaterial);
+			if (configured != null) {
+				roadBlock = configured;
+			}
+		}
+		for (int y = topY - 1; y < roadTopBlockY; y++) {
+			setBlock(ctx, x, y, z, roadBlock.defaultBlockState());
+		}
+	}
+
+	/** Clears the terrain left above the road block, up to the clear cap. */
+	private static void clearAbove(VpsGenContext ctx, int x, int z, int roadTopBlockY, int topY, VillagePathSmoothedConfig config) {
+		int clearTop = RoadWritePolicy.clearTopY(roadTopBlockY, topY, config.roadSmoothing.maxClearLayers);
+		for (int y = roadTopBlockY + 1; y <= clearTop; y++) {
+			setBlock(ctx, x, y, z, Blocks.AIR.defaultBlockState());
+		}
+	}
+
+	/** Walk surfaces of the cell's road neighbours, as they will be written. */
+	private static int[] neighbourSurfaces(RoadNetwork net, RoadCell cell) {
+		int[] out = new int[4];
+		int n = 0;
+		for (int dir = 0; dir < 4; dir++) {
+			int j = net.neighbors[cell.index][dir];
+			if (j >= 0) {
+				out[n++] = net.cells.get(j).solvedP;
+			}
+		}
+		return n == 0 ? null : java.util.Arrays.copyOf(out, n);
+	}
+
+	/**
+	 * Fix plan v4 D6-b + AGENTS.md (2026-10-14): a cell beside a moved building is
+	 * never nudged onto the real surface, so a nudged cell cannot pull a doorway
+	 * away from the road. "Beside" means within one block of the component's
+	 * footprint, which is the only entrance geometry available at write time.
+	 */
+	private static boolean nearBuildingEntrance(int[][] shiftedComponents, int x, int z) {
+		if (shiftedComponents == null) {
+			return false;
+		}
+		for (int[] component : shiftedComponents) {
+			if (x >= component[0] - 1 && x <= component[1] + 1 && z >= component[2] - 1 && z <= component[3] + 1) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private static void warnRefused(RoadCell cell, int topY) {
+		REFUSED_WARNED.incrementAndGet();
+		if (REFUSED_WARNED.get() > 4) {
+			return; // one WARN per village is enough; the counter carries the rest
+		}
+		VillagePathSmoothed.LOGGER.warn("[VPS] road cell at {} {} cannot be written: solved walk surface {} is outside the world and the single-cell surface nudge ({}) would step against a neighbour or sit at a building door; left it unwritten",
+				cell.x, cell.z, cell.solvedP / 2.0, topY);
 	}
 
 	private static void applyKerbsAndRailings(RoadNetwork net, RoadCell cell, VpsGenContext ctx, VillagePathSmoothedConfig config,
@@ -367,13 +478,16 @@ public final class RoadWriter {
 		VpsPipeline.RAILINGS_PLACED.incrementAndGet();
 	}
 
-	private static void placeScaffolding(RoadCell cell, VpsGenContext ctx, int x, int z, int topY, boolean waterlogged, VillagePathSmoothedConfig config) {
-		// waterlogged = water at the scaffold block itself; the caller used to
-		// pass the wider crossing predicate here, over-waterlogging scaffolds
-		// whose water is only below (review 3 F8-1)
-		int wt = topY - 1; // vanilla puts the planks at the water surface
-		BlockPos belowPos = new BlockPos(x, wt - 1, z);
-		BlockState below = ctx.blockState(x, wt - 1, z);
+	/**
+	 * Places the scaffolding block at {@code scaffoldY} - the solved road height
+	 * since fix plan v4 D6-b, not the vanilla surface height.
+	 *
+	 * <p>waterlogged = water at the scaffold block itself; the caller passes that
+	 * exact read, not the wider crossing predicate (review 3 F8-1).
+	 */
+	private static void placeScaffolding(VpsGenContext ctx, int x, int z, int scaffoldY, boolean waterlogged, VillagePathSmoothedConfig config) {
+		BlockPos belowPos = new BlockPos(x, scaffoldY - 1, z);
+		BlockState below = ctx.blockState(x, scaffoldY - 1, z);
 		// vanilla ScaffoldingBlock#getDistance counts a column as supported when
 		// the block below has a sturdy UP face - NOT when it is a full collision
 		// cube, so slabs or snow-covered grass count as support too; our writer
@@ -391,7 +505,7 @@ public final class RoadWriter {
 				.setValue(ScaffoldingBlock.DISTANCE, distance)
 				.setValue(ScaffoldingBlock.BOTTOM, bottom)
 				.setValue(ScaffoldingBlock.WATERLOGGED, waterlogged);
-		setBlock(ctx, x, wt, z, state);
+		setBlock(ctx, x, scaffoldY, z, state);
 	}
 
 	/** True when the column has water at this exact Y (block or fluid state). */

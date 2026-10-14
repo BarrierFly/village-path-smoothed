@@ -122,7 +122,7 @@ public final class VpsPipeline {
 			solution.guardChecked = true;
 			runBuildingGuard(solution, ctx, config);
 		}
-		RoadWriter.write(solution.network, ctx, chunkBB, config);
+		RoadWriter.write(solution.network, ctx, chunkBB, config, solution.shiftedComponents);
 	}
 
 	/**

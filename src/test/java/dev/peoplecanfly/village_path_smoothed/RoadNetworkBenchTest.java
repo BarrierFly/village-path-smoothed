@@ -972,6 +972,7 @@ public class RoadNetworkBenchTest {
 	 */
 	@Test
 	public void theGuardedFallbackKeepsTheWrittenRoadContinuous() {
+		StringBuilder report = new StringBuilder();
 		for (TerrainShape terrain : TERRAINS) {
 			MaskBuilder mask = mask(NetworkShape.BIG, terrain);
 			injectWriteFailures(mask);
@@ -983,7 +984,11 @@ public class RoadNetworkBenchTest {
 			assertTrue(where + ": the tier is not vacuous - nudges and refusals both happen"
 							+ " (nudged " + m.writeNudgedCells + ", refused " + m.writeRefusedCells + ")",
 					m.writeNudgedCells > 0 && m.writeRefusedCells > 0);
+			report.append(String.format("  %-8s injected failures %d, nudged %d, nudgedAtDoor %d, refused %d, writtenViolEdg %d%n",
+					terrain, mask.writeFailures.size(), m.writeNudgedCells, m.nudgedAtEntrance, m.writeRefusedCells,
+					m.writtenViolEdg));
 		}
+		System.out.println("[bench] fix plan v4 F4, guarded surface-nudge fallback:\n" + report);
 	}
 
 	/** Every seventh cell of the mask, in a deterministic order. */

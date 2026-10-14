@@ -223,12 +223,14 @@ public final class RoadWriter {
 		}
 
 		// ---- fix plan v4 D6-b: the writer never decides a height on its own.
-		// Both branches read the cell's solved surface; a cell that cannot carry it
-		// (outside the dimension bounds) or whose profile write threw is offered the
-		// single-cell surface nudge, and refused outright when that would step.
-		RoadWritePolicy.Column column = crossing
-				? RoadWritePolicy.waterCrossingColumn(cell.solvedP, topY, config.waterCrossing.enabled, waterAtWt, waterBelow, minY, maxY)
-				: RoadWritePolicy.profileColumn(cell.solvedP, minY, maxY);
+		// The column's walk surface is the cell's solved surface, water crossing or
+		// not; the scaffolding of a crossing is placed UNDER the profile road block
+		// (RoadWritePolicy#scaffoldSupportY), because a full block cannot reproduce a
+		// half-block walk surface without stepping against one of the neighbours.
+		// A cell that cannot carry its solved height (outside the dimension bounds)
+		// or whose profile write threw is offered the single-cell surface nudge, and
+		// refused outright when that would step.
+		RoadWritePolicy.Column column = RoadWritePolicy.profileColumn(cell.solvedP, minY, maxY);
 		if (!column.written()) {
 			column = RoadWritePolicy.surfaceNudgeColumn(cell.solvedP, topY, minY, maxY,
 					neighbourSurfaces(net, cell), nearBuildingEntrance(shiftedComponents, x, z));
@@ -268,18 +270,13 @@ public final class RoadWriter {
 		}
 
 		if (crossing) {
-			// the scaffold carries the solved road height, and the column below it
-			// is filled or cleared exactly like a normal road column
-			placeScaffolding(ctx, x, z, roadTopBlockY, isWater(ctx, x, roadTopBlockY, z), config);
-			if (roadTopBlockY > topY - 1) {
-				fillSupport(ctx, x, z, topY, roadTopBlockY, materials, config);
-			} else if (roadTopBlockY < topY - 1) {
-				clearAbove(ctx, x, z, roadTopBlockY, topY, config);
-			}
+			// the crossing column is written like any other (profile, not a bare
+			// scaffold), then the scaffolding goes in as the support directly under
+			// the road block - the block vanilla would have used as the plank deck
+			placeScaffolding(ctx, x, z,
+					RoadWritePolicy.scaffoldSupportY(crossing, topY, roadTopBlockY),
+					isWater(ctx, x, RoadWritePolicy.scaffoldSupportY(crossing, topY, roadTopBlockY), z), config);
 			VpsPipeline.SCAFFOLDS_PLACED.incrementAndGet();
-			VpsPipeline.ROAD_CELLS_WRITTEN.incrementAndGet();
-			applyKerbsAndRailings(net, cell, ctx, config, materials, kerbExtras, roadTopBlockY, slab, sideColumnOwner);
-			return;
 		}
 
 		if (config.roadSmoothing.enabled) {

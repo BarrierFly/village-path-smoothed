@@ -205,7 +205,7 @@ public final class VpsCommands {
 						+ "  roads      : cells written %d, kerbs %d, railings %d, scaffolds %d (water-self %d / water-below %d / dry %d)%n"
 						+ "  integrity  : dropped cells %d (noise-reprobed %d), split masks %d, declined %d, largest component %s%%, widest break avg %s / max %d%n"
 						+ "  defects    : writer overrides %d, nudged to the surface %d, refused %d (out of world %d), surface fallbacks %d, over-budget %d, edge drops > 1 block %d (worst %d half units)%n"
-						+ "  solve      : contradictions %d, step violations %d (worst %d), seam re-solves refused %d, water anchor deviations %d, villages without arms %d%n"
+						+ "  solve      : contradictions %d, step violations %d (worst %d), seam re-solves refused %d, polish moved %d (max delta %d half units, p90 %d, midpoint conflicts %d), water anchor deviations %d, villages without arms %d%n"
 						+ "  suppression: vanilla road blocks dropped %d (passed through %d)%n"
 						+ "  buildings  : T1.5 applied %d (no-server %d), components %d, shifted %d, unserved %d, no-road %d, overlap guards %d, floating %d, buried %d%n"
 						+ "  misc       : floor-garbage probes %d, probe boundary switches %d, probe mismatch columns %d, villager freeze: %s (brain ticks skipped: %d)",
@@ -237,6 +237,10 @@ public final class VpsCommands {
 				VpsPipeline.SOLVE_STEP_VIOLATIONS.get(),
 				VpsPipeline.SOLVE_WORST_STEP.get(),
 				VpsPipeline.SOLVE_PHASE3_REFUSALS.get(),
+				VpsPipeline.ROAD_POLISH_MOVED.get(),
+				VpsPipeline.ROAD_POLISH_MAX_DELTA.get(),
+				VpsPipeline.ROAD_POLISH_DELTA_P90.get(),
+				VpsPipeline.ROAD_POLISH_CONFLICTS.get(),
 				VpsPipeline.WATER_ANCHOR_DEVIATIONS.get(),
 				VpsPipeline.VILLAGES_WITHOUT_ARMS.get(),
 				VpsPipeline.SUPPRESSED_VANILLA_ROAD_BLOCKS.get(),

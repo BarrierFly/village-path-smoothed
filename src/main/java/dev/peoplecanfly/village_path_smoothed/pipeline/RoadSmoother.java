@@ -7,9 +7,11 @@ package dev.peoplecanfly.village_path_smoothed.pipeline;
 
 import dev.peoplecanfly.village_path_smoothed.VillagePathSmoothedConfig.Objective;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.BitSet;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -77,6 +79,17 @@ public final class RoadSmoother {
 	 */
 	private static final int STATE_BUDGET = 15_625;
 
+	/**
+	 * Cap on the polish pass's projection sweeps (fix plan v4 A-1). The sweep only
+	 * runs for cells whose already-fixed neighbours disagree, and it converges -
+	 * but cyclic projection carries information one hop per sweep, so the cap has
+	 * to cover the network's diameter (a few hundred for a large village). Each
+	 * sweep is linear in the edge count and the loop exits as soon as nothing
+	 * moves, so the cap is a worst-case bound, not a cost. Whatever survives it is
+	 * reported as a residual step violation, never silently.
+	 */
+	private static final int PROJECTION_SWEEPS = 512;
+
 public record SolveParams(
 		Objective objective,
 		int hybridWeightScaled,
@@ -104,10 +117,36 @@ public record SolveParams(
 	 *        R4): the water level is the cell's baseP and therefore its
 	 *        deviation target, but a smoother profile may leave it, and this
 	 *        counts how often it did
+	 * @param polish what the A-1 polish pass had to do to make the profile legal
 	 */
 	public record SolveStats(int candidateContradictions, int residualViolations, int worstStep,
-			int waterAnchorDeviations, int phase3Refusals) {
-		public static final SolveStats EMPTY = new SolveStats(0, 0, 0, 0, 0);
+			int waterAnchorDeviations, int phase3Refusals, PolishStats polish) {
+		public static final SolveStats EMPTY = new SolveStats(0, 0, 0, 0, 0, PolishStats.EMPTY);
+
+		/** Cells the polish pass had to move (fix plan v4 A-1, decision N3-a). */
+		public int polishMoved() {
+			return polish.movedCells();
+		}
+
+		/** Largest single-cell move the polish made, in half-block units. */
+		public int polishMaxDelta() {
+			return polish.maxDelta();
+		}
+
+		/** 90th percentile of the polish's per-cell moves, in half-block units. */
+		public int polishDeltaP90() {
+			return polish.deltaP90();
+		}
+
+		/** Cells whose two fixed neighbours disagreed and forced a midpoint. */
+		public int polishConflicts() {
+			return polish.conflictingNeighbours();
+		}
+	}
+
+	/** What the polish pass did (fix plan v4 A-1, decision N3-a). */
+	public record PolishStats(int movedCells, int maxDelta, int deltaP90, int conflictingNeighbours) {
+		public static final PolishStats EMPTY = new PolishStats(0, 0, 0, 0);
 	}
 
 	/** Mutable per-solve accumulator threaded through the leaf candidate builders. */
@@ -117,9 +156,14 @@ public record SolveParams(
 		int worstStep;
 		int waterAnchorDeviations;
 		int phase3Refusals;
+		int polishMoved;
+		int polishMaxDelta;
+		int polishDeltaP90;
+		int polishConflicts;
 
 		SolveStats toStats() {
-			return new SolveStats(candidateContradictions, residualViolations, worstStep, waterAnchorDeviations, phase3Refusals);
+			return new SolveStats(candidateContradictions, residualViolations, worstStep, waterAnchorDeviations,
+					phase3Refusals, new PolishStats(polishMoved, polishMaxDelta, polishDeltaP90, polishConflicts));
 		}
 	}
 
@@ -169,14 +213,27 @@ public record SolveParams(
 		//    solution here; the final verification below counts the consequences.
 		for (RoadNetwork.Arm arm : net.arms) {
 			if (arm.touchesRegion) {
-				// fix plan v4 A2 groundwork: the refusal used to be dropped on the
-				// floor, so an arm that could not be re-solved against its seam
-				// silently kept a solution that knows nothing about the region.
+				// fix plan v4 A2: the refusal used to be dropped on the floor, so an
+				// arm whose band could not fit the state budget silently kept its
+				// phase-1 solution - one that does not know the region exists - and
+				// the seam cliff that follows was then attributed to the terrain.
+				// Refused arms now go through the ICM with the region's heights as
+				// boundary references, which costs quality but keeps the constraint.
 				if (!solveArm(net, arm, p, seamBoundsForArm(net, arm, regionCells), stats)) {
 					stats.phase3Refusals++;
+					solveRegion(net, armCells(arm), p, icmMembership, stats);
 				}
 			}
 		}
+
+		// 4. fix plan v4 A-1: the polish pass. Everything above optimises; this
+		//    makes the result LEGAL by construction, one cell at a time, walking
+		//    outwards from a seed per component. It is also where the plan's A
+		//    decision lives: the solver keeps its six defects and this pass
+		//    absorbs them, which is only sound because decision N3-a lets the
+		//    polish move a cell as far as legality requires (up to 5-8 whole
+		//    blocks in the measured worst case) instead of freezing the outliers.
+		PolishStats polish = polish(net, p.allowCut());
 
 		// global final verification (review 3 P0-A item 3): walk every 4-adjacency
 		// edge of the finished network so no violation can stay invisible
@@ -200,7 +257,233 @@ public record SolveParams(
 				stats.waterAnchorDeviations++;
 			}
 		}
+		stats.polishMoved = polish.movedCells();
+		stats.polishMaxDelta = polish.maxDelta();
+		stats.polishDeltaP90 = polish.deltaP90();
+		stats.polishConflicts = polish.conflictingNeighbours();
 		return stats.toStats();
+	}
+
+	// ------------------------------------------------------------------
+	// polish pass (fix plan v4 A-1, decision N3-a)
+	// ------------------------------------------------------------------
+
+	/**
+	 * Makes the profile legal by construction, walking outwards from one seed per
+	 * 4-connected component.
+	 *
+	 * <p>Why it is needed at all: the block pipeline optimises arms by exact DP and
+	 * junctions by ICM, and six structural defects leave residual edges with
+	 * |dP| > 1 (v3 section 3). Legality itself is trivial - a constant profile is
+	 * legal on any graph - so that residual is a property of the pipeline, not of
+	 * the terrain, and one post-pass removes all of them.
+	 *
+	 * <p>Construction: fix the seed, then BFS. When a cell is reached, every edge
+	 * to an already-fixed neighbour is satisfied by clamping the cell into that
+	 * neighbour's [v-1, v+1]; each edge therefore has exactly one later endpoint,
+	 * which is legal by construction.
+	 *
+	 * <p>One case escapes that argument: a cell whose two already-fixed neighbours
+	 * disagree by 2 or more has <em>no</em> legal value (lo > hi), because both
+	 * ends of those edges are frozen by then. Those cells are counted
+	 * ({@link PolishStats#conflictingNeighbours()}) and handed to a projection
+	 * sweep, the textbook repair for difference constraints: the feasible set
+	 * {|Pu - Pv| <= 1} is convex (an intersection of slabs), cyclic projection
+	 * onto a violated slab converges, and projecting both endpoints half the
+	 * excess makes that edge legal within the sweep on the integer lattice.
+	 *
+	 * <p>Why the seed is the component's centre: v3 measured 234 violating edges
+	 * when starting from a network end against 0 from the centre, a 28x
+	 * difference. An end seed sits on vanilla terrain, so the error pours inwards
+	 * from there.
+	 *
+	 * <p>Decision N3-a: the result is adopted unconditionally, so one cell may be
+	 * dragged several whole blocks. That is what "no drop larger than half a block"
+	 * costs, and it is counted rather than hidden - the alternative (freeze the
+	 * outliers) would leave a known cliff and invalidate the very metric this pass
+	 * exists to make zero.
+	 *
+	 * <p>One exception, and it is the user's own setting: with
+	 * {@code allowCutIntoTerrain = false} the road may never sit below its terrain,
+	 * so {@code baseP} is a hard floor here too. A terrain step that no legal
+	 * no-cut profile can bridge therefore keeps its residual step, counted by the
+	 * solve's verification - that is precisely what the flag promises, and
+	 * silently legalising it would be the "quietly break the no-cut promise" the
+	 * plan forbids.
+	 */
+	private static PolishStats polish(RoadNetwork net, boolean allowCut) {
+		int n = net.cells.size();
+		if (n == 0) {
+			return PolishStats.EMPTY;
+		}
+		boolean[] fixed = new boolean[n];
+		int[] queue = new int[n];
+		List<Integer> movedDeltas = new ArrayList<>();
+		int moved = 0;
+		int maxDelta = 0;
+		int conflicts = 0;
+
+		for (int start = 0; start < n; start++) {
+			if (fixed[start]) {
+				continue;
+			}
+			int seed = componentSeed(net, start);
+			int head = 0;
+			int tail = 0;
+			queue[tail++] = seed;
+			fixed[seed] = true;
+			while (head < tail) {
+				int current = queue[head++];
+				for (int dir = 0; dir < 4; dir++) {
+					int j = net.neighbors[current][dir];
+					if (j < 0 || fixed[j]) {
+						continue;
+					}
+					// clamp into the interval of this cell's already-fixed neighbours
+					int lo = Integer.MIN_VALUE;
+					int hi = Integer.MAX_VALUE;
+					for (int other = 0; other < 4; other++) {
+						int k = net.neighbors[j][other];
+						if (k >= 0 && fixed[k]) {
+							int value = net.cells.get(k).solvedP;
+							lo = Math.max(lo, value - 1);
+							hi = Math.min(hi, value + 1);
+						}
+					}
+					RoadCell target = net.cells.get(j);
+					int before = target.solvedP;
+					// fix plan v4 D7: with allowCutIntoTerrain = false the road may
+					// never sit below the terrain, so the cell's own baseP is a hard
+					// floor the polish cannot push through either
+					int floor = allowCut ? Integer.MIN_VALUE : target.baseP;
+					lo = Math.max(lo, floor);
+					int after;
+					if (lo > hi) {
+						// two fixed neighbours genuinely disagree: no legal value
+						// exists here. Counted, and resolved by the sweep below.
+						conflicts++;
+						after = Math.max(floor, (lo + hi + 1) / 2);
+					} else {
+						after = Math.max(lo, Math.min(hi, before));
+					}
+					target.solvedP = after;
+					if (after != before) {
+						moved++;
+						int delta = Math.abs(after - before);
+						maxDelta = Math.max(maxDelta, delta);
+						movedDeltas.add(delta);
+					}
+					fixed[j] = true;
+					queue[tail++] = j;
+				}
+			}
+		}
+		// conflicts are rare; the sweep is a safety net, not the main mechanism
+		if (conflicts > 0) {
+			for (int sweep = 0; sweep < PROJECTION_SWEEPS; sweep++) {
+				if (!projectViolatedEdges(net, movedDeltas, allowCut)) {
+					break;
+				}
+			}
+		}
+		return new PolishStats(moved, maxDelta, percentile90(movedDeltas), conflicts);
+	}
+
+	/**
+	 * One cyclic projection sweep: every edge still too steep has its two endpoints
+	 * moved towards each other by half the excess (rounded up, so the edge is legal
+	 * once the sweep ends). Returns true when something moved, i.e. when another
+	 * sweep is worthwhile.
+	 *
+	 * <p>With {@code allowCut = false} a cell cannot go below its own {@code baseP},
+	 * so the correction it cannot take is transferred to its neighbour. A terrain
+	 * step that no legal no-cut profile can bridge therefore keeps its residual -
+	 * which is what that flag asks for, and the solve's own verification counts it.
+	 */
+	private static boolean projectViolatedEdges(RoadNetwork net, List<Integer> movedDeltas, boolean allowCut) {
+		boolean changed = false;
+		for (int i = 0; i < net.cells.size(); i++) {
+			for (int dir = 0; dir < 4; dir++) {
+				int j = net.neighbors[i][dir];
+				if (j <= i) {
+					continue;
+				}
+				RoadCell a = net.cells.get(i);
+				RoadCell b = net.cells.get(j);
+				int diff = a.solvedP - b.solvedP;
+				int excess = Math.abs(diff) - 1;
+				if (excess <= 0) {
+					continue;
+				}
+				int half = (excess + 1) / 2;
+				RoadCell high = diff > 0 ? a : b;
+				RoadCell low = diff > 0 ? b : a;
+				int room = allowCut ? half : Math.min(half, high.solvedP - high.baseP);
+				if (room < 0) {
+					room = 0;
+				}
+				int beforeHigh = high.solvedP;
+				int beforeLow = low.solvedP;
+				high.solvedP -= room;
+				low.solvedP += half - room;
+				if (high.solvedP != beforeHigh || low.solvedP != beforeLow) {
+					changed = true;
+					movedDeltas.add(Math.abs(high.solvedP - beforeHigh));
+					movedDeltas.add(Math.abs(low.solvedP - beforeLow));
+				}
+			}
+		}
+		return changed;
+	}
+
+	/** Seed of the component containing {@code start}: its cell closest to its own box centre. */
+	private static int componentSeed(RoadNetwork net, int start) {
+		Deque<Integer> stack = new ArrayDeque<>();
+		List<Integer> component = new ArrayList<>();
+		stack.push(start);
+		boolean[] seen = new boolean[net.cells.size()];
+		seen[start] = true;
+		int minX = Integer.MAX_VALUE;
+		int maxX = Integer.MIN_VALUE;
+		int minZ = Integer.MAX_VALUE;
+		int maxZ = Integer.MIN_VALUE;
+		while (!stack.isEmpty()) {
+			int i = stack.pop();
+			component.add(i);
+			RoadCell c = net.cells.get(i);
+			minX = Math.min(minX, c.x);
+			maxX = Math.max(maxX, c.x);
+			minZ = Math.min(minZ, c.z);
+			maxZ = Math.max(maxZ, c.z);
+			for (int dir = 0; dir < 4; dir++) {
+				int j = net.neighbors[i][dir];
+				if (j >= 0 && !seen[j]) {
+					seen[j] = true;
+					stack.push(j);
+				}
+			}
+		}
+		int centreX = minX + (maxX - minX) / 2;
+		int centreZ = minZ + (maxZ - minZ) / 2;
+		int best = component.get(0);
+		int bestDistance = Integer.MAX_VALUE;
+		for (int i : component) {
+			RoadCell c = net.cells.get(i);
+			int distance = Math.max(Math.abs(c.x - centreX), Math.abs(c.z - centreZ));
+			if (distance < bestDistance || (distance == bestDistance && i < best)) {
+				bestDistance = distance;
+				best = i;
+			}
+		}
+		return best;
+	}
+
+	private static int percentile90(List<Integer> values) {
+		if (values.isEmpty()) {
+			return 0;
+		}
+		int[] sorted = values.stream().mapToInt(Integer::intValue).sorted().toArray();
+		return sorted[Math.min(sorted.length - 1, (int) Math.ceil(0.9 * sorted.length) - 1)];
 	}
 
 	// ------------------------------------------------------------------
@@ -1283,7 +1566,7 @@ public record SolveParams(
 	 * {@code baseP}.
 	 */
 	private static final class CostModel {
-		/** Deviations beyond this many half units all cost the same (overflow guard, report 2.1/5-⑤). */
+		/** Deviations beyond this many half units all cost the same (overflow guard, report 2.1/5-�?. */
 		private static final int EXCESS_SATURATION = 1 << 12;
 
 		private final Objective objective;
@@ -1307,7 +1590,7 @@ public record SolveParams(
 			long s2v = Math.max(1, Math.max(1, edgeCount) * 4L * w * stepScale + 1);
 			long sDevV = Math.max(1, Math.max(1, cellCount) * 4L * w + 1);
 			long s1v = Math.max(1, Math.max(1, cellCount) + 1);
-			// Report 2.1/5-⑤: the lexicographic products (penalty|hybridW1) *
+			// Report 2.1/5-�? the lexicographic products (penalty|hybridW1) *
 			// excess * [s1 *] sDev * s2 can wrap around for cap-sized components.
 			// Deviations are saturated at EXCESS_SATURATION and the scales are
 			// clamped so the SUMMED worst case over all cells+edges of the

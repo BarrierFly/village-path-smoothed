@@ -66,6 +66,13 @@ public final class VpsPipeline {
 	public static final AtomicLong SOLVE_WORST_STEP = new AtomicLong();
 	/** Fix plan v4 A2: arms whose phase-3 seam re-solve was refused for state budget. */
 	public static final AtomicLong SOLVE_PHASE3_REFUSALS = new AtomicLong();
+	// Fix plan v4 A-1 / decision N3-a: what the polish pass had to do to make the
+	// profile legal. ROAD_POLISH_MAX_DELTA is the visible price of "no drop larger
+	// than half a block": a single cell can be dragged several whole blocks.
+	public static final AtomicLong ROAD_POLISH_MOVED = new AtomicLong();
+	public static final AtomicLong ROAD_POLISH_MAX_DELTA = new AtomicLong();
+	public static final AtomicLong ROAD_POLISH_DELTA_P90 = new AtomicLong();
+	public static final AtomicLong ROAD_POLISH_CONFLICTS = new AtomicLong();
 	// Fix plan v2 R4.3: water-crossing cells whose solved surface deviates from
 	// the water surface (their preferred height). The anchor is soft, so this
 	// counts how often the solver traded the water level for smoothness.
@@ -314,6 +321,10 @@ public final class VpsPipeline {
 		SOLVE_STEP_VIOLATIONS.addAndGet(stats.residualViolations());
 		SOLVE_WORST_STEP.accumulateAndGet(stats.worstStep(), Math::max);
 		SOLVE_PHASE3_REFUSALS.addAndGet(stats.phase3Refusals());
+		ROAD_POLISH_MOVED.addAndGet(stats.polishMoved());
+		ROAD_POLISH_MAX_DELTA.accumulateAndGet(stats.polishMaxDelta(), Math::max);
+		ROAD_POLISH_DELTA_P90.accumulateAndGet(stats.polishDeltaP90(), Math::max);
+		ROAD_POLISH_CONFLICTS.addAndGet(stats.polishConflicts());
 		WATER_ANCHOR_DEVIATIONS.addAndGet(stats.waterAnchorDeviations());
 	}
 

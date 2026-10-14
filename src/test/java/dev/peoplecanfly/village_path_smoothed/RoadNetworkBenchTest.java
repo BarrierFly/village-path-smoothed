@@ -439,6 +439,9 @@ public class RoadNetworkBenchTest {
 		int writeNudgedCells;
 		int nudgedAtEntrance;
 		int writeRefusedCells;
+		int polishMoved;
+		int polishMaxDelta;
+		int polishConflicts;
 		int edgeViolEdg;
 		int edgeWorstDrop;
 		int bareEdgeBlocks;
@@ -491,8 +494,11 @@ public class RoadNetworkBenchTest {
 			return m;
 		}
 		long begin = System.nanoTime();
-		RoadSmoother.solve(net, params());
+		RoadSmoother.SolveStats stats = RoadSmoother.solve(net, params());
 		m.solveNanos = System.nanoTime() - begin;
+		m.polishMoved = stats.polishMoved();
+		m.polishMaxDelta = stats.polishMaxDelta();
+		m.polishConflicts = stats.polishConflicts();
 		m.cells = net.cells.size();
 		measureMask(net, m);
 		measureWriter(net, real, m);
@@ -561,9 +567,10 @@ public class RoadNetworkBenchTest {
 			int realTop = real.topY(cell.x, cell.z);
 			boolean waterAtRoadBlock = realTop <= WATER_LEVEL;
 			boolean waterBelow = realTop <= WATER_LEVEL - 1;
-			RoadWritePolicy.Column column = waterAtRoadBlock || waterBelow
-					? RoadWritePolicy.waterCrossingColumn(cell.solvedP, realTop, true, waterAtRoadBlock, waterBelow, MIN_Y, MAX_Y)
-					: RoadWritePolicy.profileColumn(cell.solvedP, MIN_Y, MAX_Y);
+			boolean crossing = waterAtRoadBlock || waterBelow; // crossing only adds scaffolding support below the road
+			// the written walk surface is the solved surface in every case: a water
+			// crossing's scaffolding is support under the road block, not the surface
+			RoadWritePolicy.Column column = RoadWritePolicy.profileColumn(cell.solvedP, MIN_Y, MAX_Y);
 			if (!column.written()) {
 				column = RoadWritePolicy.surfaceNudgeColumn(cell.solvedP, realTop, MIN_Y, MAX_Y,
 						neighbourSurfaces(net, cell), nearEntrance(cell));
@@ -960,11 +967,13 @@ public class RoadNetworkBenchTest {
 							m.stepsPerCell <= 1.0);
 					report.append(String.format(
 							"%-22s cells=%4d comps=%d declined=%s solve=%dms steps/cell=%.2f dev/cell=%.2f overBud=%.1f%% maxDev=%d devP99=%d climbP99=%d"
+									+ " | polishMoved=%d polishMaxDelta=%d polishConflicts=%d"
 									+ " | edgeViol=%d edgeWorst=%d bareEdge=%d writeOverride=%d nudged=%d nudgedAtDoor=%d refused=%d"
 									+ " | devVsReal p50/p95/p99/max=%d/%d/%d/%d overWarn=%d cutBelow=%d fillAbove=%d%n",
 							where, m.cells, m.components, m.declined, m.solveNanos / 1000000,
 							m.stepsPerCell, m.devPerCell, 100 * m.overBudgetRatio,
 							(int) m.maxDev, (int) m.devP99, (int) m.armClimbP99,
+							m.polishMoved, m.polishMaxDelta, m.polishConflicts,
 							m.edgeViolEdg, m.edgeWorstDrop, m.bareEdgeBlocks,
 							m.writeOverrideCells, m.writeNudgedCells, m.nudgedAtEntrance, m.writeRefusedCells,
 							m.devVsRealP50, m.devVsRealP95, m.devVsRealP99, m.devVsRealMax,

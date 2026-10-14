@@ -107,30 +107,24 @@ public final class RoadWritePolicy {
 	 * (never triggers).
 	 */
 /**
- * Height decision of the water-crossing branch (scaffolding instead of the
- * vanilla planks).
+ * Where the scaffolding of a water crossing goes (fix plan v4 D6-b).
  *
- * <p>Fix plan v4 D6-b: the scaffold used to be pinned to the vanilla surface
- * height ({@code realSurfaceTopY - 1}) and the cell's solved height was thrown
- * away, which manufactured an arbitrary drop against every already written
- * neighbour. The scaffolding column now carries the solved road height like any
- * other column - the fluid read at the vanilla height only decides <em>whether</em>
- * the cell is a crossing.
+ * <p>The scaffold used to <em>replace</em> the road block at the vanilla surface
+ * height, which meant the written walk surface was that of a full block and the
+ * cell's solved half-block surface was gone. That is unrepairable at the surface:
+ * a full block tops out one half unit above a slab, so no placement satisfies both
+ * a neighbour one half step below and one half step above. The scaffold is
+ * therefore no longer the surface - it is the support <em>under</em> the profile
+ * road block, which is what makes it look like a bridge anyway.
  *
- * @param solvedP the cell's solved walk surface (half units)
- * @param realSurfaceTopY first air above the real terrain (writer context)
- * @param crossingEnabled waterCrossing.enabled
- * @param waterAtRoadBlock water at the vanilla road block height
- * @param waterBelowRoadBlock water one block below it
+ * @return the scaffold Y, or {@link #UNWRITTEN} when the column is not a crossing
  */
-	public static Column waterCrossingColumn(int solvedP, int realSurfaceTopY, boolean crossingEnabled,
-			boolean waterAtRoadBlock, boolean waterBelowRoadBlock, int minY, int maxY) {
-		if (!crossingEnabled || !dev.peoplecanfly.village_path_smoothed.terrain.WaterCrossings.isCrossing(waterAtRoadBlock, waterBelowRoadBlock)) {
-			return profileColumn(solvedP, minY, maxY);
+	public static int scaffoldSupportY(boolean crossing, int realSurfaceTopY, int roadTopBlockY) {
+		if (!crossing) {
+			return UNWRITTEN;
 		}
-		// the scaffold is a whole block: it tops out one full block above its Y
-		int written = roadWalkSurface2(clamp(minY, maxY, roadTopBlockY(solvedP)), false);
-		return new Column(written, false, true, written != solvedP);
+		// the block directly below the road block, never above the real surface
+		return Math.min(realSurfaceTopY - 1, roadTopBlockY - 1);
 	}
 
 	/**

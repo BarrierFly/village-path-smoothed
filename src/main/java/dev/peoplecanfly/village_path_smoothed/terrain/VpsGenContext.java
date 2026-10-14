@@ -17,6 +17,8 @@ import net.minecraft.world.level.block.state.BlockState;
 
 import dev.peoplecanfly.village_path_smoothed.VillagePathSmoothed;
 import dev.peoplecanfly.village_path_smoothed.VillagePathSmoothedConfig;
+import dev.peoplecanfly.village_path_smoothed.pipeline.ProbeWindow;
+import net.minecraft.world.level.levelgen.structure.BoundingBox;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -25,9 +27,10 @@ import java.util.concurrent.atomic.AtomicLong;
 /**
  * Terrain access during world generation.
  *
- * Height sources (plan section 4.4, strategy P3):
+ * <p>Height sources (plan section 4.4, strategy P3):
  *  - the real WORLD_SURFACE_WG heightmap, reliable only for columns whose chunk
- *    is within +/-1 chunks of the chunk currently being generated;
+ *    is within +/-1 chunks of the window anchor - which since fix plan v4 D2-c
+ *    is the village's centre chunk, not the chunk that triggered the solve;
  *  - the noise base height everywhere else (a pure function of x/z, so the
  *    single solve of a village stays consistent no matter which chunk of the
  *    village triggers it). Unlike the heightmap the noise height ignores
@@ -35,7 +38,12 @@ import java.util.concurrent.atomic.AtomicLong;
  *    no-op - the beard compensation below exists for exactly that reason),
  *    but it does include water surfaces.
  *
- * Heights returned by {@link #surfaceTopY} are "first air above surface",
+ * <p>Scope note (fix plan v4 F14/F16): this window is a <b>write-stage</b>
+ * property. The T1.5 solve runs during STRUCTURE_STARTS, where no chunk of the
+ * village has terrain yet, so on that path nothing here is real - VpsNoiseContext
+ * is used instead.
+ *
+ * <p>Heights returned by {@link #surfaceTopY} are "first air above surface",
  * matching vanilla GravityProcessor's reading; the vanilla road block sits at
  * surfaceTopY - 1 and the walk surface is surfaceTopY.
  */
@@ -43,7 +51,14 @@ public final class VpsGenContext implements VpsProbe {
 	public final WorldGenLevel level;
 	public final ChunkGenerator generator;
 	public final RandomState randomState;
+	/** Chunk that triggers the write; only the {@code ALL_NOISE} caliber and unanchored legacy callers care. */
 	public final ChunkPos center;
+	/** Chunk coordinates the probe window is centred on (fix plan v4 D2-c: the village centre). */
+	private int centerX;
+	private int centerZ;
+	private boolean villageAnchored;
+	/** fix plan v4 D2-b: {@code ALL_NOISE} disables the real-heightmap window entirely. */
+	private final boolean realHeightCaliber;
 	/** {minX, maxX, minZ, maxZ, minY, groundLevelDelta} of RIGID piece boxes (beard sources), used to compensate the noise probe next to buildings. */
 	private int[][] beardBoxes;
 	/**
@@ -58,19 +73,32 @@ public final class VpsGenContext implements VpsProbe {
 	private final Map<Long, Integer> noiseSurfaceCache = new HashMap<>();
 	private final Map<Long, Boolean> noiseWaterCache = new HashMap<>();
 
-	private VpsGenContext(WorldGenLevel level, ChunkGenerator generator, RandomState randomState, ChunkPos center, int[][] beardBoxes) {
+	private VpsGenContext(WorldGenLevel level, ChunkGenerator generator, RandomState randomState, ChunkPos center,
+			boolean realHeightCaliber) {
 		this.level = level;
 		this.generator = generator;
 		this.randomState = randomState;
 		this.center = center;
-		this.beardBoxes = beardBoxes;
+		this.realHeightCaliber = realHeightCaliber;
+		//#if MC >= 260000
+		//$$ this.centerX = center.x();
+		//$$ this.centerZ = center.z();
+		//#else
+		this.centerX = center.x;
+		this.centerZ = center.z;
+		//#endif
 	}
 
 	public static VpsGenContext capture(WorldGenLevel level, ChunkGenerator generator, ChunkPos center) {
-		return capture(level, generator, center, null);
+		return capture(level, generator, center, true);
 	}
 
-	public static VpsGenContext capture(WorldGenLevel level, ChunkGenerator generator, ChunkPos center, int[][] beardBoxes) {
+	/**
+	 * @param realHeightCaliber false for the {@code ALL_NOISE} caliber (fix plan
+	 *        v4 D2-b): the solve reads the noise model everywhere and the real
+	 *        heightmap stays a write-time-only input
+	 */
+	public static VpsGenContext capture(WorldGenLevel level, ChunkGenerator generator, ChunkPos center, boolean realHeightCaliber) {
 		RandomState randomState = null;
 		try {
 			if (level instanceof WorldGenRegion region) {
@@ -79,7 +107,7 @@ public final class VpsGenContext implements VpsProbe {
 		} catch (Throwable t) {
 			VillagePathSmoothed.LOGGER.warn("[VPS] Could not capture RandomState; noise fallback heights disabled", t);
 		}
-		return new VpsGenContext(level, generator, randomState, center, beardBoxes);
+		return new VpsGenContext(level, generator, randomState, center, realHeightCaliber);
 	}
 
 	/** Late-sets the beard source boxes once the collector has walked the pieces. */
@@ -105,16 +133,43 @@ public final class VpsGenContext implements VpsProbe {
 
 	/** True when the column's chunk is within the reliably readable area. */
 	public boolean hasRealHeight(int x, int z) {
-		int cx = x >> 4;
-		int cz = z >> 4;
-		//#if MC >= 260000
-		//$$ int ccx = this.center.x();
-		//$$ int ccz = this.center.z();
-		//#else
-		int ccx = this.center.x;
-		int ccz = this.center.z;
-		//#endif
-		return Math.abs(cx - ccx) <= 1 && Math.abs(cz - ccz) <= 1;
+		if (!this.realHeightCaliber) {
+			return false; // fix plan v4 D2-b: ALL_NOISE never reads the real heightmap
+		}
+		return ProbeWindow.inWindow(x, z, centerChunkX(), centerChunkZ());
+	}
+
+	private int centerChunkX() {
+		return this.centerX;
+	}
+
+	private int centerChunkZ() {
+		return this.centerZ;
+	}
+
+	/**
+	 * Anchors the probe window on the village instead of on the triggering chunk
+	 * (fix plan v4 D2-c).
+	 *
+	 * <p>The village is solved once and cached on the StructureStart, but the
+	 * window used to be centred on whichever chunk's {@code placeInChunk} got
+	 * there first, so the same seed could produce two different roads depending
+	 * on generation order - and the columns inside the window are real terrain,
+	 * not a pure function of x/z, so the old comment claiming otherwise was wrong
+	 * for exactly the columns that matter. The anchor is now a pure function of
+	 * the village bounding box (see {@link ProbeWindow}, which deliberately has
+	 * no trigger parameter).
+	 */
+	public void anchorOnVillage(BoundingBox box) {
+		int[] anchor = ProbeWindow.centerChunk(box.minX(), box.maxX(), box.minZ(), box.maxZ());
+		this.centerX = anchor[0];
+		this.centerZ = anchor[1];
+		this.villageAnchored = true;
+	}
+
+	/** True once {@link #anchorOnVillage} ran, i.e. the window no longer follows the trigger. */
+	public boolean isVillageAnchored() {
+		return this.villageAnchored;
 	}
 
 	/** Real heightmap height; only call when {@link #hasRealHeight} is true. */

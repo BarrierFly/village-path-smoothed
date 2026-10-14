@@ -58,6 +58,34 @@ public final class VillagePathSmoothedConfig {
 		public RoadShapeStage roadShapeStage = RoadShapeStage.T1_5;
 		/** Cap on the building component vertical shift in whole blocks (0 = unlimited, only the world height clamps; fix plan v2 R7/N6 default). */
 		public int maxBuildingShift = 0;
+		/**
+		 * Fix plan v4 D2 / R2-1: which height caliber the T5 (feature placement)
+		 * solve reads.
+		 *
+		 * <p>{@code CENTER_WINDOW} (D2-c, default) keeps the vanilla +/-1 chunk
+		 * real-heightmap window but anchors it on the <b>village's bounding
+		 * box</b> instead of the chunk that happened to trigger the solve, so the
+		 * village's height field - and therefore its road - no longer depends on
+		 * generation order.
+		 *
+		 * <p>{@code ALL_NOISE} (D2-b) drops the window entirely: every column is
+		 * the pure-noise model, exactly like the default T1.5 path, and the real
+		 * heightmap is only read at write time for the fill/cut budget. Spatially
+		 * uniform, but no column of the T5 village is on real terrain any more.
+		 *
+		 * <p>Both calibers must satisfy "the solve does not depend on which chunk
+		 * triggered it". The remaining trade-off is that CENTER_WINDOW keeps a
+		 * spatially uneven slice of real terrain (real inside the box centre,
+		 * noise outside), which is why the seam alignment pass still loads.
+		 */
+		public ProbeCaliber probeCaliber = ProbeCaliber.CENTER_WINDOW;
+		/**
+		 * R2-3: deviation from the REAL terrain beyond this many whole blocks is
+		 * reported per village as a WARN (with coordinates, cell count and the
+		 * worst deviation). It never corrects geometry and never falls back to
+		 * vanilla roads - that decision belongs to the mask-integrity gate alone.
+		 */
+		public int surfaceDeviationWarnBlocks = 4;
 		/** Diagnostic only: count floating/buried building components at write time; never repairs and never reverts a shift. */
 		public boolean buildingGuard = true;
 		/** Weight w1 of the HYBRID objective (w2 = 1). */
@@ -110,6 +138,11 @@ public final class VillagePathSmoothedConfig {
 
 	public enum RoadShapeStage {
 		T1_5, T5
+	}
+
+	/** Fix plan v4 D2: how the T5 solve reads heights. See roadSmoothing.probeCaliber. */
+	public enum ProbeCaliber {
+		CENTER_WINDOW, ALL_NOISE
 	}
 
 	public static class Kerb {

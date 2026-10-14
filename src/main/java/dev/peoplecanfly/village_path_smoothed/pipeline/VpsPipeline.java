@@ -7,6 +7,7 @@ package dev.peoplecanfly.village_path_smoothed.pipeline;
 
 import dev.peoplecanfly.village_path_smoothed.VillagePathSmoothed;
 import dev.peoplecanfly.village_path_smoothed.VillagePathSmoothedConfig;
+import dev.peoplecanfly.village_path_smoothed.VillagePathSmoothedConfig.ProbeCaliber;
 import dev.peoplecanfly.village_path_smoothed.VillagePathSmoothedConfig.RoadShapeStage;
 import dev.peoplecanfly.village_path_smoothed.compat.VpsCompat;
 import dev.peoplecanfly.village_path_smoothed.duck.StructureStartVpsAccess;
@@ -260,17 +261,22 @@ public final class VpsPipeline {
 
 	private static VpsVillageSolution solveVillage(StructureStart start, WorldGenLevel level, ChunkGenerator generator, ChunkPos triggerChunk, VillagePathSmoothedConfig config) {
 		long begin = System.nanoTime();
-		// Analysis report section 3.1 / fix 1: the real-heightmap reliability
-		// window is guaranteed by the vanilla chunk pyramid only +/-1 chunks
-		// around the chunk currently being generated (FEATURES needs CARVERS at
-		// distance 1, only STRUCTURE_STARTS at distance 2..8), so the probe
-		// center must be the triggering chunk - NOT the village start chunk.
-		// The start chunk's neighbourhood may still be STRUCTURE_STARTS-only
-		// air whose lazily primed heightmaps read as the dimension floor; that
-		// garbage baseline used to sink whole roads. Noise heights outside the
-		// window are a pure function of x/z, so the single cached solve stays
-		// consistent regardless of which chunk of the village triggers it.
-		VpsGenContext ctx = VpsGenContext.capture(level, generator, triggerChunk);
+		// Fix plan v4 D2-c / R2-1: the real-heightmap window is anchored on the
+		// village's bounding box, so the solve - and therefore the road - does not
+		// depend on which chunk's placeInChunk triggered it. The old anchor was the
+		// triggering chunk, which made the same seed produce two different villages
+		// depending on generation order: the columns inside the window carry carver
+		// and beard, so they are not a pure function of x/z. The +/-1 chunk size is
+		// vanilla's blockStateWriteRadius for FEATURES, not a limit of the solve -
+		// getBaseHeight itself is a pure function of arbitrary x/z.
+		//
+		// Note this is a write-stage property: the T1.5 solve runs during
+		// STRUCTURE_STARTS, where the village has no terrain at all yet (F14/F16).
+		boolean realCaliber = config.roadSmoothing.probeCaliber != ProbeCaliber.ALL_NOISE;
+		VpsGenContext ctx = VpsGenContext.capture(level, generator, triggerChunk, realCaliber);
+		if (realCaliber) {
+			ctx.anchorOnVillage(start.getBoundingBox());
+		}
 		RoadNetwork network = RoadCollector.collect(start, ctx, config);
 		if (config.roadSmoothing.enabled) {
 			RoadSmoother.SolveStats stats = RoadSmoother.solve(network, paramsFor(config));

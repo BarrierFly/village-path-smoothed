@@ -4,6 +4,7 @@
   "vps.config.roadSmoothing": "道路平滑化",
   "vps.config.objective": "剖面目标函数",
   "vps.config.allowCut": "允许下挖地形",
+  "vps.config.probeCaliber": "T5 高度口径",
   "vps.config.kerb": "路肩包边（地形高于路面）",
   "vps.config.railing": "树叶护栏（地形低于路面）",
   "vps.config.waterCrossing": "过水段脚手架",

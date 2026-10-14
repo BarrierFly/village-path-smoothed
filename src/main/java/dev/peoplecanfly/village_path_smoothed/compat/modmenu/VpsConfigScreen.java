@@ -72,6 +72,20 @@ public class VpsConfigScreen extends Screen {
 				.create(centerX - width / 2, y, width, 20, Component.translatable("vps.config.allowCut"),
 						(button, value) -> config.roadSmoothing.allowCutIntoTerrain = value));
 		y += 24;
+		//#if MC >= 12111
+		//$$ this.addOption(CycleButton.<VillagePathSmoothedConfig.ProbeCaliber>builder(
+		//$$ 				caliber -> Component.literal(pretty(caliber.name())),
+		//$$ 				config.roadSmoothing.probeCaliber)
+		//$$ 				.withValues(java.util.Arrays.asList(VillagePathSmoothedConfig.ProbeCaliber.values()))
+		//$$ 				.create(centerX - width / 2, y, width, 20, Component.translatable("vps.config.probeCaliber"),
+		//$$ 						(button, value) -> config.roadSmoothing.probeCaliber = value));
+		//#else
+		this.addOption(CycleButton.<VillagePathSmoothedConfig.ProbeCaliber>builder(caliber -> Component.literal(pretty(caliber.name())))
+				.withValues(java.util.Arrays.asList(VillagePathSmoothedConfig.ProbeCaliber.values()))
+				.create(centerX - width / 2, y, width, 20, Component.translatable("vps.config.probeCaliber"),
+						(button, value) -> config.roadSmoothing.probeCaliber = value));
+		//#endif
+		y += 24;
 		this.addOption(CycleButton.onOffBuilder(config.kerb.enabled)
 				.create(centerX - width / 2, y, width, 20, Component.translatable("vps.config.kerb"),
 						(button, value) -> config.kerb.enabled = value));

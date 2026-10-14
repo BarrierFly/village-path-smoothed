@@ -180,7 +180,8 @@ public final class VpsCommands {
 				+ ", this world enabled=" + (server == null ? "?" : VpsWorldSettings.isEnabled(server))
 				+ ", roadSmoothing=" + config.roadSmoothing.enabled + " (" + config.roadSmoothing.objective + ", window=" + config.roadSmoothing.dpWindowHalfUnits
 				+ ", penalty=" + config.roadSmoothing.stepViolationPenalty + ", cut=" + config.roadSmoothing.allowCutIntoTerrain
-				+ ", stage=" + config.roadSmoothing.roadShapeStage + ")"
+				+ ", stage=" + config.roadSmoothing.roadShapeStage
+				+ ", probeCaliber=" + config.roadSmoothing.probeCaliber + ", deviationWarn=" + config.roadSmoothing.surfaceDeviationWarnBlocks + " blocks)"
 				+ ", kerb=" + config.kerb.enabled + " (> " + config.kerb.minDropHeight + " blocks, savanna="
 				+ config.kerb.blockByStyle.savanna + ")"
 				+ ", railing=" + config.railing.enabled + " (< -" + config.railing.minDropHeight + " blocks)"

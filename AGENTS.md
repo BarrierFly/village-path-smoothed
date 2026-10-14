@@ -114,9 +114,15 @@ Rules:
 - **The writer is a renderer, not a second solver (fix plan v2 R3 / N7).** An
   over-budget cell (`RoadWritePolicy#overBudget`) keeps its solved height and
   is rendered as a bridge deck (fill cap) or tunnel/open cut (clear cap); the
-  writer only counts it (`FALLBACK_REANCHORS`) and warns. Never reintroduce
-  the snap onto the real surface: it manufactured a `|dP| >= 2` step against
-  the neighbouring solved cells - exactly the drop class N1 forbids.
+  writer normally only counts it (`FALLBACK_REANCHORS`) and warns. Nudging a
+  single cell onto the real surface is **allowed but must be done carefully**
+  (fix plan v4 §16.1, relaxed 2026-10-14) - it is only legal while it
+  **creates no drop above half a block** (neighbouring walk surfaces stay
+  within 1 half unit) and **does not move the surface away from a building
+  entrance**. Those two are acceptance criteria, not a ban. What stays
+  forbidden is re-solving: letting the writer move whole runs or whole chunks
+  off `solvedP`, which manufactures the `|dP| >= 2` steps and the floating
+  front step that this rule exists to prevent.
 - **All drop criteria are computed in half-block walk-surface units** (`S = 2 *
   walk surface`); never use `roadTopBlockY + 1` as the walk surface (it is 0.5
   too high for a slab). The pure helpers live in `RoadWritePolicy`

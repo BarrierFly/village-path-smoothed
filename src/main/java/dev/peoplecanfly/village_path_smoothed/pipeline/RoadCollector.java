@@ -119,6 +119,36 @@ public final class RoadCollector {
 	/** Centre-piece cells skipped because their y=0 block is not road material. */
 	public static final AtomicLong TOWN_CENTER_NON_ROAD_SKIPPED = new AtomicLong();
 
+	/**
+	 * Which y=0 blocks the town-centre rule actually rejected, by block id (fix
+	 * plan v4 F5).
+	 *
+	 * <p>The road-material white list was written from experience, not by reading
+	 * the six versions' {@code town_centers} templates, so it can miss a plaza
+	 * material (the centre piece then silently stays out of the road network) or
+	 * wrongly include a fountain block. The count alone cannot tell those apart -
+	 * only the ids can, so {@code /vps debug towncenters} prints them and the
+	 * white list is extended from evidence instead of from guesswork.
+	 */
+	private static final java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicLong> TOWN_CENTER_SKIPPED_BLOCKS =
+			new java.util.concurrent.ConcurrentHashMap<>();
+
+	private static void recordTownCenterSkip(BlockState state) {
+		String id = net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString();
+		TOWN_CENTER_SKIPPED_BLOCKS.computeIfAbsent(id, k -> new java.util.concurrent.atomic.AtomicLong())
+				.incrementAndGet();
+	}
+
+	/** The rejected {@code town_centers} blocks, most frequent first (for /vps debug towncenters). */
+	public static List<String> townCenterSkipReport() {
+		List<String> out = new ArrayList<>();
+		TOWN_CENTER_SKIPPED_BLOCKS.entrySet().stream()
+				.sorted((a, b) -> Long.compare(b.getValue().get(), a.getValue().get()))
+				.limit(24)
+				.forEach(entry -> out.add(entry.getKey() + " x" + entry.getValue()));
+		return out;
+	}
+
 	private static final int[] DIR_DX = {-1, 1, 0, 0};
 	private static final int[] DIR_DZ = {0, 0, -1, 1};
 
@@ -351,6 +381,7 @@ public final class RoadCollector {
 				// fix plan v4 D5-c: only the plaza joins the mask
 				if (!config.roadSmoothing.includeTownCentersRoadMaterials || !TownCenterMaterials.ROAD.contains(infoState.getBlock())) {
 					TOWN_CENTER_NON_ROAD_SKIPPED.incrementAndGet();
+					recordTownCenterSkip(infoState);
 					continue;
 				}
 			} else if (!isRoadSurfaceCell(infoState, style, config)) {

@@ -215,6 +215,14 @@ public class RoadNetworkBenchTest {
 	private static final class MaskBuilder {
 		final Map<Long, RoadCell> cells = new HashMap<>();
 		final Set<Long> dropped = new LinkedHashSet<>();
+		/**
+		 * Cells whose profile write is modelled as FAILING (fix plan v4 F4). The
+		 * writer's fallback is the only path that can move a cell onto the real
+		 * surface, so without this flag the bench never exercises
+		 * {@link RoadWritePolicy#surfaceNudgeColumn} - and neither of the two
+		 * outcomes of that guard (nudged / refused) would ever be asserted.
+		 */
+		final Set<Long> writeFailures = new LinkedHashSet<>();
 		NetworkShape shape;
 		int droppedCells;
 		int minX = Integer.MAX_VALUE;
@@ -501,7 +509,7 @@ public class RoadNetworkBenchTest {
 		m.polishConflicts = stats.polishConflicts();
 		m.cells = net.cells.size();
 		measureMask(net, m);
-		measureWriter(net, real, m);
+		measureWriter(net, real, mask, m);
 		measureEdges(net, real, m);
 		measureArms(net, m);
 		m.solvedByIndex = solvedSnapshot(net);
@@ -558,7 +566,7 @@ public class RoadNetworkBenchTest {
 	 * refused. {@code writtenViolEdg} is the gate: whatever combination of the
 	 * three happened, the road in the world must still be continuous.
 	 */
-	private static void measureWriter(RoadNetwork net, Height real, Metrics m) {
+	private static void measureWriter(RoadNetwork net, Height real, MaskBuilder mask, Metrics m) {
 		int[] written = new int[net.cells.size()];
 		boolean[] hasWritten = new boolean[net.cells.size()];
 		List<Integer> devs = new ArrayList<>();
@@ -571,7 +579,9 @@ public class RoadNetworkBenchTest {
 			// the written walk surface is the solved surface in every case: a water
 			// crossing's scaffolding is support under the road block, not the surface
 			RoadWritePolicy.Column column = RoadWritePolicy.profileColumn(cell.solvedP, MIN_Y, MAX_Y);
-			if (!column.written()) {
+			if (!column.written() || mask.writeFailures.contains(RoadCell.packedXZ(cell.x, cell.z))) {
+				// the first case is a solved height outside the world, the second models
+				// a per-cell write failure: both take the guarded surface-nudge path
 				column = RoadWritePolicy.surfaceNudgeColumn(cell.solvedP, realTop, MIN_Y, MAX_Y,
 						neighbourSurfaces(net, cell), nearEntrance(cell));
 			}
@@ -942,6 +952,47 @@ public class RoadNetworkBenchTest {
 		}
 		mask.shape = NetworkShape.HOLED;
 		return mask;
+	}
+
+	/**
+	 * Fix plan v4 F4: the two fallback outcomes of the guarded surface nudge.
+	 *
+	 * <p>They cannot be reached by lowering a mask height: the polish pass (A-1)
+	 * legalises the profile and, with {@code allowCutIntoTerrain} on, has no
+	 * floor, so a garbage height is dragged back into the world before the writer
+	 * ever sees it. The path that really reaches the writer's fallback is a
+	 * <b>per-cell write failure</b>, so that is what this tier models: one cell in
+	 * seven is treated as "its profile write threw" and therefore goes through
+	 * {@link RoadWritePolicy#surfaceNudgeColumn}.
+	 *
+	 * <p>What must hold: the written road stays continuous either way, a nudge
+	 * never happens at a building door, and the tier is not vacuous - both the
+	 * nudged and the refused outcome have to occur, because a guard that only ever
+	 * sees one outcome is half-tested.
+	 */
+	@Test
+	public void theGuardedFallbackKeepsTheWrittenRoadContinuous() {
+		for (TerrainShape terrain : TERRAINS) {
+			MaskBuilder mask = mask(NetworkShape.BIG, terrain);
+			injectWriteFailures(mask);
+			Metrics m = measure(mask, terrain, SolverPath.NOISE);
+			String where = "BIG/NOISE/" + terrain + " with injected write failures";
+			assertEquals(where + ": the written road is legal", 0, m.writtenViolEdg);
+			assertEquals(where + ": the worst written step is 0", 0, m.writtenWorst);
+			assertEquals(where + ": a nudge never happens beside a building door", 0, m.nudgedAtEntrance);
+			assertTrue(where + ": the tier is not vacuous - nudges and refusals both happen"
+							+ " (nudged " + m.writeNudgedCells + ", refused " + m.writeRefusedCells + ")",
+					m.writeNudgedCells > 0 && m.writeRefusedCells > 0);
+		}
+	}
+
+	/** Every seventh cell of the mask, in a deterministic order. */
+	private static void injectWriteFailures(MaskBuilder mask) {
+		List<Long> keys = new ArrayList<>(mask.cells.keySet());
+		java.util.Collections.sort(keys);
+		for (int i = 0; i < keys.size(); i += 7) {
+			mask.writeFailures.add(keys.get(i));
+		}
 	}
 
 	/**

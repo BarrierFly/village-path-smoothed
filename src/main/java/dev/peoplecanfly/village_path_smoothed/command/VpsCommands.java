@@ -32,6 +32,7 @@ import net.minecraft.world.level.levelgen.structure.Structure;
 import net.minecraft.world.level.levelgen.structure.StructureStart;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -75,6 +76,7 @@ public final class VpsCommands {
 						.then(Commands.argument("radius", IntegerArgumentType.integer(1, 8)).executes(context ->
 								dump(context.getSource(), IntegerArgumentType.getInteger(context, "radius")))))
 				.then(Commands.literal("debug")
+						.then(Commands.literal("towncenters").executes(context -> townCentreReport(context.getSource())))
 						.then(Commands.literal("villagerbrain")
 								.then(Commands.literal("freeze")
 										.then(Commands.literal("on").executes(context -> setVillagerBrainFreeze(context.getSource(), true, false)))
@@ -89,6 +91,24 @@ public final class VpsCommands {
 											+ " (brain ticks skipped so far: " + VpsPipeline.DEBUG_VILLAGER_BRAIN_SKIPS.get() + ")"));
 									return 1;
 								})));
+	}
+
+	/**
+	 * Which y=0 blocks the town-centre road-material rule rejected, by id (fix plan
+ * v4 F5). The white list was written from experience, so this is the evidence
+ * needed to widen it - a plaza material in here means a village centre that stays
+ * outside the road network; a fountain block missing from here means the opposite.
+ */
+	private static int townCentreReport(CommandSourceStack source) {
+		List<String> report = RoadCollector.townCenterSkipReport();
+		if (report.isEmpty()) {
+			source.sendSystemMessage(Component.literal("[VPS] no town-centre cells skipped yet (generate a village first)"));
+			return 0;
+		}
+		source.sendSystemMessage(Component.literal("[VPS] town-centre y=0 blocks NOT taken as road ("
+				+ RoadCollector.TOWN_CENTER_NON_ROAD_SKIPPED.get() + " cells total, most frequent first):\n  "
+				+ String.join("\n  ", report)));
+		return report.size();
 	}
 
 	/** G1: unambiguous verbs - the flag freezes villagers, it does not "disable their brains" in either direction. */
@@ -182,7 +202,11 @@ public final class VpsCommands {
 				+ ", roadSmoothing=" + config.roadSmoothing.enabled + " (" + config.roadSmoothing.objective + ", window=" + config.roadSmoothing.dpWindowHalfUnits
 				+ ", penalty=" + config.roadSmoothing.stepViolationPenalty + ", cut=" + config.roadSmoothing.allowCutIntoTerrain
 				+ ", stage=" + config.roadSmoothing.roadShapeStage
-				+ ", probeCaliber=" + config.roadSmoothing.probeCaliber + ", deviationWarn=" + config.roadSmoothing.surfaceDeviationWarnBlocks + " blocks)"
+				+ ", probeCaliber=" + config.roadSmoothing.probeCaliber
+				+ ", deviationWarn=" + config.roadSmoothing.surfaceDeviationWarnBlocks + " blocks"
+				+ ", roadPiecesRegex=" + config.roadSmoothing.roadPiecesRegex
+				+ " (town_centers " + (config.roadSmoothing.roadPiecesRegex.contains("town_centers") ? "included" : "NOT included")
+				+ ", centre plazas " + (config.roadSmoothing.includeTownCentersRoadMaterials ? "on" : "off") + ")"
 				+ ", kerb=" + config.kerb.enabled + " (> " + config.kerb.minDropHeight + " blocks, savanna="
 				+ config.kerb.blockByStyle.savanna + ")"
 				+ ", railing=" + config.railing.enabled + " (< -" + config.railing.minDropHeight + " blocks)"

@@ -174,15 +174,8 @@ public final class RoadWriter {
 
 		// ---- profile rewrite (5.4); skipped when smoothing is disabled
 		int p = cell.solvedP;
-		int roadTopBlockY;
-		boolean slab;
-		if ((p & 1) == 0) {
-			roadTopBlockY = p / 2 - 1;
-			slab = false;
-		} else {
-			roadTopBlockY = (p - 1) / 2;
-			slab = true;
-		}
+		boolean slab = (p & 1) != 0;
+		int roadTopBlockY = RoadWritePolicy.roadTopBlockY(p);
 		// ---- over-budget observation (fix plan v2 R3, decision N7): the writer
 		// is a renderer, not a second solver. A cell whose solved walk surface
 		// is beyond every affordable fill/cut is COUNTED and warned about, and

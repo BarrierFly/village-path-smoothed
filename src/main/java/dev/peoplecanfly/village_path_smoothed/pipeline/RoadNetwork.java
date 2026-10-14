@@ -60,6 +60,82 @@ public final class RoadNetwork {
 		return cellIndexLookup.getOrDefault(RoadCell.packedXZ(x, z), -1);
 	}
 
+	// ------------------------------------------------------------------
+	// connectivity (fix plan v4 D1-e)
+	// ------------------------------------------------------------------
+
+	/**
+	 * Number of 4-connected components of the mask.
+	 *
+	 * <p>Fix plan v4 D1/D1-e: a dropped probe cell does not just lose one cell,
+	 * it splits the network. The two halves then have no edge between them at
+	 * all, each solves on its own, and the dropped column keeps a full-height
+	 * vanilla road in between - a drop that every |dP| counter is blind to. So
+	 * connectivity is a first-class property of the mask, not something the
+	 * solver is expected to notice.
+	 */
+	public int componentCount() {
+		boolean[] seen = new boolean[neighbors.length];
+		int components = 0;
+		for (int start = 0; start < neighbors.length; start++) {
+			if (seen[start]) {
+				continue;
+			}
+			components++;
+			Deque<Integer> stack = new ArrayDeque<>();
+			stack.push(start);
+			seen[start] = true;
+			while (!stack.isEmpty()) {
+				int i = stack.pop();
+				for (int dir = 0; dir < 4; dir++) {
+					int j = neighbors[i][dir];
+					if (j >= 0 && !seen[j]) {
+						seen[j] = true;
+						stack.push(j);
+					}
+				}
+			}
+		}
+		return components;
+	}
+
+	/** True when the mask is one single 4-connected component (or empty). */
+	public boolean isConnected() {
+		return componentCount() <= 1;
+	}
+
+	/** Size of the largest 4-connected component divided by the cell count; 1.0 when empty. */
+	public double largestComponentRatio() {
+		int n = neighbors.length;
+		if (n == 0) {
+			return 1.0;
+		}
+		boolean[] seen = new boolean[n];
+		int largest = 0;
+		for (int start = 0; start < n; start++) {
+			if (seen[start]) {
+				continue;
+			}
+			int size = 0;
+			Deque<Integer> stack = new ArrayDeque<>();
+			stack.push(start);
+			seen[start] = true;
+			while (!stack.isEmpty()) {
+				int i = stack.pop();
+				size++;
+				for (int dir = 0; dir < 4; dir++) {
+					int j = neighbors[i][dir];
+					if (j >= 0 && !seen[j]) {
+						seen[j] = true;
+						stack.push(j);
+					}
+				}
+			}
+			largest = Math.max(largest, size);
+		}
+		return (double) largest / n;
+	}
+
 	public static final class Arm {
 		/** Cell indices per slice, slices ordered along the sweep axis. */
 		public final List<int[]> slices;

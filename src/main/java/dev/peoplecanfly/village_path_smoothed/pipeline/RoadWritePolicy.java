@@ -10,7 +10,32 @@ package dev.peoplecanfly.village_path_smoothed.pipeline;
  * so unit tests can load this class without the game on the classpath.
  */
 public final class RoadWritePolicy {
+	/** Sentinel walk surface for a column the writer refused to write (fix plan v4 D6-b). */
+	public static final int UNWRITTEN = Integer.MIN_VALUE;
+
 	private RoadWritePolicy() {
+	}
+
+	/**
+	 * What the writer actually puts in one column, in the same half-block walk
+	 * surface units the solver uses ({@code S = 2 * walkSurface}).
+	 *
+	 * <p>Extracted as a pure function (fix plan v4 M0) so the bench measures the
+	 * writer's real height decisions instead of mirroring them: the road profile
+	 * can be legal in the mask and still be overwritten at write time by the
+	 * water-crossing branch, the dimension clamp or the exception fallback
+	 * (fix plan v4 F7). The bench calls these two methods for every cell, so a
+	 * change to the writer's geometry shows up in {@code writtenViolEdg} without
+	 * the test duplicating a rule.
+	 *
+	 * @param walkSurface2 the walk surface actually written, {@link #UNWRITTEN}
+	 *        when the writer refused the cell
+	 * @param slab whether the road block is a bottom slab
+	 * @param written false when the writer refused to write the column
+	 * @param overrodeSolved true when the written walk surface differs from the
+	 *        cell's solved surface - i.e. the writer broke the solution
+	 */
+	public record Column(int walkSurface2, boolean slab, boolean written, boolean overrodeSolved) {
 	}
 
 	/**
@@ -81,6 +106,54 @@ public final class RoadWritePolicy {
 	 * relevant cap is chosen by direction and a negative cap means unlimited
 	 * (never triggers).
 	 */
+	/**
+	 * Height decision of the water-crossing branch (scaffolding instead of the
+	 * vanilla planks).
+	 *
+	 * <p>Extracted from {@code RoadWriter#writeCell} verbatim in fix plan v4 M0:
+	 * the scaffolding is pinned to the vanilla surface height
+	 * ({@code realSurfaceTopY - 1}) and the cell's solved height is discarded.
+	 * That is one of the three writer-side overrides (F7) and the bench measures
+	 * it as {@code writeOverrideCells}; fix plan v4 D6-b (M5) makes the scaffold
+	 * carry the solved height like every other column.
+	 *
+	 * @param solvedP the cell's solved walk surface (half units)
+	 * @param realSurfaceTopY first air above the real terrain (writer context)
+	 * @param crossingEnabled waterCrossing.enabled
+	 * @param waterAtRoadBlock water at the vanilla road block height
+	 * @param waterBelowRoadBlock water one block below it
+	 */
+	public static Column waterCrossingColumn(int solvedP, int realSurfaceTopY, boolean crossingEnabled,
+			boolean waterAtRoadBlock, boolean waterBelowRoadBlock, int minY, int maxY) {
+		if (!crossingEnabled || !dev.peoplecanfly.village_path_smoothed.terrain.WaterCrossings.isCrossing(waterAtRoadBlock, waterBelowRoadBlock)) {
+			return profileColumn(solvedP, minY, maxY);
+		}
+		int written = roadWalkSurface2(realSurfaceTopY - 1, false);
+		return new Column(written, false, true, written != solvedP);
+	}
+
+	/**
+	 * Height decision of the profile branch: the road block sits where the
+	 * solver put the walk surface, clamped into the dimension bounds. A clamped
+	 * height is still written (fix plan v4 D6-b turns this into a refusal).
+	 */
+	public static Column profileColumn(int solvedP, int minY, int maxY) {
+		int roadTopBlockY = roadTopBlockY(solvedP);
+		boolean slab = (solvedP & 1) != 0;
+		int clamped = clamp(minY, maxY, roadTopBlockY);
+		int written = roadWalkSurface2(clamped, slab);
+		return new Column(written, slab, true, clamped != roadTopBlockY);
+	}
+
+	/** Y of the top road block for a solved walk surface: whole block vs bottom slab. */
+	public static int roadTopBlockY(int solvedP) {
+		return (solvedP & 1) == 0 ? solvedP / 2 - 1 : (solvedP - 1) / 2;
+	}
+
+	private static int clamp(int minY, int maxY, int y) {
+		return Math.max(minY, Math.min(maxY, y));
+	}
+
 	public static boolean overBudget(int p, int surfaceTopY, int maxFillLayers, int maxClearLayers) {
 		int diff = p - 2 * surfaceTopY; // half units, positive = road above the surface (fill)
 		int budget = diff >= 0 ? maxFillLayers : maxClearLayers;

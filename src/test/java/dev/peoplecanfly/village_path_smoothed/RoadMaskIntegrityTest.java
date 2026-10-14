@@ -8,6 +8,7 @@ package dev.peoplecanfly.village_path_smoothed;
 import dev.peoplecanfly.village_path_smoothed.pipeline.ProbeHeights;
 import dev.peoplecanfly.village_path_smoothed.pipeline.RoadCell;
 import dev.peoplecanfly.village_path_smoothed.pipeline.RoadNetwork;
+import dev.peoplecanfly.village_path_smoothed.pipeline.RoadSmoother;
 
 import org.junit.Test;
 
@@ -19,7 +20,8 @@ import static org.junit.Assert.assertTrue;
 
 /**
  * Fix plan v4 D1: mask integrity - a failed probe must not cost a column, and a
- * mask that did split must be declined whole rather than half-adopted.
+ * split mask is solved per component instead of being declined whole (D1-e,
+ * reworked 2026-10-14).
  */
 public class RoadMaskIntegrityTest {
 	private static final int MIN_Y = -64;
@@ -113,5 +115,40 @@ public class RoadMaskIntegrityTest {
 		RoadNetwork net = RoadNetwork.build(row(0, 5), 4);
 		assertEquals(0, net.widestBreak());
 		assertTrue(net.isConnected());
+	}
+
+	/**
+	 * A split mask is solved per component (reworked D1-e, 2026-10-14). The two
+	 * halves have no 4-adjacency edge between them, so each one being legal on
+	 * its own is exactly what is needed; declining the whole village here is what
+	 * made real - routinely split - village masks do nothing at all.
+	 */
+	@Test
+	public void aSplitMaskIsSolvedPerComponent() {
+		List<RoadCell> cells = new ArrayList<>(row(0, 9));
+		cells.addAll(row(13, 22));
+		RoadNetwork net = RoadNetwork.build(cells, 4);
+		assertEquals(2, net.componentCount());
+		int west = net.cellAt(9, 0);
+		int east = net.cellAt(13, 0);
+		assertTrue("both halves are in the mask", west >= 0 && east >= 0);
+		assertEquals("no edge from the west half across the hole",
+				-1, net.neighbors[west][RoadNetwork.DIR_EAST]);
+		assertEquals("no edge into the east half from the hole",
+				-1, net.neighbors[east][RoadNetwork.DIR_WEST]);
+
+		RoadSmoother.solve(net, new RoadSmoother.SolveParams(
+				VillagePathSmoothedConfig.Objective.SMOOTH_FIRST, 8 * 16, 32, 16, 4, true));
+
+		for (int i = 0; i < net.cells.size(); i++) {
+			for (int dir = 0; dir < 4; dir++) {
+				int j = net.neighbors[i][dir];
+				if (j < 0) {
+					continue;
+				}
+				assertTrue("every edge inside a component is legal",
+						Math.abs(net.cells.get(i).solvedP - net.cells.get(j).solvedP) <= 1);
+			}
+		}
 	}
 }

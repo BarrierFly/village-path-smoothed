@@ -294,6 +294,12 @@ Two things are worth spelling out:
     density-to-blocks factor is not calibrated against a real world, so the
     default stays on `step`; until it is, a residual ±1 around buildings is
     possible.
+11. **A split road mask is solved in parts** — vanilla routes some side-streets
+    through houses, which are not in the mask, so one village can have several
+    separate street clusters. Each cluster is solved and written on its own and
+    the cells between them keep their vanilla blocks (`split masks` in
+    `/vps stats`). Before 2026-10-14 a split mask handed the whole village back
+    to vanilla, which made the mod look like it did nothing in real worlds.
 
 ## Credits / 致谢
 

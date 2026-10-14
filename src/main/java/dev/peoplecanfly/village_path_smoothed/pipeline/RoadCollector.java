@@ -53,14 +53,11 @@ public final class RoadCollector {
 	 * between "a hole in the mask" and "a noisier height".
 	 */
 	public static final AtomicLong NOISE_FALLBACK_CELLS = new AtomicLong();
-	// Fix plan v4 D1-e: mask integrity per village. A dropped probe cell does not
-	// just cost one cell, it splits the network - the halves then have no edge
-	// between them, each solves alone, and the dropped column keeps a full-height
-	// vanilla road in between, which no |dP| counter can see.
+	// Mask integrity per village (fix plan v4 D1-e, reworked 2026-10-14). A split
+	// mask is OBSERVED, not fatal: the components are independent road networks
+	// with no edge between them, so each is solved and written on its own.
 	/** Villages whose mask is not one 4-connected component. */
 	public static final AtomicLong NETWORKS_SPLIT = new AtomicLong();
-	/** Villages handed back to vanilla whole because their mask was split (D1-e). */
-	public static final AtomicLong NETWORKS_DECLINED = new AtomicLong();
 	/** Sum of mask cells / cells in the largest component, so the ratio is reconstructible. */
 	public static final AtomicLong MASK_CELLS_TOTAL = new AtomicLong();
 	public static final AtomicLong MASK_CELLS_LARGEST_COMPONENT = new AtomicLong();
@@ -218,15 +215,21 @@ public final class RoadCollector {
 		alignProbeBoundaries(cells);
 		RoadNetwork network = RoadNetwork.build(cells, config.roadSmoothing.maxExactSectionWidth);
 		recordIntegrity(network);
-		// Fix plan v4 D1-e: a split mask is declined as a whole. Adopting one half
-		// and leaving the other half vanilla would look like "the road stopped in
-		// the middle of the village"; declining keeps vanilla continuous, which is
-		// the failure mode v3 documented as acceptable for an unsolvable village.
+		// Fix plan v4 D1-e used to hand a split mask back to vanilla whole "instead
+		// of smoothing half of it". Real village masks split routinely, though, and
+		// not because of a dropped probe: vanilla routes side-streets through
+		// houses, which are not in the mask, so the street clusters of one village
+		// are genuinely separate 4-connected components. Declining on that turned
+		// "a few separated side-streets" into "the whole village is vanilla" - the
+		// mod looked like it did nothing at all. The components have no edge
+		// between them, so solving each one on its own is exactly what an
+		// independent street needs; the solver already seeds one polish walk per
+		// component. A real hole (a dropped probe column) still shows up in
+		// dropped cells / widest break and costs one vanilla column, which
+		// ProbeHeights makes rare. Observed, not fatal.
 		if (!network.isConnected()) {
-			NETWORKS_DECLINED.incrementAndGet();
-			VillagePathSmoothed.LOGGER.warn("[VPS] village at {}: the road mask is split into {} components (widest break {} blocks); leaving the whole village vanilla instead of smoothing half of it",
+			VillagePathSmoothed.LOGGER.warn("[VPS] village at {}: the road mask has {} disconnected components (widest break {} blocks); solving each component on its own - they are separated by non-road blocks, so this is normal",
 					start.getChunkPos(), network.componentCount(), network.widestBreak());
-			return RoadNetwork.build(new ArrayList<>(), config.roadSmoothing.maxExactSectionWidth);
 		}
 		return network;
 	}

@@ -197,11 +197,18 @@ Rules:
   beyond the fill/cut cap is rendered as a bridge deck or a tunnel/open cut and
   counted (`FALLBACK_REANCHORS`), never snapped onto the real surface - that snap
   manufactured the `|dP| >= 2` steps N1 forbids.
-- **A split mask is declined whole (fix plan v4 D1-e).** A dropped probe column
-  splits the mask; each half then solves alone and the dropped column keeps a
-  full-height vanilla road in between. Probe failures re-probe the noise caliber
-  first (`ProbeHeights`), and whatever splits the mask anyway is handed back to
-  vanilla with a WARN rather than half-adopted.
+- **A split mask is solved per component, never declined (fix plan v4 D1-e,
+  reworked 2026-10-14).** Real village masks split routinely and not because of a
+  probe failure: vanilla routes side-streets through houses, which are not in the
+  mask, so one village's street clusters are genuinely separate 4-connected
+  components. The components have no edge between them, so each is solved and
+  written on its own (the polish pass already seeds one walk per component) - the
+  old rule, "decline the whole village when the mask splits", turned a few
+  separated side-streets into "the mod does nothing", which is the symptom it
+  caused in game. A genuine hole (a dropped probe column) still shows up in
+  `dropped cells` / `widest break` and costs one vanilla column; probe failures
+  re-probe the noise caliber first (`ProbeHeights`), which makes that rare.
+  `split masks` / `largest component` in `/vps stats` stay as observations.
 - **`town_centers` plazas are part of the road network (fix plan v4 D5-c).** The
   mask regex matches them, but only road-material y=0 cells are taken: a claimed
   column has its vanilla y=0 block suppressed and rewritten, so the fountain's

@@ -434,7 +434,6 @@ public class RoadNetworkBenchTest {
 	// ==================================================================
 
 	private static final class Metrics {
-		boolean declined;
 		int cells;
 		int components;
 		double largestComponentRatio = 1.0;
@@ -497,12 +496,9 @@ public class RoadNetworkBenchTest {
 		RoadNetwork net = RoadNetwork.build(cells, MAX_EXACT_WIDTH);
 		m.components = net.componentCount();
 		m.largestComponentRatio = net.largestComponentRatio();
-		if (!net.isConnected()) {
-			// fix plan v4 D1-e: a split mask is declined as a whole. The production
-			// gate is RoadCollector#collect; the rule itself is this predicate.
-			m.declined = true;
-			return m;
-		}
+		// A split mask is no longer declined (2026-10-14): the components have no
+		// edge between them, so each is solved on its own. components /
+		// largestComponentRatio stay measured so the split is still visible.
 		long begin = System.nanoTime();
 		RoadSmoother.SolveStats stats = RoadSmoother.solve(net, params());
 		m.solveNanos = System.nanoTime() - begin;
@@ -920,20 +916,26 @@ public class RoadNetworkBenchTest {
 	}
 
 	/**
- * Fix plan v4 D1-e: a mask with a hole must never be partially adopted. The gate
- * is {@link RoadNetwork#isConnected()}; both a single-layer cut and a
- * two-layer cut across a street have to trip it.
- */
+	 * Mask integrity (fix plan v4 D1-e, reworked 2026-10-14): a hole still splits
+	 * the mask, but the halves are now solved on their own instead of the whole
+	 * village being handed back to vanilla. Both a single-layer and a two-layer
+	 * cut across a street must (a) really split the mask, (b) leave both halves
+	 * with road cells, and (c) keep the written road legal - there is no edge
+	 * across the hole, so the two halves cannot step against each other.
+	 */
 	@Test
-	public void aHoleInTheMaskDeclinesTheWholeVillage() {
+	public void aHoleInTheMaskIsSolvedPerComponent() {
 		for (int layers : new int[]{1, 2}) {
 			MaskBuilder mask = holedMask(layers);
 			assertEquals("a " + layers + "-layer cut removes " + (STREET_WIDTH * layers) + " columns",
 					STREET_WIDTH * layers, mask.droppedCells);
 			assertEquals("the gap spans the whole street", STREET_WIDTH, mask.gapWidth());
 			Metrics m = measure(mask, TerrainShape.GEN, SolverPath.NOISE);
-			assertTrue("a " + layers + "-layer hole declines the village as a whole", m.declined);
-			assertEquals("a " + layers + "-layer hole writes nothing", 0, m.writeOverrideCells);
+			String where = "a " + layers + "-layer hole";
+			assertEquals(where + " splits the mask in two", 2, m.components);
+			assertTrue(where + " still writes road cells on both sides (" + m.cells + ")", m.cells > 0);
+			assertEquals(where + " leaves the written road legal", 0, m.writtenViolEdg);
+			assertTrue(where + " does not refuse columns", m.writeRefusedCells == 0);
 		}
 	}
 
@@ -1048,11 +1050,11 @@ public class RoadNetworkBenchTest {
 					assertTrue(where + ": steps/cell " + m.stepsPerCell + " stays within one half block per cell",
 							m.stepsPerCell <= 1.0);
 					report.append(String.format(
-							"%-22s cells=%4d comps=%d declined=%s solve=%dms steps/cell=%.2f dev/cell=%.2f overBud=%.1f%% maxDev=%d devP99=%d climbP99=%d"
+							"%-22s cells=%4d comps=%d solve=%dms steps/cell=%.2f dev/cell=%.2f overBud=%.1f%% maxDev=%d devP99=%d climbP99=%d"
 									+ " | polishMoved=%d polishMaxDelta=%d polishConflicts=%d"
 									+ " | edgeViol=%d edgeWorst=%d bareEdge=%d writeOverride=%d nudged=%d nudgedAtDoor=%d refused=%d"
 									+ " | devVsReal p50/p95/p99/max=%d/%d/%d/%d overWarn=%d cutBelow=%d fillAbove=%d%n",
-							where, m.cells, m.components, m.declined, m.solveNanos / 1000000,
+							where, m.cells, m.components, m.solveNanos / 1000000,
 							m.stepsPerCell, m.devPerCell, 100 * m.overBudgetRatio,
 							(int) m.maxDev, (int) m.devP99, (int) m.armClimbP99,
 							m.polishMoved, m.polishMaxDelta, m.polishConflicts,

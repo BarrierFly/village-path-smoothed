@@ -5,9 +5,13 @@
 
 package dev.peoplecanfly.village_path_smoothed.pipeline;
 
+import dev.peoplecanfly.village_path_smoothed.compat.VpsCompat;
+import dev.peoplecanfly.village_path_smoothed.duck.FeaturePoolElementVpsAccess;
+import net.minecraft.core.Holder;
 import net.minecraft.world.level.levelgen.structure.BoundingBox;
 import net.minecraft.world.level.levelgen.structure.PoolElementStructurePiece;
 import net.minecraft.world.level.levelgen.structure.StructurePiece;
+import net.minecraft.world.level.levelgen.structure.pools.FeaturePoolElement;
 import net.minecraft.world.level.levelgen.structure.pools.JigsawJunction;
 import net.minecraft.world.level.levelgen.structure.pools.SinglePoolElement;
 import net.minecraft.world.level.levelgen.structure.pools.StructureTemplatePool;
@@ -42,11 +46,44 @@ public final class BuildingComponents {
 	private BuildingComponents() {
 	}
 
+	/**
+	 * A piece T1.5 is allowed to move vertically.
+	 *
+	 * <p>RIGID {@code SinglePoolElement} pieces are the buildings. RIGID
+	 * {@code FeaturePoolElement} pieces are the village {@code decor} pool's
+	 * placed features, and only the hay pile ({@code minecraft:pile_hay}) is
+	 * taken: its origin is the road surface and it is 1x1x1, so it is a real
+	 * road-side object that otherwise stays at the vanilla terrain height while
+	 * the road around it moves (user decision 2026-10-14). The decorative trees
+	 * and flowers are deliberately left alone - a moved tree would fight the
+	 * vanilla terrain adaptation, which raises the ground it stands on.
+	 */
+	public static boolean isMovable(StructurePiece piece) {
+		if (piece instanceof PoolElementStructurePiece pool
+				&& pool.getElement() instanceof FeaturePoolElement feature) {
+			return feature.getProjection() == StructureTemplatePool.Projection.RIGID && isHayPile(feature);
+		}
+		return isRigid(piece);
+	}
+
+	/** The village decor hay pile; anything else in the decor pool is left where vanilla put it. */
+	public static boolean isHayPile(FeaturePoolElement element) {
+		try {
+			Holder<?> holder = ((FeaturePoolElementVpsAccess) element).village_path_smoothed$getFeature();
+			return holder != null && holder.unwrapKey()
+					.map(VpsCompat::registryKeyId)
+					.map("minecraft:pile_hay"::equals)
+					.orElse(false);
+		} catch (Throwable t) {
+			return false; // an accessor failure must cost the hay pile, not the village
+		}
+	}
+
 	public static List<Component> group(List<StructurePiece> pieces) {
 		int n = pieces.size();
 		boolean[] rigid = new boolean[n];
 		for (int i = 0; i < n; i++) {
-			rigid[i] = isRigid(pieces.get(i));
+			rigid[i] = isMovable(pieces.get(i));
 		}
 		int[] parent = new int[n];
 		for (int i = 0; i < n; i++) {

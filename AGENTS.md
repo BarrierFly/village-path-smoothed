@@ -23,6 +23,7 @@ src/main/java/dev/peoplecanfly/village_path_smoothed/
 │   ├── MixinGravityProcessor            # drops the vanilla street layer on claimed columns
 │   ├── MixinSinglePoolElement           # @Accessor("template")
 │   ├── MixinPoolElementStructurePiece   # @Accessor("structureTemplateManager")
+│   ├── MixinFeaturePoolElement          # @Accessor("feature") to recognise the hay pile
 │   ├── MixinStructureTemplate           # @Accessor("palettes")
 │   ├── MixinCommands                    # registers /vps (no fabric-api dependency)
 │   └── MixinVillagerBrain               # debug: skip villager brain ticks
@@ -135,11 +136,55 @@ Rules:
   mask-internal counter - which is why "different chunks do not match" could not
   be reproduced from the solver side. Now: the written walk surface is always the
   cell's **solved** surface; a solved height outside the world is refused, not
-  clamped; and a **water crossing's scaffolding is support *under* the profile
-  road block** (`scaffoldSupportY`), never the surface - a full block tops out one
-  half unit above a slab, so making the scaffold the surface steps against one of
-  the neighbours whichever way it is placed. What is left of the old "snap onto
-  the real surface" behaviour is the guarded single-cell nudge below.
+  clamped. What is left of the old "snap onto the real surface" behaviour is the
+  guarded single-cell nudge below.
+- **A water crossing's scaffold IS the walk surface (user decision 2026-10-14).**
+  `RoadWritePolicy.crossingWalkSurface2`: the scaffold replaces the road block at
+  the road block's Y, which is what makes a crossing read as a plank bridge. The
+  old rule (scaffold as support *under* the road block) put it one block under
+  the water surface and out of sight. A scaffold is a full block, so a crossing
+  cell whose solved surface is a slab tops out half a block above it; that half
+  step is **accepted** and is modelled in `RoadNetworkBenchTest` as
+  `crossingViolEdg` (exempted from the continuity gate, counted separately). Do
+  not "fix" it by snapping the solved height - that breaks the half-step chain.
+- **Every fill/cut decision is a per-cell directional probe, never the heightmap
+  top (user decision 2026-10-14).** `terrain/ColumnScan` + `VpsGenContext`:
+  `groundSurfaceTopY` scans **down** from the road block for the first standable
+  block (the fill/bridge base, and the surface a nudge snaps to);
+  `ceilingSurfaceTopY` scans **up** for the top of the contiguous terrain (the
+  cut/tunnel ceiling). A canopy or a floating layer above an open road must not
+  fake a fill, and an overhang above a solid one must not fake a cut. The raw
+  `WORLD_SURFACE_WG` read stays for `recordDeviation` and `runBuildingGuard`
+  (observations) and for the crossing predicate - never for a write decision.
+- **Every kerb/railing decision is a side-column probe from the road block's own
+  Y, in the direction that decides it (user decision 2026-10-14).** Solid at the
+  road level -> scan **up** to the top of the solid run and compare for a kerb;
+  empty -> scan **down** to the first standable ground and compare for a railing.
+  The old code read `WORLD_SURFACE_WG` for the side column, so an overhang faked
+  a kerb up to the canopy.
+- **The side-column owner key is the cell's `solvedP`, in both
+  `highestRoadPerSideColumn` and `applyKerbsAndRailings`.** Deriving it
+  independently used to be off by 2 half units for every slab cell
+  (`roadTopBlockY` was taken as `solvedP / 2 - 1` for both parities), so the
+  owner test never matched and no slab cell ever wrote a kerb or a railing.
+- **Building shift rules (user decisions 2026-10-14):**
+  - a movable piece is a RIGID `SinglePoolElement` (a building) or a RIGID
+    `FeaturePoolElement` whose placed feature is `minecraft:pile_hay`
+    (`BuildingComponents#isMovable`). The decor pool's trees and flowers are
+    deliberately **not** moved - a moved tree fights the vanilla terrain
+    adaptation that raises the ground under it;
+  - the alignment target is the road cells at the component's **door** - its
+    junctions whose `destProjection` is not RIGID, i.e. its connection to a
+    street/terminator/centre piece (`T15Planner#adjacentRoadHeights`). Do not go
+    back to "every road cell within the footprint plus one ring": that pulled a
+    long house or a farm to a road several blocks away;
+  - the overlap guard compares **only against other movable pieces**
+    (`T15Planner#overlaps`). A street or terminator box is one block tall but
+    sits exactly along the road edge the building opens onto, so the old
+    all-pieces comparison walked almost every shift back to zero;
+  - `BuildingShift` has **no `SPAN_TOO_WIDE` refusal** any more. It left the
+    building at the vanilla terrain height beside a smoothed road, which is the
+    symptom it was supposed to avoid.
 - **The single-cell surface nudge is allowed, and it is guarded (AGENTS.md rule,
   fix plan v4 D6-b).** A cell whose profile write threw, or whose solved height
   left the world bounds, may be written at the real surface - but only if no
@@ -173,8 +218,9 @@ Rules:
   be resolved, T1.5 must move nothing and let the T5 solve run at FEATURES
   (never "default allow" - a disabled world must not get its buildings moved).
 - **RIGID building components move as a group**: `BuildingComponents` unions
-  RIGID pieces joined by a RIGID-to-RIGID jigsaw junction; one `dy` per
-  component. `PoolElementStructurePiece#move` does NOT touch junctions, so
+  movable RIGID pieces (buildings, and the `minecraft:pile_hay` decor feature)
+  joined by a RIGID-to-RIGID jigsaw junction; one `dy` per component.
+  `PoolElementStructurePiece#move` does NOT touch junctions, so
   `T15Planner#syncJunctions` rebuilds them (fields are final) on both sides of
   the connection. Overlap and world-height guards run before each move.
 - Structure placement is **incremental per chunk**: `placeInChunk` only sees and

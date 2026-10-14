@@ -454,8 +454,10 @@ public class RoadNetworkBenchTest {
 		int edgeWorstDrop;
 		int bareEdgeBlocks;
 		int writtenViolEdg;
+		int crossingViolEdg;
 		int writtenWorst;
 		int crossChunkViolEdg;
+		int crossChunkCrossingViolEdg;
 		int crossChunkWorst;
 
 		double stepsPerCell;
@@ -569,15 +571,19 @@ public class RoadNetworkBenchTest {
 	private static void measureWriter(RoadNetwork net, Height real, MaskBuilder mask, Metrics m) {
 		int[] written = new int[net.cells.size()];
 		boolean[] hasWritten = new boolean[net.cells.size()];
+		boolean[] crossingCells = new boolean[net.cells.size()];
 		List<Integer> devs = new ArrayList<>();
 		for (int i = 0; i < net.cells.size(); i++) {
 			RoadCell cell = net.cells.get(i);
 			int realTop = real.topY(cell.x, cell.z);
 			boolean waterAtRoadBlock = realTop <= WATER_LEVEL;
 			boolean waterBelow = realTop <= WATER_LEVEL - 1;
-			boolean crossing = waterAtRoadBlock || waterBelow; // crossing only adds scaffolding support below the road
-			// the written walk surface is the solved surface in every case: a water
-			// crossing's scaffolding is support under the road block, not the surface
+			boolean crossing = waterAtRoadBlock || waterBelow;
+			// The written walk surface is the solved surface on a normal cell. On a
+			// water crossing the scaffold IS the surface (user decision 2026-10-14):
+			// a full block, so a slab cell tops out half a unit above its solved
+			// surface. That is the accepted price of a visible bridge, and it is
+			// measured here rather than hidden.
 			RoadWritePolicy.Column column = RoadWritePolicy.profileColumn(cell.solvedP, MIN_Y, MAX_Y);
 			if (!column.written() || mask.writeFailures.contains(RoadCell.packedXZ(cell.x, cell.z))) {
 				// the first case is a solved height outside the world, the second models
@@ -586,7 +592,8 @@ public class RoadNetworkBenchTest {
 						neighbourSurfaces(net, cell), nearEntrance(cell));
 			}
 			hasWritten[i] = column.written();
-			written[i] = column.walkSurface2();
+			written[i] = RoadWritePolicy.crossingWalkSurface2(crossing, column.walkSurface2(), column.slab());
+			crossingCells[i] = column.written() && crossing;
 			if (column.written() && column.overrodeSolved()) {
 				m.writeOverrideCells++;
 			}
@@ -628,9 +635,19 @@ public class RoadNetworkBenchTest {
 				}
 				m.writtenViolEdg++;
 				m.writtenWorst = Math.max(m.writtenWorst, d);
+				// A water crossing's scaffold is a full block, so a crossing cell can
+				// sit half a unit above a slab neighbour. Counted separately and
+				// exempted from the continuity gate: the user accepted this cost when
+				// choosing a visible scaffold over a hidden support block.
+				if (crossingCells[i] || crossingCells[j]) {
+					m.crossingViolEdg++;
+				}
 				if (crossesChunkBoundary(net.cells.get(i), net.cells.get(j))) {
 					m.crossChunkViolEdg++;
 					m.crossChunkWorst = Math.max(m.crossChunkWorst, d);
+					if (crossingCells[i] || crossingCells[j]) {
+						m.crossChunkCrossingViolEdg++;
+					}
 				}
 			}
 		}
@@ -773,10 +790,15 @@ public class RoadNetworkBenchTest {
 
 	/**
 	 * Fix plan v4 M5 / X-a(1): the written road may not step. A legal mask
- * solution that the writer then breaks is exactly the "chunks do not match"
+	 * solution that the writer then breaks is exactly the "chunks do not match"
 	 * symptom, and it is invisible to {@code intViolEdg}. The single-cell surface
- * nudge is allowed (AGENTS.md, 2026-10-14), so the gate is continuity plus the
- * nudge's own two criteria: never at a building door, and never a step.
+	 * nudge is allowed (AGENTS.md, 2026-10-14), so the gate is continuity plus the
+	 * nudge's own two criteria: never at a building door, and never a step.
+	 *
+	 * <p>Water crossings are exempt and counted separately
+	 * ({@link Metrics#crossingViolEdg}): the scaffold is a full block, so a
+	 * crossing cell whose solved surface is a slab tops out half a unit above it
+	 * (user decision 2026-10-14, a visible bridge in exchange for that half step).
 	 */
 	@Test
 	public void theWrittenRoadIsContinuousAndOnlyNudgesWhereItIsLegal() {
@@ -785,8 +807,9 @@ public class RoadNetworkBenchTest {
 				for (TerrainShape terrain : TERRAINS) {
 					Metrics m = measure(mask(network, terrain), terrain, path);
 					String where = network + "/" + path + "/" + terrain;
-					assertEquals(where + ": the written road is legal", 0, m.writtenViolEdg);
-					assertEquals(where + ": the worst written step is 0", 0, m.writtenWorst);
+					assertEquals(where + ": the written road is legal away from water crossings"
+									+ " (all " + m.writtenViolEdg + ", crossings " + m.crossingViolEdg + ")",
+							m.crossingViolEdg, m.writtenViolEdg);
 					assertEquals(where + ": no column refused outright", 0, m.writeRefusedCells);
 					assertEquals(where + ": a nudge never happens beside a building door", 0, m.nudgedAtEntrance);
 				}
@@ -797,14 +820,16 @@ public class RoadNetworkBenchTest {
 	/**
 	 * Fix plan v4 X-a(1): the headline assertion, counted across chunk
 	 * boundaries. One solve covers the whole village, so a violation here can
-	 * only come from the write stage.
+	 * only come from the write stage. Water crossings are exempt (see
+	 * {@link #theWrittenRoadIsContinuousAndOnlyNudgesWhereItIsLegal}).
 	 */
 	@Test
 	public void writtenRoadIsContinuousAcrossChunkBoundaries() {
 		for (TerrainShape terrain : TERRAINS) {
 			Metrics m = measure(mask(NetworkShape.BIG, terrain), terrain, SolverPath.NOISE);
-			assertEquals("BIG/NOISE/" + terrain + ": cross-chunk boundary edges are legal", 0, m.crossChunkViolEdg);
-			assertEquals("BIG/NOISE/" + terrain + ": the worst cross-chunk step is 0", 0, m.crossChunkWorst);
+			assertEquals("BIG/NOISE/" + terrain + ": cross-chunk boundary edges are legal away from crossings"
+							+ " (all " + m.crossChunkViolEdg + ", crossings " + m.crossChunkCrossingViolEdg + ")",
+					m.crossChunkCrossingViolEdg, m.crossChunkViolEdg);
 		}
 	}
 
@@ -978,8 +1003,9 @@ public class RoadNetworkBenchTest {
 			injectWriteFailures(mask);
 			Metrics m = measure(mask, terrain, SolverPath.NOISE);
 			String where = "BIG/NOISE/" + terrain + " with injected write failures";
-			assertEquals(where + ": the written road is legal", 0, m.writtenViolEdg);
-			assertEquals(where + ": the worst written step is 0", 0, m.writtenWorst);
+			assertEquals(where + ": the written road is legal away from water crossings"
+							+ " (all " + m.writtenViolEdg + ", crossings " + m.crossingViolEdg + ")",
+					m.crossingViolEdg, m.writtenViolEdg);
 			assertEquals(where + ": a nudge never happens beside a building door", 0, m.nudgedAtEntrance);
 			assertTrue(where + ": the tier is not vacuous - nudges and refusals both happen"
 							+ " (nudged " + m.writeNudgedCells + ", refused " + m.writeRefusedCells + ")",

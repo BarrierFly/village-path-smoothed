@@ -61,6 +61,15 @@ public final class VpsCompat {
 		return "minecraft".equals(namespace) && path.startsWith("village_");
 	}
 
+	/** "minecraft:foo" form of a registry key, for any key type. */
+	public static String registryKeyId(ResourceKey<?> key) {
+		//#if MC >= 12111
+		//$$ return key.identifier().toString();
+		//#else
+		return key.location().toString();
+		//#endif
+	}
+
 	/** Resolves a "minecraft:foo" block id; returns null when unknown. */
 	public static Block blockById(String id) {
 		try {

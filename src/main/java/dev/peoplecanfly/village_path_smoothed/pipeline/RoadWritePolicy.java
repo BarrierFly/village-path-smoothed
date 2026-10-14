@@ -98,33 +98,29 @@ public final class RoadWritePolicy {
 	}
 
 	/**
-	 * True when the solved walk surface {@code p} (half units) is beyond the
-	 * affordable fill (road above the surface) or cut (road below) cap by more
-	 * than 2 whole blocks. Since fix plan v2 R3 this is an observation flag
-	 * only: the caller counts the cell and renders the solved height as-is
-	 * (bridge deck / tunnel per the caps); it no longer snaps anything. The
-	 * relevant cap is chosen by direction and a negative cap means unlimited
-	 * (never triggers).
+	 * Where the scaffolding of a water crossing goes (user decision 2026-10-14).
+	 *
+	 * <p>The scaffold used to be support <em>under</em> the profile road block
+	 * (fix plan v4 D6-b), which put it one block under the water surface and out
+	 * of sight. It is now the crossing's <b>walk surface</b> - the scaffold
+	 * replaces the road block at the solved height, which is what makes the
+	 * crossing read as a plank bridge again.
+	 *
+	 * <p>The known cost: a scaffold is a full block, so on a cell whose solved
+	 * surface is a half-block (a bottom slab) the crossing tops out half a block
+	 * above the solved surface. The user accepted that; do not "fix" it by
+	 * snapping the solved height, which would break the half-step chain the
+	 * whole solver exists for.
+	 *
+	 * @return the walk surface in half-block units ({@code S = 2 * surface}):
+	 *         the full scaffold's top, or {@code writtenWalkSurface2} unchanged
+	 *         for the road block when the cell is not a crossing
 	 */
-/**
- * Where the scaffolding of a water crossing goes (fix plan v4 D6-b).
- *
- * <p>The scaffold used to <em>replace</em> the road block at the vanilla surface
- * height, which meant the written walk surface was that of a full block and the
- * cell's solved half-block surface was gone. That is unrepairable at the surface:
- * a full block tops out one half unit above a slab, so no placement satisfies both
- * a neighbour one half step below and one half step above. The scaffold is
- * therefore no longer the surface - it is the support <em>under</em> the profile
- * road block, which is what makes it look like a bridge anyway.
- *
- * @return the scaffold Y, or {@link #UNWRITTEN} when the column is not a crossing
- */
-	public static int scaffoldSupportY(boolean crossing, int realSurfaceTopY, int roadTopBlockY) {
+	public static int crossingWalkSurface2(boolean crossing, int writtenWalkSurface2, boolean slab) {
 		if (!crossing) {
-			return UNWRITTEN;
+			return writtenWalkSurface2;
 		}
-		// the block directly below the road block, never above the real surface
-		return Math.min(realSurfaceTopY - 1, roadTopBlockY - 1);
+		return roadWalkSurface2(roadBlockY(writtenWalkSurface2, slab), false);
 	}
 
 	/**
@@ -214,12 +210,25 @@ public final class RoadWritePolicy {
 		return Math.max(minY, Math.min(maxY, y));
 	}
 
-	public static boolean overBudget(int p, int surfaceTopY, int maxFillLayers, int maxClearLayers) {
-		int diff = p - 2 * surfaceTopY; // half units, positive = road above the surface (fill)
-		int budget = diff >= 0 ? maxFillLayers : maxClearLayers;
-		if (budget < 0) {
-			return false;
+	/**
+	 * True when the solved walk surface {@code p} (half units) is beyond the
+	 * affordable fill or cut cap. Since fix plan v2 R3 this is an observation flag
+	 * only: the caller counts the cell and renders the solved height as-is
+	 * (bridge deck / tunnel per the caps); it never snaps anything.
+	 *
+	 * <p>Directional since 2026-10-14: the two surfaces come from the per-cell
+	 * probes (down for the ground, up for the ceiling), not from the heightmap
+	 * top, so a canopy above the road cannot fake a fill and an overhang cannot
+	 * fake a cut. A negative cap means unlimited in that direction.
+	 *
+	 * @param groundSurfaceTopY first air above the ground found scanning down
+	 * @param ceilingSurfaceTopY first air above the ceiling found scanning up
+	 */
+	public static boolean overBudget(int p, int groundSurfaceTopY, int ceilingSurfaceTopY,
+			int maxFillLayers, int maxClearLayers) {
+		if (p >= 2 * groundSurfaceTopY) {
+			return maxFillLayers >= 0 && p - 2 * groundSurfaceTopY > 2 * (maxFillLayers + 2);
 		}
-		return Math.abs(diff) > 2 * (budget + 2);
+		return maxClearLayers >= 0 && 2 * ceilingSurfaceTopY - p > 2 * (maxClearLayers + 2);
 	}
 }

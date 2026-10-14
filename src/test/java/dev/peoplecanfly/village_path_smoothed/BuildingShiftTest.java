@@ -37,13 +37,16 @@ public class BuildingShiftTest {
 	}
 
 	@Test
-	public void spanBeyondThreeBlocksIsUnservable() {
-		// 8 half units = 4 blocks of span: geometrically impossible
-		ShiftDecision d = shift(new int[]{128, 136}, 64);
-		assertEquals(Reason.SPAN_TOO_WIDE, d.reason());
-		assertEquals(BuildingShift.DO_NOT_MOVE, d.shift());
-		// exactly 3 blocks (6 half units) is still servable
-		assertEquals(Reason.SERVED, shift(new int[]{128, 134}, 64).reason());
+	public void doorParityIsFlaggedButNeverRefusedForSpan() {
+		// User decision 2026-10-14: the old SPAN_TOO_WIDE refusal ("adjacent road
+		// cells span more than 3 blocks, so the building is unservable") is gone -
+		// it left the building at the vanilla terrain height beside a smoothed
+		// road, which is the symptom it was supposed to avoid. The caller now
+		// selects the road cells at the door, so a wide span across the whole
+		// footprint can no longer reach this decision.
+		ShiftDecision wide = shift(new int[]{128, 136}, 64);
+		assertEquals(Reason.SERVED, wide.reason());
+		assertEquals("the median of {64, 68} is 68", 4, wide.shift());
 	}
 
 	@Test

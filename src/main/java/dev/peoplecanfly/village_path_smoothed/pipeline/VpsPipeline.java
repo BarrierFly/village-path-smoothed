@@ -53,7 +53,6 @@ public final class VpsPipeline {
 	public static final AtomicLong BUILDING_COMPONENTS = new AtomicLong();
 	public static final AtomicLong BUILDINGS_SHIFTED = new AtomicLong();
 	public static final AtomicLong BUILDINGS_NO_ROAD_ACCESS = new AtomicLong();
-	public static final AtomicLong BUILDINGS_UNSERVED = new AtomicLong();
 	public static final AtomicLong OVERLAP_GUARDS = new AtomicLong();
 	public static final AtomicLong DOOR_PARITY_FALLBACK = new AtomicLong();
 	// Review 3 P0-A: the solver's residual diagnostics. Everything here used to

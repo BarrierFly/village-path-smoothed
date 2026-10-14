@@ -209,19 +209,21 @@ public class RoadPolishTest {
 	}
 
 	/**
-	 * A water crossing's scaffolding is support under the road block, never the
-	 * surface: a full block tops out one half unit above a slab, so making the
-	 * scaffold the surface would step against one of the neighbours no matter where
-	 * it is placed.
+	 * User decision 2026-10-14: a water crossing's scaffolding <b>is</b> its walk
+	 * surface - the scaffold replaces the road block. A full block tops out half a
+	 * unit above a slab, so a crossing cell whose solved surface is a slab is
+	 * written half a block high; that is the accepted price of a visible bridge.
 	 */
 	@Test
-	public void scaffoldingIsSupportUnderTheRoadBlock() {
-		assertEquals("not a crossing", RoadWritePolicy.UNWRITTEN, RoadWritePolicy.scaffoldSupportY(false, 80, 70));
-		assertEquals("road above the surface: the scaffold is the block under it", 69,
-				RoadWritePolicy.scaffoldSupportY(true, 80, 70));
-		assertEquals("road below the surface: the scaffold still sits under the road block", 64,
-				RoadWritePolicy.scaffoldSupportY(true, 70, 65));
-		assertEquals("never above the road block", 59, RoadWritePolicy.scaffoldSupportY(true, 80, 60));
+	public void aWaterCrossingScaffoldIsTheWalkSurface() {
+		// not a crossing: the ordinary road block / slab walk surface passes through
+		assertEquals("whole block, not a crossing", 140, RoadWritePolicy.crossingWalkSurface2(false, 140, false));
+		assertEquals("slab, not a crossing", 141, RoadWritePolicy.crossingWalkSurface2(false, 141, true));
+		// a crossing: a full scaffold block, so a slab cell tops out half a unit higher
+		assertEquals("whole block at a crossing is unchanged", 140, RoadWritePolicy.crossingWalkSurface2(true, 140, false));
+		assertEquals("slab at a crossing becomes a full block", 142, RoadWritePolicy.crossingWalkSurface2(true, 141, true));
+		// a nudged slab cell (walk surface 139) at a crossing still lands on a whole block
+		assertEquals(140, RoadWritePolicy.crossingWalkSurface2(true, 139, true));
 	}
 
 	/** The neighbour-legality rule itself, stated on its own. */

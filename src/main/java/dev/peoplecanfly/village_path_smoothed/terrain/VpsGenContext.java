@@ -6,6 +6,7 @@
 package dev.peoplecanfly.village_path_smoothed.terrain;
 
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.server.level.WorldGenRegion;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.LevelReader;
@@ -318,6 +319,57 @@ public final class VpsGenContext implements VpsProbe {
 
 	public BlockState blockState(int x, int y, int z) {
 		return this.level.getBlockState(new BlockPos(x, y, z));
+	}
+
+	/**
+	 * "First air above the ground" found by scanning <b>down</b> from
+	 * {@code fromY}: the surface a fill or a bridge actually rides on, immune to
+	 * canopies and overhangs above the road. See {@link ColumnScan}.
+	 *
+	 * <p>Pass the road block's own Y as {@code fromY}: a standable block there
+	 * means the road is cut into the terrain and needs no fill.
+	 */
+	public int groundSurfaceTopY(int x, int z, int fromY) {
+		return ColumnScan.downwardSurfaceTopY(y -> isStandableGround(x, y, z), fromY, getMinY());
+	}
+
+	/**
+	 * "First air above the ceiling" found by scanning <b>up</b> from
+	 * {@code fromY}: the top of the contiguous terrain the road has to clear.
+	 * When the block above the road is already air the result is {@code fromY},
+	 * so nothing is cleared.
+	 */
+	public int ceilingSurfaceTopY(int x, int z, int fromY) {
+		return ColumnScan.upwardSurfaceTopY(y -> isClearableTerrain(x, y, z), fromY, getMaxY());
+	}
+
+	/** Top of the contiguous solid run starting at {@code fromY} (for the kerb drop). */
+	public int solidRunTopY(int x, int z, int fromY) {
+		return ColumnScan.upwardSolidTopY(y -> isClearableTerrain(x, y, z), fromY, getMaxY());
+	}
+
+	/** True when a block can carry a road block: its top face is sturdy (slabs, snow layers, ... count). */
+	public boolean isStandableGround(int x, int y, int z) {
+		BlockPos pos = new BlockPos(x, y, z);
+		return this.level.getBlockState(pos).isFaceSturdy(this.level, pos, Direction.UP);
+	}
+
+	/**
+	 * True when a block at the road's own level blocks a walker: not air, not a
+	 * fluid, not replaceable vegetation. Used for the side-column probe that
+	 * decides kerb (blocked) versus railing (open).
+	 */
+	public boolean isSolidAt(int x, int y, int z) {
+		return isClearableTerrain(x, y, z);
+	}
+
+	/** Terrain the road writes over: not air, not fluid, not replaceable. */
+	private boolean isClearableTerrain(int x, int y, int z) {
+		BlockState state = this.level.getBlockState(new BlockPos(x, y, z));
+		if (state.isAir() || state.canBeReplaced()) {
+			return false;
+		}
+		return state.getFluidState().isEmpty();
 	}
 
 	public LevelReader levelReader() {

@@ -58,31 +58,47 @@ water use scaffolding, and dangerous edges get leaf railings.
    the terrain the seam-band extension toward the region keeps a legal ramp
    reachable.
 3. **Buildings follow the road / 建筑随路** — before the village's bounding box
-   is frozen, each RIGID building component is shifted vertically so its base
-   meets the median adjacent road walk surface (up to `maxBuildingShift`). The
-   shift is applied to the whole rigid component at once and its jigsaw
-   junctions are synced, so bearding stays around the building; the shift is a
-   pure function of the seed. After the buildings move, the road is re-solved
-   once against the moved footprints, so the height probe compensates the
-   terrain where the buildings actually ended up. Floating/buried components
-   are only counted (`/vps stats`), never repaired (`buildingGuard`).
-4. **Kerbs / 路肩包边** — where the side terrain is **at least 2 whole blocks**
-   above the road, the dirt wall on the road side is replaced with a
-   village-style stone (plains/snowy/taiga `cobblestone`, desert
-   `smooth_sandstone`, savanna `terracotta`) from the road surface all the way
-   up to the terrain top, for every block that belongs to the vanilla
-   `#minecraft:dirt` tag.
-5. **Leaf railings / 树叶护栏** — where the terrain is **at least 2 whole
-   blocks** below the road, persistent leaves (plains `oak`,
-   desert/savanna `acacia`, snowy/taiga `spruce`) are placed on the road edge at
-   walk-surface height. Each edge column is claimed by exactly one road cell —
-   the highest one — so a shared column can never end up with both a kerb and a
-   railing.
+   is frozen, each movable rigid component (buildings, plus the decor pool's hay
+   piles) is shifted vertically so its base meets the median road walk surface at
+   its **door** — the road cells nearest the component's street connection, not
+   every cell in its footprint. The shift is applied to the whole rigid component
+   at once and its jigsaw junctions are synced, so bearding stays around the
+   building; the shift is a pure function of the seed. After the buildings move,
+   the road is re-solved once against the moved footprints. Floating/buried
+   components are only counted (`/vps stats`), never repaired (`buildingGuard`).
+4. **Kerbs and leaf railings / 路肩包边与树叶护栏** — each side column is probed
+   **from the road block's own height**, in the direction that decides the
+   detail:
+   - the block at the road level is **solid** (the side terrain rises): scan up
+     to the top of that solid run. When it is **at least 2 whole blocks** above
+     the road, the dirt wall on the road side is replaced with a village-style
+     stone (plains/snowy/taiga `cobblestone`, desert `smooth_sandstone`, savanna
+     `terracotta`), for every block that belongs to the vanilla `#minecraft:dirt`
+     tag;
+   - it is **empty** (the side drops away): scan down to the first standable
+     ground. When the road is **at least 2 whole blocks** above it, persistent
+     leaves (plains `oak`, desert/savanna `acacia`, snowy/taiga `spruce`) are
+     placed on the road edge at the road block's height plus one.
+
+   Each edge column is claimed by exactly one road cell — the highest one — so a
+   shared column can never end up with both a kerb and a railing.
+5. **Directional terrain probes / 双向地形探测** — the fill/cut decision is made
+   per cell too, never from the heightmap top: a **downward** probe finds the
+   ground the road is built up from (fill versus bridge deck), an **upward** probe
+   finds the top of the contiguous terrain the road has to clear (open cut versus
+   tunnel). A canopy or a floating layer above an open road therefore no longer
+   forces a fill, and an overhang above a solid one no longer forces a cut. The
+   raw heightmap is still read for the model-vs-terrain deviation statistics and
+   the floating/buried guard, which are observations only.
 6. **Scaffolding water crossings / 过水段脚手架** — every column with water at or
    just below the road block becomes `scaffolding` with `waterlogged=true` when
    water is present, `distance=0` when the block below fully supports it and
-   `distance=1` otherwise, `bottom` per the block below. The three paths (water
-   at the road block / water below / dry) are counted separately in
+   `distance=1` otherwise, `bottom` per the block below. The scaffold **is the
+   crossing's walk surface**: it replaces the road block at the solved height, so
+   a crossing reads as a plank bridge. Because a scaffold is a full block, a
+   crossing cell whose solved surface is a half-block (slab) tops out half a block
+   above it — that half step is the accepted cost of a visible bridge. The three
+   paths (water at the road block / water below / dry) are counted separately in
    `/vps stats`.
 
 ## The mod writes the road; it does not overwrite it
@@ -178,11 +194,12 @@ vanilla street processor randomly punches grass holes into the road), probes the
 **noise** terrain (a pure function of x/z, so the decision is deterministic),
 decomposes the mask into thin **arms** (exact slice DP) and wide **regions**
 (platform init + row/column iterative minimisation), solves a height profile
-where adjacent cells differ by at most half a block, shifts every RIGID building
-component onto the solved profile (syncing jigsaw junctions, clamping to the
-world height and guarding against overlaps), and then re-solves the road once
-more so the height probe compensates the buildings' new footprints. The
-solution is cached on the structure start.
+where adjacent cells differ by at most half a block, shifts every movable rigid
+component (buildings, plus the decor pool's hay piles) onto the solved profile at
+its door (syncing jigsaw junctions, clamping to the world height and guarding
+against overlaps with **other buildings** - streets and terminators are not
+obstacles), and then re-solves the road once more so the height probe compensates
+the buildings' new footprints. The solution is cached on the structure start.
 
 At feature placement the current chunk's road cells are rewritten with slabs,
 fills, cuts, kerbs, railings and scaffolding, and a diagnostic guard counts
@@ -234,22 +251,26 @@ Two things are worth spelling out:
    pop off exactly like vanilla scaffolding would. Placing is faithful to the
    requirement; adding support pillars or suppressing the re-check is left for
    a later version.
-2. **Desert villages have no water-crossing rule** — vanilla never replaces
+2. **A water crossing can step by half a block** — the scaffold is the
+   crossing's walk surface and a scaffold is a full block, so a crossing cell
+   whose solved surface is a slab (half block) tops out half a block above it.
+   That is the accepted cost of a visible bridge over a hidden support block.
+3. **Desert villages have no water-crossing rule** — vanilla never replaces
    desert roads with planks over water, so there is nothing to convert; the
    sandstone road is left at its vanilla height there.
-3. **Kerbs only replace `#minecraft:dirt` blocks** — desert sand walls, snow
+4. **Kerbs only replace `#minecraft:dirt` blocks** — desert sand walls, snow
    layers and `dirt_path` are not in the tag, so they stay. Add them in
    `kerb.replaceableBlocks` if you want them replaced.
-4. **Cliffs get a vanilla-style jump** — where the terrain drops too fast for
+5. **Cliffs get a vanilla-style jump** — where the terrain drops too fast for
    half steps, the road takes the shortest jump allowed by the soft constraint
    instead of building giant landfills. The residual is counted in
    `/vps stats` (`step violations`), never silent.
-5. **Buildings may float or sink** — the whole point of "buildings follow the
+6. **Buildings may float or sink** — the whole point of "buildings follow the
    road" is that a building on a slope is lifted or lowered with the road; on
    extreme terrain a component can end up floating a few blocks or buried
    (`/vps stats` counts them, `buildingGuard`). This is accepted by design (the
    road profile wins); set `roadShapeStage=T5` to disable the shift entirely.
-6. Long grades are carried by fill/cut up to `maxFillLayers` / `maxClearLayers`
+7. Long grades are carried by fill/cut up to `maxFillLayers` / `maxClearLayers`
    (bridge decks / lined tunnels). A cell whose solved height is beyond even
    that **keeps its solved height** and is rendered as a deck or a tunnel; it
    is only counted (`fallback re-anchors`, fix plan v2 R3) - the writer never
@@ -259,20 +280,20 @@ Two things are worth spelling out:
    noise height can be wrong by many blocks, and those cells come out as
    floating decks or open cuts by design (N5) until the probe error is
    addressed.
-7. The per-world switch only affects chunks generated after it changes: an
+8. The per-world switch only affects chunks generated after it changes: an
    enable/disable boundary leaves one side vanilla and the other smoothed, and
    already-generated villages are never rewritten. A claimed column whose road
    write fails falls back to a road block on the real surface, so a bug there
    shows up as `surface fallbacks` in `/vps stats` rather than as a hole.
-8. The per-world settings file (`<world>/village_path_smoothed.json`) is
+9. The per-world settings file (`<world>/village_path_smoothed.json`) is
    exercised only at runtime, not by the automated tests; if the world folder
    is not writable the file is never created and the world simply follows the
    global default on every start.
-9. The beard compensation kernel is still the legacy `step` approximation. The
-   real `beard_thin` closed form is implemented and unit tested, but its
-   density-to-blocks factor is not calibrated against a real world, so the
-   default stays on `step`; until it is, a residual ±1 around buildings is
-   possible.
+10. The beard compensation kernel is still the legacy `step` approximation. The
+    real `beard_thin` closed form is implemented and unit tested, but its
+    density-to-blocks factor is not calibrated against a real world, so the
+    default stays on `step`; until it is, a residual ±1 around buildings is
+    possible.
 
 ## Credits / 致谢
 

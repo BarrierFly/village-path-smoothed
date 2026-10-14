@@ -232,7 +232,7 @@ public final class VpsCommands {
 						+ "  defects    : writer overrides %d, nudged to the surface %d, refused %d (out of world %d), surface fallbacks %d, over-budget %d, edge drops > 1 block %d (worst %d half units)%n"
 						+ "  solve      : contradictions %d, step violations %d (worst %d), seam re-solves refused %d, polish moved %d (max delta %d half units, p90 %d, midpoint conflicts %d), water anchor deviations %d, villages without arms %d%n"
 						+ "  suppression: vanilla road blocks dropped %d (passed through %d)%n"
-						+ "  buildings  : T1.5 applied %d (no-server %d), components %d, shifted %d, unserved %d, no-road %d, overlap guards %d, floating %d, buried %d, re-solved after shift %d (%d cells changed)%n"
+						+ "  buildings  : T1.5 applied %d (no-server %d), components %d, shifted %d, no-road %d, overlap guards %d, floating %d, buried %d, re-solved after shift %d (%d cells changed)%n"
 						+ "  centres    : town-centre plaza cells %d (non-road cells skipped %d)%n"
 						+ "  model gap  : written surface vs real terrain: mean %s half units, worst %d, over threshold %d, cut below terrain %d, fill above %d%n"
 						+ "  misc       : floor-garbage probes %d, probe boundary switches %d, probe mismatch columns %d, villager freeze: %s (brain ticks skipped: %d)",
@@ -276,7 +276,6 @@ public final class VpsCommands {
 				VpsPipeline.T15_NO_SERVER.get(),
 				VpsPipeline.BUILDING_COMPONENTS.get(),
 				VpsPipeline.BUILDINGS_SHIFTED.get(),
-				VpsPipeline.BUILDINGS_UNSERVED.get(),
 				VpsPipeline.BUILDINGS_NO_ROAD_ACCESS.get(),
 				VpsPipeline.OVERLAP_GUARDS.get(),
 				VpsPipeline.BUILDING_FLOATING.get(),

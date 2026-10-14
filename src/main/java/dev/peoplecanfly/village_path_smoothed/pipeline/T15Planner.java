@@ -117,7 +117,7 @@ public final class T15Planner {
 		List<int[]> shifted = new ArrayList<>();
 
 		for (BuildingComponents.Component component : components) {
-			int desired = desiredShift(network, component);
+			int desired = desiredShift(network, component, pieces);
 			if (desired == Integer.MIN_VALUE) {
 				continue; // no road access / unserved: left where it is
 			}
@@ -202,27 +202,100 @@ public final class T15Planner {
 	}
 
 	/**
+	 * Road heights the component should align to: the road cells nearest its
+	 * <b>door</b>, i.e. the front where it connects to the street network (user
+	 * decision 2026-10-14).
+	 *
+	 * <p>The old rule took the median of every road cell within the footprint
+	 * plus one ring, so a long house or a farm next to a plaza was pulled to a
+	 * road several blocks away and ended up off its own doorstep. Now:
+	 *
+	 * <ol>
+	 *   <li>the door is the component's junctions whose {@code destProjection} is
+	 *       not RIGID - that is exactly a connection to a non-building piece (a
+	 *       street, terminator or centre piece), and its source position is the
+	 *       parent jigsaw, i.e. the doorstep;</li>
+	 *   <li>the candidates are the road cells closest (Chebyshev) to a door
+	 *       point, searched within a small radius of the footprint;</li>
+	 *   <li>with no door junction (a component that only touches other buildings)
+	 *       the nearest ring of the footprint is used instead.</li>
+	 * </ol>
+	 */
+	private static int[] adjacentRoadHeights(RoadNetwork network, BuildingComponents.Component component,
+			List<StructurePiece> pieces) {
+		int[][] doors = doorPoints(component, pieces);
+		int searchPad = DOOR_SEARCH_PAD;
+		int best = Integer.MAX_VALUE;
+		List<Integer> values = new ArrayList<>();
+		for (RoadCell cell : network.cells) {
+			if (cell.x < component.minX - searchPad || cell.x > component.maxX + searchPad
+					|| cell.z < component.minZ - searchPad || cell.z > component.maxZ + searchPad) {
+				continue;
+			}
+			int distance = doorDistance(cell, doors, component);
+			if (distance < best) {
+				best = distance;
+				values.clear();
+			}
+			if (distance == best) {
+				values.add(cell.solvedP);
+			}
+		}
+		if (values.isEmpty()) {
+			return null;
+		}
+		int[] out = new int[values.size()];
+		for (int i = 0; i < out.length; i++) {
+			out[i] = values.get(i);
+		}
+		return out;
+	}
+
+	/** How far past the footprint a door's road cell may sit and still count. */
+	private static final int DOOR_SEARCH_PAD = 4;
+
+	/** Door positions {x, z}: junctions on this component that connect to a non-building piece. */
+	private static int[][] doorPoints(BuildingComponents.Component component, List<StructurePiece> pieces) {
+		List<int[]> doors = new ArrayList<>();
+		for (int idx : component.pieceIndices) {
+			StructurePiece piece = pieces.get(idx);
+			if (!(piece instanceof PoolElementStructurePiece pool)) {
+				continue;
+			}
+			for (JigsawJunction junction : pool.getJunctions()) {
+				if (junction.getDestProjection() != StructureTemplatePool.Projection.RIGID) {
+					doors.add(new int[]{junction.getSourceX(), junction.getSourceZ()});
+				}
+			}
+		}
+		return doors.isEmpty() ? null : doors.toArray(new int[0][]);
+	}
+
+	/** Chebyshev distance from a road cell to the nearest door, or to the footprint edge when there is no door. */
+	private static int doorDistance(RoadCell cell, int[][] doors, BuildingComponents.Component component) {
+		if (doors != null) {
+			int best = Integer.MAX_VALUE;
+			for (int[] door : doors) {
+				best = Math.min(best, Math.max(Math.abs(cell.x - door[0]), Math.abs(cell.z - door[1])));
+			}
+			return best;
+		}
+		int dx = Math.max(0, Math.max(component.minX - cell.x, cell.x - component.maxX));
+		int dz = Math.max(0, Math.max(component.minZ - cell.z, cell.z - component.maxZ));
+		return Math.max(dx, dz);
+	}
+
+	/**
 	 * Vertical shift so the component base meets the median adjacent road walk
 	 * surface, delegated to the pure {@link BuildingShift} helper (review 3 T5)
 	 * with the diagnostic counters kept here.
 	 */
-	private static int desiredShift(RoadNetwork network, BuildingComponents.Component component) {
-		int[] values = new int[Math.max(1, network.cells.size())];
-		int count = 0;
-		for (RoadCell cell : network.cells) {
-			if (cell.x >= component.minX - 1 && cell.x <= component.maxX + 1
-					&& cell.z >= component.minZ - 1 && cell.z <= component.maxZ + 1) {
-				values[count++] = cell.solvedP;
-			}
-		}
-		int[] adjacent = count == values.length ? values : java.util.Arrays.copyOf(values, count);
+	private static int desiredShift(RoadNetwork network, BuildingComponents.Component component, List<StructurePiece> pieces) {
+		int[] adjacent = adjacentRoadHeights(network, component, pieces);
 		BuildingShift.ShiftDecision decision = BuildingShift.desiredShift(adjacent, component.baseY);
 		switch (decision.reason()) {
 			case NO_ROAD:
 				VpsPipeline.BUILDINGS_NO_ROAD_ACCESS.incrementAndGet();
-				return BuildingShift.DO_NOT_MOVE;
-			case SPAN_TOO_WIDE:
-				VpsPipeline.BUILDINGS_UNSERVED.incrementAndGet();
 				return BuildingShift.DO_NOT_MOVE;
 			default:
 				if (decision.doorParityOdd()) {
@@ -249,7 +322,18 @@ public final class T15Planner {
 		return Math.max(loDy, Math.min(hiDy, dy));
 	}
 
-	/** Reduces the shift toward zero until the moved component no longer intersects any other piece. */
+	/**
+	 * Reduces the shift toward zero until the moved component no longer intersects
+	 * any <b>other movable (building) piece</b>.
+	 *
+	 * <p>User decision 2026-10-14: only movable pieces count. Comparing against
+	 * every piece (the old rule) meant a street or terminator piece - whose
+	 * bounding box is one block tall but sits exactly along the road edge the
+	 * building opens onto - was hit by almost any vertical move, so the guard
+	 * walked the shift all the way back to zero and the building stayed at the
+	 * vanilla terrain height. Interpenetrating a street with a correctly aligned
+	 * building is not a defect; interpenetrating another building is.
+	 */
 	private static int resolveOverlap(List<StructurePiece> pieces, BuildingComponents.Component component, int dy) {
 		int candidate = dy;
 		while (candidate != 0 && overlaps(pieces, component, candidate)) {
@@ -270,6 +354,9 @@ public final class T15Planner {
 			for (int other = 0; other < pieces.size(); other++) {
 				if (component.pieceIndices.contains(other)) {
 					continue;
+				}
+				if (!BuildingComponents.isMovable(pieces.get(other))) {
+					continue; // streets, terminators and decor: not an obstacle (user decision 2026-10-14)
 				}
 				BoundingBox o = pieces.get(other).getBoundingBox();
 				if (minX <= o.maxX() && maxX >= o.minX()

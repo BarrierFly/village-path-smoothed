@@ -555,14 +555,20 @@ public class RoadSmootherTest {
 
 	@Test
 	public void overBudgetMarksUnaffordableCellsForObservation() {
-		int topY = 64;
+		int groundTopY = 64;
+		int ceilingTopY = 64; // an open column has no ceiling above the road
 		// fix plan v2 R2 defaults: fill cap 3, clear cap -1 (unlimited)
-		assertFalse(RoadWritePolicy.overBudget(2 * topY, topY, 3, -1));
-		assertFalse(RoadWritePolicy.overBudget(2 * topY + 2 * 5, topY, 3, -1)); // exactly cap+2: still affordable
-		assertTrue(RoadWritePolicy.overBudget(2 * topY + 2 * 6, topY, 3, -1));  // 6 above: over
+		assertFalse(RoadWritePolicy.overBudget(2 * groundTopY, groundTopY, ceilingTopY, 3, -1));
+		assertFalse(RoadWritePolicy.overBudget(2 * groundTopY + 2 * 5, groundTopY, ceilingTopY, 3, -1)); // exactly cap+2: still affordable
+		assertTrue(RoadWritePolicy.overBudget(2 * groundTopY + 2 * 6, groundTopY, ceilingTopY, 3, -1));  // 6 above: over
 		// an unlimited (negative) cap never triggers, in either direction
-		assertFalse(RoadWritePolicy.overBudget(2 * topY - 2 * 100, topY, 3, -1));
-		assertFalse(RoadWritePolicy.overBudget(2 * topY + 1000, topY, -1, -1));
+		assertFalse(RoadWritePolicy.overBudget(2 * groundTopY - 2 * 100, groundTopY, ceilingTopY, 3, -1));
+		assertFalse(RoadWritePolicy.overBudget(2 * groundTopY + 1000, groundTopY, ceilingTopY, -1, -1));
+		// the cut direction reads the ceiling probe, not the ground probe: a road
+		// below a hill is over budget only when the ceiling is that far above it
+		int buried = 2 * 40; // walk surface far below the ground
+		assertFalse("no ceiling above: nothing to cut", RoadWritePolicy.overBudget(buried, groundTopY, 41, 3, 2));
+		assertTrue("ceiling 6 blocks above the road", RoadWritePolicy.overBudget(2 * 40, groundTopY, 40 + 6 + 2, 3, 2));
 		// the old snap-back parity helper is gone with R3: over-budget cells keep
 		// their solved height and are rendered as bridge deck / tunnel instead
 	}

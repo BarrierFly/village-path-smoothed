@@ -22,7 +22,7 @@ public final class BuildingShift {
 
 	/** Why a component is or is not served by the adjacent road profile. */
 	public enum Reason {
-		SERVED, NO_ROAD, SPAN_TOO_WIDE
+		SERVED, NO_ROAD
 	}
 
 	/**
@@ -39,18 +39,20 @@ public final class BuildingShift {
 	private BuildingShift() {
 	}
 
+	/**
+	 * Shift so the component base meets the median of the road cells at its door
+	 * (its immediately adjacent road, selected by the caller).
+	 *
+	 * <p>The old {@code SPAN_TOO_WIDE} refusal (&quot;adjacent road cells span
+	 * more than 3 blocks, so the building cannot be served&quot;) is gone (user
+	 * decision 2026-10-14): it left the building at the vanilla terrain height
+	 * next to a smoothed road, which is the symptom it was supposed to avoid.
+	 * The road profile is 1-Lipschitz, so any single adjacent cell is a legal
+	 * target; the median is the best single choice for the door.
+	 */
 	public static ShiftDecision desiredShift(int[] adjacentRoadP, int baseY) {
 		if (adjacentRoadP == null || adjacentRoadP.length == 0) {
 			return new ShiftDecision(Reason.NO_ROAD, DO_NOT_MOVE, false);
-		}
-		int lo = Integer.MAX_VALUE;
-		int hi = Integer.MIN_VALUE;
-		for (int v : adjacentRoadP) {
-			lo = Math.min(lo, v);
-			hi = Math.max(hi, v);
-		}
-		if (hi - lo > 6) { // more than 3 blocks of span: geometrically impossible to serve
-			return new ShiftDecision(Reason.SPAN_TOO_WIDE, DO_NOT_MOVE, false);
 		}
 		int medianHalf = median(adjacentRoadP);
 		boolean oddParity = (medianHalf & 1) != 0;

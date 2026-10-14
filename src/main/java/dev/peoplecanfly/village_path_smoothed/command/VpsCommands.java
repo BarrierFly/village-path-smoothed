@@ -210,6 +210,7 @@ public final class VpsCommands {
 						+ "  suppression: vanilla road blocks dropped %d (passed through %d)%n"
 						+ "  buildings  : T1.5 applied %d (no-server %d), components %d, shifted %d, unserved %d, no-road %d, overlap guards %d, floating %d, buried %d, re-solved after shift %d (%d cells changed)%n"
 						+ "  centres    : town-centre plaza cells %d (non-road cells skipped %d)%n"
+						+ "  model gap  : written surface vs real terrain: mean %s half units, worst %d, over threshold %d, cut below terrain %d, fill above %d%n"
 						+ "  misc       : floor-garbage probes %d, probe boundary switches %d, probe mismatch columns %d, villager freeze: %s (brain ticks skipped: %d)",
 				solved,
 				solved > 0 ? nanos / 1_000_000.0 / solved : 0.0,
@@ -260,6 +261,13 @@ public final class VpsCommands {
 				T15Planner.T15_RESOLVE_DELTA_CELLS.get(),
 				RoadCollector.TOWN_CENTER_CELLS.get(),
 				RoadCollector.TOWN_CENTER_NON_ROAD_SKIPPED.get(),
+				RoadWriter.FILL_ABOVE_TERRAIN_CELLS.get(),
+				RoadWriter.DEVIATION_CELLS.get() > 0
+						? String.format("%.1f", (double) RoadWriter.DEVIATION_SUM.get() / RoadWriter.DEVIATION_CELLS.get())
+						: "-",
+				RoadWriter.DEVIATION_WORST.get(),
+				RoadWriter.DEVIATION_OVER_THRESHOLD_CELLS.get(),
+				RoadWriter.CUT_BELOW_TERRAIN_CELLS.get(),
 				VpsGenContext.FLOOR_GARBAGE_HITS.get(),
 				RoadCollector.PROBE_BOUNDARY_SWITCHES.get(),
 				RoadCollector.PROBE_MISMATCH_COLUMNS.get(),

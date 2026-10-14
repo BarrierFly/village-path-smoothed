@@ -103,6 +103,24 @@ Rules:
   (fix plan v2 R1 / N3 - the review-4 swap is reverted). The candidate band is
   what keeps the road from flattening sustained grades: on a long climb the
   flat line simply is not a candidate.
+- **Legality is established by the polish pass, not by the optimiser (fix plan
+  v4 A-1, decision N3-a).** Arms are solved by exact slice DP and junctions by
+  ICM; six structural defects leave residual `|dP| > 1` edges. `RoadSmoother#polish`
+  then walks outwards from one seed per connected component - the component's
+  centre, never an end (v3 measured 234 violating edges from an end seed against
+  0 from the centre) - clamping each cell into its already-fixed neighbours'
+  `[v-1, v+1]`, which makes every edge legal by construction. Two already-fixed
+  neighbours that disagree leave no legal value; those cells are counted
+  (`ROAD_POLISH_CONFLICTS`) and handed to cyclic projection, which converges
+  because `{|Pu - Pv| <= 1}` is convex. **N3-a: the result is adopted
+  unconditionally**, so one cell may be dragged several whole blocks - that is
+  the measured price of "no drop larger than half a block" and it is counted
+  (`ROAD_POLISH_MOVED` / `MAX_DELTA` / `DELTA_P90`), never hidden. Do not
+  reintroduce a "freeze the outliers" variant: it reinstates a known cliff and
+  invalidates the metric the pass exists to make zero. With
+  `allowCutIntoTerrain = false` the polish treats `baseP` as a hard floor too, so
+  a terrain step no legal no-cut profile can bridge keeps its residual - which is
+  what that flag promises.
 - **The seam band extends TOWARD the seam, never narrows against it.** Phase 3
   merges the seam cells' own hard bound into their band outright and grows
   interior cells' bands toward the seam interval along the legal-slope cone
@@ -111,18 +129,39 @@ Rules:
   profile carrying the seam height; with the terrain-chase band it empties the
   seam cell's candidates and resurrects the seam cliff (measured: 12 failing
   tests, all seam violations; fix plan v2 A6 deviation, approved by the user).
-- **The writer is a renderer, not a second solver (fix plan v2 R3 / N7).** An
-  over-budget cell (`RoadWritePolicy#overBudget`) keeps its solved height and
-  is rendered as a bridge deck (fill cap) or tunnel/open cut (clear cap); the
-  writer normally only counts it (`FALLBACK_REANCHORS`) and warns. Nudging a
-  single cell onto the real surface is **allowed but must be done carefully**
-  (fix plan v4 §16.1, relaxed 2026-10-14) - it is only legal while it
-  **creates no drop above half a block** (neighbouring walk surfaces stay
-  within 1 half unit) and **does not move the surface away from a building
-  entrance**. Those two are acceptance criteria, not a ban. What stays
-  forbidden is re-solving: letting the writer move whole runs or whole chunks
-  off `solvedP`, which manufactures the `|dP| >= 2` steps and the floating
-  front step that this rule exists to prevent.
+- **The writer renders the solved profile; every column's height comes from
+  `RoadWritePolicy` (fix plan v4 D6-b).** Three per-cell overrides used to sit
+  between a legal mask solution and the world and were invisible to every
+  mask-internal counter - which is why "different chunks do not match" could not
+  be reproduced from the solver side. Now: the written walk surface is always the
+  cell's **solved** surface; a solved height outside the world is refused, not
+  clamped; and a **water crossing's scaffolding is support *under* the profile
+  road block** (`scaffoldSupportY`), never the surface - a full block tops out one
+  half unit above a slab, so making the scaffold the surface steps against one of
+  the neighbours whichever way it is placed. What is left of the old "snap onto
+  the real surface" behaviour is the guarded single-cell nudge below.
+- **The single-cell surface nudge is allowed, and it is guarded (AGENTS.md rule,
+  fix plan v4 D6-b).** A cell whose profile write threw, or whose solved height
+  left the world bounds, may be written at the real surface - but only if no
+  neighbouring walk surface moves more than half a block
+  (`nudgeKeepsNeighboursLegal`) and the cell is not beside a moved building
+  (`nearBuildingEntrance`). Otherwise it is **refused**: nothing is written and
+  `REFUSED_WRITES` counts it. Both outcomes are in `/vps stats`. What stays
+  forbidden is re-solving: moving whole runs or whole chunks off `solvedP`.
+- **An over-budget cell keeps its solved height** (fix plan v2 R3 / N7): a cell
+  beyond the fill/cut cap is rendered as a bridge deck or a tunnel/open cut and
+  counted (`FALLBACK_REANCHORS`), never snapped onto the real surface - that snap
+  manufactured the `|dP| >= 2` steps N1 forbids.
+- **A split mask is declined whole (fix plan v4 D1-e).** A dropped probe column
+  splits the mask; each half then solves alone and the dropped column keeps a
+  full-height vanilla road in between. Probe failures re-probe the noise caliber
+  first (`ProbeHeights`), and whatever splits the mask anyway is handed back to
+  vanilla with a WARN rather than half-adopted.
+- **`town_centers` plazas are part of the road network (fix plan v4 D5-c).** The
+  mask regex matches them, but only road-material y=0 cells are taken: a claimed
+  column has its vanilla y=0 block suppressed and rewritten, so the fountain's
+  basin, water, bell and logs must stay out (`TOWN_CENTER_NON_ROAD_SKIPPED`
+  counts what was skipped).
 - **All drop criteria are computed in half-block walk-surface units** (`S = 2 *
   walk surface`); never use `roadTopBlockY + 1` as the walk surface (it is 0.5
   too high for a slab). The pure helpers live in `RoadWritePolicy`
@@ -147,14 +186,39 @@ Rules:
   HEAD when the suppression was added - by RETURN it was too late, vanilla had
   already written its road.
 - Reading heights at FEATURES is only reliable within +/-1 chunks of the current
-  chunk (`WorldGenRegion`); beyond that use the noise base height. T1.5 uses
-  noise everywhere (`VpsNoiseContext`), so the decision is a pure function of
-  the seed. The solved profile is cached on the `StructureStart` (duck interface
-  `StructureStartVpsAccess`) so the village is solved exactly once. The two
-  calibers meet at the window edge: `RoadCollector#alignProbeBoundaries` pulls
+  chunk (`WorldGenRegion`); beyond that use the noise base height. **The solve
+  runs during `STRUCTURE_STARTS`, where no chunk of the village has terrain yet** -
+  no chunk status below `STRUCTURE_STARTS` produces one, and `TERRAIN`/`FEATURES`
+  both *require* `STRUCTURE_STARTS @ 8`, so a real heightmap is not merely
+  unwindowed here, it does not exist. The default T1.5 path is pure noise for that
+  reason and is a pure function of the seed. On the T5 fallback the real heights
+  that do exist are read inside a +/-1 chunk window, and since fix plan v4 D2-c
+  that window is anchored on the **village's bounding box**
+  (`ProbeWindow.centerChunk`), not on the chunk that triggered the solve:
+  `ProbeWindow` deliberately takes no trigger argument, so trigger dependence is
+  not representable. `roadSmoothing.probeCaliber = ALL_NOISE` drops the window
+  entirely (noise everywhere, real heightmap only at write time). The two calibers
+  meet at the window edge: `RoadCollector#alignProbeBoundaries` pulls
   noise-probed columns directly adjacent to a disagreeing real column onto the
-  real value before the network is built (fix plan v2 R5); on the T1.5 path
-  every column is noise, so the pass is a no-op there.
+  real value before the network is built (fix plan v2 R5).
+- **The promises D7/D9 make are about the MODEL, not the world**
+  (fix plan v4 R2-4). `allowCutIntoTerrain = false` means `P >= baseP`, and
+  `baseP` is the noise-model height: the solve happens before the village has
+  terrain, so carvers, surface rules and terrain adaptation are all invisible to
+  it. A no-cut road can therefore still be below the real terrain in the world.
+  **Do not "fix" this by changing what `baseP` means** - that reintroduces the
+  caliber difference into the solver. The world-level violation is measured
+  instead: `CUT_BELOW_TERRAIN_CELLS` / `FILL_ABOVE_TERRAIN_CELLS` and the
+  deviation block in `/vps stats`.
+- **A deviation WARN is not a degradation switch (fix plan v4 R2-3).**
+  `RoadWriter#recordDeviation` measures `written walk surface - real surface` and
+  warns once past `surfaceDeviationWarnBlocks` (default 4 whole blocks). It never
+  changes geometry and never falls back to vanilla roads - the road keeps
+  following the solution. Only the mask-integrity gate (D1-e, a split mask)
+  hands a village back to vanilla; do **not** reuse one flag for both.
+- New counters are wired into `/vps stats` in the column they belong to
+  (integrity / defects / model gap / solve / buildings), and the file's
+  hard-constraint list is kept in step with them.
 - Write blocks with `Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE` (vanilla
   structure flags): no client updates during worldgen and heightmaps stay
   untouched (so our own probes stay consistent).
@@ -238,6 +302,17 @@ skipped hook. The safety net is the smoke test below, not `require`.
 ./gradlew buildAndGather       # all versions, jars collected in build/libs
 ./gradlew :1.21.11:runServer   # smoke test (needs run/eula.txt)
 ```
+
+`RoadNetworkBenchTest` is the fix plan v4 M0 bench and is part of `test`: the
+three-dimensional rig (4 terrain shapes x 4 network shapes x 2 probe calibers)
+with the integrity / defect columns as hard assertions and the style column
+recorded and printed. It is pure Java and drives the production decomposition,
+solver and writer policy, so a fix moves the numbers rather than a mirror. Its
+terrain parameters are hard-coded; do not widen an assertion to make it green.
+
+`RoadPolishTest` and `RoadMaskIntegrityTest` pin the two invariants the bench
+cannot state on its own: the profile is legal by construction, and a failed probe
+or a split mask never silently costs a column.
 
 If you are on Windows use `gradlew.bat`. Pass `--no-daemon` (or
 `--console=plain`) so a lingering daemon does not hold the console open after

@@ -99,7 +99,7 @@ public final class RoadWriter {
 	 *        cell may take the single-cell surface nudge (never at a building door)
 	 */
 	public static void write(RoadNetwork net, VpsGenContext ctx, BoundingBox chunkBB, VillagePathSmoothedConfig config,
-			int[][] shiftedComponents) {
+			int[][] shiftedComponents, String village) {
 		RoadMaterialTable table = RoadMaterialTable.create(config);
 		List<Block> kerbExtras = resolveKerbExtras(config);
 		// Review 4 section 9.3: with the vanilla street layer suppressed on every
@@ -115,7 +115,7 @@ public final class RoadWriter {
 				continue; // written when this cell's own chunk generates
 			}
 			try {
-				writeCell(net, cell, ctx, config, table, kerbExtras, sideColumnOwner, shiftedComponents);
+				writeCell(net, cell, ctx, config, table, kerbExtras, sideColumnOwner, shiftedComponents, village);
 			} catch (Throwable t) {
 				VillagePathSmoothed.LOGGER.debug("[VPS] failed to write road cell {} {}", cell.x, cell.z, t);
 				// Review 4 risk R3: the cell's vanilla block is NOT there to fall
@@ -195,11 +195,30 @@ public final class RoadWriter {
 		}
 	}
 
+	/**
+	 * Fix plan v4 R2-3: the model-vs-real deviation (the writer is the only place
+	 * where both heights exist), reported and warned about, never corrected.
+	 * {@link #DEVIATION_WORST} is in half-block walk-surface units; the average in
+	 * {@link #DEVIATION_SUM} / {@link #DEVIATION_CELLS}.
+	 */
+	public static final AtomicLong DEVIATION_CELLS = new AtomicLong();
+	public static final AtomicLong DEVIATION_SUM = new AtomicLong();
+	public static final AtomicLong DEVIATION_WORST = new AtomicLong();
+	/** Cells whose deviation is past {@code surfaceDeviationWarnBlocks}. */
+	public static final AtomicLong DEVIATION_OVER_THRESHOLD_CELLS = new AtomicLong();
+	/** Cells written below the real terrain by more than one whole block (no-cut in the world). */
+	public static final AtomicLong CUT_BELOW_TERRAIN_CELLS = new AtomicLong();
+	/** Cells written above the real terrain by more than one whole block (bridge decks). */
+	public static final AtomicLong FILL_ABOVE_TERRAIN_CELLS = new AtomicLong();
+	private static final java.util.concurrent.atomic.AtomicBoolean DEVIATION_WARNED =
+			new java.util.concurrent.atomic.AtomicBoolean();
+
 	private static final int[] SIDE_DX = {-1, 1, 0, 0};
 	private static final int[] SIDE_DZ = {0, 0, -1, 1};
 
 	private static void writeCell(RoadNetwork net, RoadCell cell, VpsGenContext ctx, VillagePathSmoothedConfig config,
-			RoadMaterialTable table, List<Block> kerbExtras, Map<Long, Integer> sideColumnOwner, int[][] shiftedComponents) {
+			RoadMaterialTable table, List<Block> kerbExtras, Map<Long, Integer> sideColumnOwner, int[][] shiftedComponents,
+			String village) {
 		int x = cell.x;
 		int z = cell.z;
 		int topY = ctx.realSurfaceTopY(x, z);
@@ -245,6 +264,12 @@ public final class RoadWriter {
 				return;
 			}
 		}
+		// fix plan v4 R2-3: the model-vs-real deviation. The solver works on the
+		// noise model (see AGENTS.md: it runs during STRUCTURE_STARTS, where the
+		// village has no terrain yet), so the written surface can differ from the
+		// real one by a lot. That difference is MEASURED here - the writer is the
+		// only place both heights exist - and warned about, never corrected.
+		recordDeviation(cell, topY, column.walkSurface2(), config, village);
 		if (column.overrodeSolved()) {
 			OVERRIDDEN_WRITES.incrementAndGet();
 		}
@@ -327,7 +352,7 @@ public final class RoadWriter {
 			if (RoadWritePolicy.tunnelRoof(roadTopBlockY, topY, RoadWritePolicy.clearTopY(roadTopBlockY, topY, config.roadSmoothing.maxClearLayers), config.roadSmoothing.maxClearLayers)) {
 				OVER_BUDGET_CELLS.incrementAndGet();
 				// line the tunnel roof with the style's kerb material (report:
-				// "包边覆盖隧道顶"; the side kerb below keeps replacing #dirt only)
+				// "包边覆盖隧道�?; the side kerb below keeps replacing #dirt only)
 				setBlock(ctx, x, RoadWritePolicy.clearTopY(roadTopBlockY, topY, config.roadSmoothing.maxClearLayers) + 1, z, materials.kerbBlock.defaultBlockState());
 			}
 		}
@@ -398,6 +423,48 @@ public final class RoadWriter {
 		}
 		VillagePathSmoothed.LOGGER.warn("[VPS] road cell at {} {} cannot be written: solved walk surface {} is outside the world and the single-cell surface nudge ({}) would step against a neighbour or sit at a building door; left it unwritten",
 				cell.x, cell.z, cell.solvedP / 2.0, topY);
+	}
+
+	/**
+	 * Fix plan v4 R2-3: the model-vs-real deviation of one written cell.
+	 *
+	 * <p>The solver's {@code baseP} is the <b>noise model</b>, not the world: the
+	 * solve runs during STRUCTURE_STARTS, before any chunk of the village has
+	 * terrain, so carvers, surface rules and the terrain adaptation around buildings
+	 * are all invisible to it (see AGENTS.md). The writer is the only place where
+	 * both the model-derived height and the real one exist, so this is where the
+	 * difference is measured.
+	 *
+	 * <p>It is measured and warned about, never corrected. Correcting it would mean
+	 * either re-solving (forbidden) or snapping a cell onto the terrain, which is
+	 * exactly the |dP| &gt;= 2 step N1 forbids. A WARN is not a degradation either:
+	 * the road is still written from the solution, which is the promise no-cut and
+	 * the fill/cut caps are about.
+	 */
+	private static void recordDeviation(RoadCell cell, int realTopY, int writtenWalkSurface2,
+			VillagePathSmoothedConfig config, String village) {
+		int dev = Math.abs(writtenWalkSurface2 - 2 * realTopY);
+		DEVIATION_CELLS.incrementAndGet();
+		DEVIATION_SUM.addAndGet(dev);
+		int worst = (int) DEVIATION_WORST.accumulateAndGet(dev, Math::max);
+		if (writtenWalkSurface2 < 2 * realTopY - 2) {
+			CUT_BELOW_TERRAIN_CELLS.incrementAndGet();
+		} else if (writtenWalkSurface2 > 2 * realTopY + 2) {
+			FILL_ABOVE_TERRAIN_CELLS.incrementAndGet();
+		}
+		int threshold = 2 * Math.max(0, config.roadSmoothing.surfaceDeviationWarnBlocks);
+		if (threshold <= 0 || dev <= threshold) {
+			return;
+		}
+		DEVIATION_OVER_THRESHOLD_CELLS.incrementAndGet();
+		if (DEVIATION_WARNED.compareAndSet(false, true)) {
+			VillagePathSmoothed.LOGGER.warn("[VPS] village at {}: road cell {} is {} half units ({} blocks) from the real terrain, past surfaceDeviationWarnBlocks={}. The solver works on the noise model - it runs before the village has any terrain, so carvers and terrain adaptation are invisible to it - so a non-zero deviation is expected. It is reported here and NOT corrected: the road still follows the solution.",
+					village, cell.x + " " + cell.z, dev, dev / 2.0, config.roadSmoothing.surfaceDeviationWarnBlocks);
+		} else if (dev > worst) {
+			// keep the worst known number visible without warning per cell
+			VillagePathSmoothed.LOGGER.debug("[VPS] village at {}: worst model-vs-terrain deviation so far {} half units at cell {} {}",
+					village, worst, cell.x, cell.z);
+		}
 	}
 
 	private static void applyKerbsAndRailings(RoadNetwork net, RoadCell cell, VpsGenContext ctx, VillagePathSmoothedConfig config,

@@ -110,30 +110,95 @@ public final class RoadNetwork {
 		if (n == 0) {
 			return 1.0;
 		}
-		boolean[] seen = new boolean[n];
+		int[] labels = componentLabels();
+		int[] sizes = new int[componentCount()];
+		for (int label : labels) {
+			sizes[label]++;
+		}
 		int largest = 0;
-		for (int start = 0; start < n; start++) {
-			if (seen[start]) {
+		for (int size : sizes) {
+			largest = Math.max(largest, size);
+		}
+		return (double) largest / n;
+	}
+
+	/** Component index per cell (fix plan v4 D1-e diagnostics). */
+	public int[] componentLabels() {
+		int[] labels = new int[neighbors.length];
+		java.util.Arrays.fill(labels, -1);
+		int next = 0;
+		for (int start = 0; start < neighbors.length; start++) {
+			if (labels[start] >= 0) {
 				continue;
 			}
-			int size = 0;
 			Deque<Integer> stack = new ArrayDeque<>();
 			stack.push(start);
-			seen[start] = true;
+			labels[start] = next;
 			while (!stack.isEmpty()) {
 				int i = stack.pop();
-				size++;
 				for (int dir = 0; dir < 4; dir++) {
 					int j = neighbors[i][dir];
-					if (j >= 0 && !seen[j]) {
-						seen[j] = true;
+					if (j >= 0 && labels[j] < 0) {
+						labels[j] = next;
 						stack.push(j);
 					}
 				}
 			}
-			largest = Math.max(largest, size);
+			next++;
 		}
-		return (double) largest / n;
+		return labels;
+	}
+
+	/**
+	 * Widest break in the mask: the largest number of consecutive missing
+	 * columns between two road cells that belong to <em>different</em> 4-connected
+	 * components, in blocks. Zero when the mask is one component.
+	 *
+	 * <p>Fix plan v4 gapWidth. Only a break between components counts: empty
+	 * space at the edge of the mask is where the road legitimately stops, and
+	 * counting it would drown the real signal.
+	 */
+	public int widestBreak() {
+		if (neighbors.length == 0 || isConnected()) {
+			return 0;
+		}
+		int[] labels = componentLabels();
+		int minX = Integer.MAX_VALUE;
+		int maxX = Integer.MIN_VALUE;
+		int minZ = Integer.MAX_VALUE;
+		int maxZ = Integer.MIN_VALUE;
+		for (RoadCell cell : cells) {
+			minX = Math.min(minX, cell.x);
+			maxX = Math.max(maxX, cell.x);
+			minZ = Math.min(minZ, cell.z);
+			maxZ = Math.max(maxZ, cell.z);
+		}
+		// a ray cannot leave the bounding box, and the box bounds the walk: a
+		// sparse mask would otherwise make this quadratic in its own extent
+		int limit = Math.max(maxX - minX, maxZ - minZ);
+		int widest = 0;
+		for (int i = 0; i < neighbors.length; i++) {
+			RoadCell a = cells.get(i);
+			for (int dir = 0; dir < 4; dir++) {
+				int gap = 0;
+				for (int step = 1; step <= limit; step++) {
+					int next = cellAt(a.x + DIR_DX[dir] * step, a.z + DIR_DZ[dir] * step);
+					if (next < 0) {
+						gap++; // empty column: the gap may be longer
+						continue;
+					}
+					// a road column ends the run; it only counts as a break when it
+					// belongs to another component
+					if (gap > 0) {
+						if (labels[next] != labels[i]) {
+							widest = Math.max(widest, gap);
+						}
+						break;
+					}
+				}
+			}
+		}
+		return widest;
 	}
 
 	public static final class Arm {

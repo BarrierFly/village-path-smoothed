@@ -187,17 +187,27 @@ public final class VpsCommands {
 				+ ", waterCrossing=" + config.waterCrossing.enabled;
 	}
 
+	/**
+	 * The counters are grouped by the plan v4 metric table so a reader can find
+	 * the number a defect column is named after without scrolling one enormous
+	 * line: integrity, defects, writer/edges, solver, buildings, misc.
+	 */
 	private static String statsSummary() {
 		long solved = VpsPipeline.VILLAGES_SOLVED.get();
 		long nanos = VpsPipeline.SOLVE_NANOS.get();
+		long maskCells = RoadCollector.MASK_CELLS_TOTAL.get();
+		long largestCells = RoadCollector.MASK_CELLS_LARGEST_COMPONENT.get();
+		long gapSum = RoadCollector.GAP_WIDTH_SUM.get();
+		long splitVillages = RoadCollector.NETWORKS_SPLIT.get();
 		return String.format(
-				"[VPS] villages solved: %d (%.2f ms avg), road cells written: %d, kerbs: %d, railings: %d, scaffolds: %d (water-self %d / water-below %d / dry %d)"
-						+ ", probe skips: %d, floor-garbage probes: %d, probe boundary switches: %d, probe mismatch columns: %d"
-						+ ", clamped writes: %d, fallback re-anchors: %d, over-budget cells: %d, surface fallbacks: %d"
-						+ ", solve contradictions: %d, step violations: %d (worst %d), water anchor deviations: %d, villages without arms: %d"
-						+ ", suppressed vanilla road blocks: %d (passed through: %d)"
-						+ ", T1.5 applied: %d (no-server %d), building components: %d, shifted: %d, unserved: %d, no-road: %d, overlap guards: %d, floating: %d, buried: %d"
-						+ ", villager freeze: %s (brain ticks skipped: %d)",
+				"[VPS] villages solved: %d (%.2f ms avg)%n"
+						+ "  roads      : cells written %d, kerbs %d, railings %d, scaffolds %d (water-self %d / water-below %d / dry %d)%n"
+						+ "  integrity  : dropped cells %d (noise-reprobed %d), split masks %d, declined %d, largest component %s%%, widest break avg %s / max %d%n"
+						+ "  defects    : writer overrides %d, clamped %d, surface fallbacks %d, over-budget %d, edge drops > 1 block %d (worst %d half units)%n"
+						+ "  solve      : contradictions %d, step violations %d (worst %d), seam re-solves refused %d, water anchor deviations %d, villages without arms %d%n"
+						+ "  suppression: vanilla road blocks dropped %d (passed through %d)%n"
+						+ "  buildings  : T1.5 applied %d (no-server %d), components %d, shifted %d, unserved %d, no-road %d, overlap guards %d, floating %d, buried %d%n"
+						+ "  misc       : floor-garbage probes %d, probe boundary switches %d, probe mismatch columns %d, villager freeze: %s (brain ticks skipped: %d)",
 				solved,
 				solved > 0 ? nanos / 1_000_000.0 / solved : 0.0,
 				VpsPipeline.ROAD_CELLS_WRITTEN.get(),
@@ -208,16 +218,22 @@ public final class VpsCommands {
 				VpsPipeline.SCAFFOLD_WATER_BELOW.get(),
 				VpsPipeline.SCAFFOLD_DRY.get(),
 				RoadCollector.PROBE_SKIPPED_CELLS.get(),
-				VpsGenContext.FLOOR_GARBAGE_HITS.get(),
-				RoadCollector.PROBE_BOUNDARY_SWITCHES.get(),
-				RoadCollector.PROBE_MISMATCH_COLUMNS.get(),
+				RoadCollector.NOISE_FALLBACK_CELLS.get(),
+				splitVillages,
+				RoadCollector.NETWORKS_DECLINED.get(),
+				maskCells > 0 ? String.format("%.1f", 100.0 * largestCells / maskCells) : "-",
+				splitVillages > 0 ? String.format("%.1f", (double) gapSum / splitVillages) : "-",
+				RoadCollector.GAP_WIDTH_MAX.get(),
+				RoadWriter.OVERRIDDEN_WRITES.get(),
 				RoadWriter.CLAMPED_WRITES.get(),
-				RoadWriter.FALLBACK_REANCHORS.get(),
-				RoadWriter.OVER_BUDGET_CELLS.get(),
 				VpsPipeline.SURFACE_FALLBACK_WRITES.get(),
+				RoadWriter.OVER_BUDGET_CELLS.get(),
+				RoadWriter.EDGE_DROP_VIOLATIONS.get(),
+				RoadWriter.EDGE_WORST_DROP.get(),
 				VpsPipeline.SOLVE_CANDIDATE_CONTRADICTIONS.get(),
 				VpsPipeline.SOLVE_STEP_VIOLATIONS.get(),
 				VpsPipeline.SOLVE_WORST_STEP.get(),
+				VpsPipeline.SOLVE_PHASE3_REFUSALS.get(),
 				VpsPipeline.WATER_ANCHOR_DEVIATIONS.get(),
 				VpsPipeline.VILLAGES_WITHOUT_ARMS.get(),
 				VpsPipeline.SUPPRESSED_VANILLA_ROAD_BLOCKS.get(),
@@ -231,6 +247,9 @@ public final class VpsCommands {
 				VpsPipeline.OVERLAP_GUARDS.get(),
 				VpsPipeline.BUILDING_FLOATING.get(),
 				VpsPipeline.BUILDING_BURIED.get(),
+				VpsGenContext.FLOOR_GARBAGE_HITS.get(),
+				RoadCollector.PROBE_BOUNDARY_SWITCHES.get(),
+				RoadCollector.PROBE_MISMATCH_COLUMNS.get(),
 				VillagePathSmoothedConfig.get().debug.disableVillagerBrains ? "ACTIVE" : "INACTIVE",
 				VpsPipeline.DEBUG_VILLAGER_BRAIN_SKIPS.get());
 	}

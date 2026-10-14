@@ -63,6 +63,8 @@ public final class VpsPipeline {
 	public static final AtomicLong SOLVE_CANDIDATE_CONTRADICTIONS = new AtomicLong();
 	public static final AtomicLong SOLVE_STEP_VIOLATIONS = new AtomicLong();
 	public static final AtomicLong SOLVE_WORST_STEP = new AtomicLong();
+	/** Fix plan v4 A2: arms whose phase-3 seam re-solve was refused for state budget. */
+	public static final AtomicLong SOLVE_PHASE3_REFUSALS = new AtomicLong();
 	// Fix plan v2 R4.3: water-crossing cells whose solved surface deviates from
 	// the water surface (their preferred height). The anchor is soft, so this
 	// counts how often the solver traded the water level for smoothness.
@@ -305,6 +307,7 @@ public final class VpsPipeline {
 		SOLVE_CANDIDATE_CONTRADICTIONS.addAndGet(stats.candidateContradictions());
 		SOLVE_STEP_VIOLATIONS.addAndGet(stats.residualViolations());
 		SOLVE_WORST_STEP.accumulateAndGet(stats.worstStep(), Math::max);
+		SOLVE_PHASE3_REFUSALS.addAndGet(stats.phase3Refusals());
 		WATER_ANCHOR_DEVIATIONS.addAndGet(stats.waterAnchorDeviations());
 	}
 

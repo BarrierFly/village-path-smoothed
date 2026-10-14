@@ -46,6 +46,27 @@ import java.util.regex.Pattern;
 public final class RoadCollector {
 	/** Cells dropped because their height probe failed or read a floor-level garbage value; they stay vanilla. */
 	public static final AtomicLong PROBE_SKIPPED_CELLS = new AtomicLong();
+	/**
+	 * Fix plan v4 D1-c: cells whose real-height probe failed or read garbage and
+	 * were re-probed on the noise caliber instead of being dropped. Should be far
+	 * smaller than {@link #PROBE_SKIPPED_CELLS}; a non-zero value is the difference
+	 * between "a hole in the mask" and "a noisier height".
+	 */
+	public static final AtomicLong NOISE_FALLBACK_CELLS = new AtomicLong();
+	// Fix plan v4 D1-e: mask integrity per village. A dropped probe cell does not
+	// just cost one cell, it splits the network - the halves then have no edge
+	// between them, each solves alone, and the dropped column keeps a full-height
+	// vanilla road in between, which no |dP| counter can see.
+	/** Villages whose mask is not one 4-connected component. */
+	public static final AtomicLong NETWORKS_SPLIT = new AtomicLong();
+	/** Villages handed back to vanilla whole because their mask was split (D1-e). */
+	public static final AtomicLong NETWORKS_DECLINED = new AtomicLong();
+	/** Sum of mask cells / cells in the largest component, so the ratio is reconstructible. */
+	public static final AtomicLong MASK_CELLS_TOTAL = new AtomicLong();
+	public static final AtomicLong MASK_CELLS_LARGEST_COMPONENT = new AtomicLong();
+	/** Widest break (plan gapWidth): sum for an average, max for the worst village. */
+	public static final AtomicLong GAP_WIDTH_SUM = new AtomicLong();
+	public static final AtomicLong GAP_WIDTH_MAX = new AtomicLong();
 	/** Fix plan v2 R5.3: 4-adjacency edges whose two ends use different probe calibers (real heightmap vs noise). */
 	public static final AtomicLong PROBE_BOUNDARY_SWITCHES = new AtomicLong();
 	/** Fix plan v2 R5.3: columns rewritten by the boundary alignment pass (distinct cells). */
@@ -119,7 +140,49 @@ public final class RoadCollector {
 		}
 		List<RoadCell> cells = new ArrayList<>(cellsByPos.values());
 		alignProbeBoundaries(cells);
-		return RoadNetwork.build(cells, config.roadSmoothing.maxExactSectionWidth);
+		RoadNetwork network = RoadNetwork.build(cells, config.roadSmoothing.maxExactSectionWidth);
+		recordIntegrity(network);
+		// Fix plan v4 D1-e: a split mask is declined as a whole. Adopting one half
+		// and leaving the other half vanilla would look like "the road stopped in
+		// the middle of the village"; declining keeps vanilla continuous, which is
+		// the failure mode v3 documented as acceptable for an unsolvable village.
+		if (!network.isConnected()) {
+			NETWORKS_DECLINED.incrementAndGet();
+			VillagePathSmoothed.LOGGER.warn("[VPS] village at {}: the road mask is split into {} components (widest break {} blocks); leaving the whole village vanilla instead of smoothing half of it",
+					start.getChunkPos(), network.componentCount(), network.widestBreak());
+			return RoadNetwork.build(new ArrayList<>(), config.roadSmoothing.maxExactSectionWidth);
+		}
+		return network;
+	}
+
+	/** Feeds the plan's integrity column (dropCells, component ratio, gapWidth). */
+	private static void recordIntegrity(RoadNetwork network) {
+		if (network.cells.isEmpty()) {
+			return;
+		}
+		if (network.componentCount() > 1) {
+			NETWORKS_SPLIT.incrementAndGet();
+		}
+		MASK_CELLS_TOTAL.addAndGet(network.cells.size());
+		MASK_CELLS_LARGEST_COMPONENT.addAndGet(largestComponentCells(network));
+		int gap = network.widestBreak();
+		if (gap > 0) {
+			GAP_WIDTH_SUM.addAndGet(gap);
+			GAP_WIDTH_MAX.accumulateAndGet(gap, Math::max);
+		}
+	}
+
+	private static int largestComponentCells(RoadNetwork network) {
+		int[] labels = network.componentLabels();
+		Map<Integer, Integer> sizes = new HashMap<>();
+		for (int label : labels) {
+			sizes.merge(label, 1, Integer::sum);
+		}
+		int largest = 0;
+		for (int size : sizes.values()) {
+			largest = Math.max(largest, size);
+		}
+		return largest;
 	}
 
 	/**
@@ -251,33 +314,43 @@ public final class RoadCollector {
 			}
 
 			int surfaceTopY;
+			boolean realHeight = ctx.hasRealHeight(x, z);
 			boolean anchor = false;
+			int noiseTopY = VpsGenContext.NOISE_UNAVAILABLE;
 			try {
 				surfaceTopY = ctx.surfaceTopY(x, z, config);
 			} catch (Throwable t) {
-				VillagePathSmoothed.LOGGER.warn("[VPS] height probe failed at {} {} while collecting", x, z, t);
-				PROBE_SKIPPED_CELLS.incrementAndGet();
-				continue;
-			}
-			if (surfaceTopY == VpsGenContext.NOISE_UNAVAILABLE) {
-				// pure-noise probe with no RandomState: no usable height at all
-				PROBE_SKIPPED_CELLS.incrementAndGet();
-				continue;
+				VillagePathSmoothed.LOGGER.warn("[VPS] height probe failed at {} {} while collecting; retrying on the noise caliber", x, z, t);
+				surfaceTopY = VpsGenContext.NOISE_UNAVAILABLE;
 			}
 			// Analysis report section 5-2: a probe exactly at the dimension floor
 			// is the signature of a lazily-primed all-air chunk (firstAvailable =
 			// min_y). VpsGenContext already cross-checks floor-adjacent reads
-			// against the noise height; what still arrives here at the exact
-			// floor has no better source to confirm it, and no legitimate village
-			// terrain sits at the dimension floor, so dropping the cell keeps the
-			// vanilla road instead of building into the void. A genuinely low
-			// world (superflat) sits ABOVE the floor and is unaffected.
-			if (HeightSanity.isExactFloorProbe(surfaceTopY, ctx.getMinY())) {
+			// against the noise height; what still arrives here at the exact floor
+			// has no better source to confirm it. A genuinely low world (superflat)
+			// sits ABOVE the floor and is unaffected.
+			if (surfaceTopY != VpsGenContext.NOISE_UNAVAILABLE
+					&& HeightSanity.isExactFloorProbe(surfaceTopY, ctx.getMinY())) {
+				VillagePathSmoothed.LOGGER.warn("[VPS] floor-level probe at {} {} ({}); looks like an empty chunk, re-probing on the noise caliber", x, z, surfaceTopY);
+				surfaceTopY = VpsGenContext.NOISE_UNAVAILABLE;
+			}
+			if (surfaceTopY == VpsGenContext.NOISE_UNAVAILABLE) {
+				noiseTopY = ctx.noiseSurfaceTopY(x, z, config);
+			}
+			// fix plan v4 D1-c: a failed probe used to drop the column. The noise
+			// caliber is a pure function of x/z, so a noisier height is always
+			// available before the column is given up - a noisier height costs
+			// deviation, a dropped column splits the mask.
+			ProbeHeights.Outcome outcome = ProbeHeights.resolve(surfaceTopY, noiseTopY, ctx.getMinY(), VpsGenContext.NOISE_UNAVAILABLE);
+			if (outcome == ProbeHeights.Outcome.USE_NOISE) {
+				surfaceTopY = noiseTopY;
+				realHeight = false; // the column is now on the noise caliber
+				NOISE_FALLBACK_CELLS.incrementAndGet();
+			} else if (outcome == ProbeHeights.Outcome.DROP) {
 				PROBE_SKIPPED_CELLS.incrementAndGet();
-				VillagePathSmoothed.LOGGER.warn("[VPS] floor-level probe at {} {} ({}); looks like an empty chunk, dropping this road cell to keep it vanilla", x, z, surfaceTopY);
 				continue;
 			}
-			if (ctx.hasRealHeight(x, z)) {
+			if (realHeight) {
 				// over-water cells are fixed anchors; the same fluid predicate
 				// as the writer (A2) is used here: water at the vanilla road
 				// block height OR one below it. The block read is guarded like
@@ -298,7 +371,7 @@ public final class RoadCollector {
 				anchor = ctx.noiseHasWaterColumn(x, z);
 			}
 			RoadCell cell = new RoadCell(x, z, style, 2 * surfaceTopY, anchor);
-			cell.realHeight = ctx.hasRealHeight(x, z);
+			cell.realHeight = realHeight;
 			cellsByPos.put(key, cell);
 		}
 	}

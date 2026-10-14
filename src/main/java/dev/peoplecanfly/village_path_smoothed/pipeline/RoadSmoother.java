@@ -106,8 +106,8 @@ public record SolveParams(
 	 *        counts how often it did
 	 */
 	public record SolveStats(int candidateContradictions, int residualViolations, int worstStep,
-			int waterAnchorDeviations) {
-		public static final SolveStats EMPTY = new SolveStats(0, 0, 0, 0);
+			int waterAnchorDeviations, int phase3Refusals) {
+		public static final SolveStats EMPTY = new SolveStats(0, 0, 0, 0, 0);
 	}
 
 	/** Mutable per-solve accumulator threaded through the leaf candidate builders. */
@@ -116,9 +116,10 @@ public record SolveParams(
 		int residualViolations;
 		int worstStep;
 		int waterAnchorDeviations;
+		int phase3Refusals;
 
 		SolveStats toStats() {
-			return new SolveStats(candidateContradictions, residualViolations, worstStep, waterAnchorDeviations);
+			return new SolveStats(candidateContradictions, residualViolations, worstStep, waterAnchorDeviations, phase3Refusals);
 		}
 	}
 
@@ -168,7 +169,12 @@ public record SolveParams(
 		//    solution here; the final verification below counts the consequences.
 		for (RoadNetwork.Arm arm : net.arms) {
 			if (arm.touchesRegion) {
-				solveArm(net, arm, p, seamBoundsForArm(net, arm, regionCells), stats);
+				// fix plan v4 A2 groundwork: the refusal used to be dropped on the
+				// floor, so an arm that could not be re-solved against its seam
+				// silently kept a solution that knows nothing about the region.
+				if (!solveArm(net, arm, p, seamBoundsForArm(net, arm, regionCells), stats)) {
+					stats.phase3Refusals++;
+				}
 			}
 		}
 

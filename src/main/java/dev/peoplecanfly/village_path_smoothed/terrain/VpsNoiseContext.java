@@ -127,6 +127,17 @@ public final class VpsNoiseContext implements VpsProbe {
 		return BeardCompensation.compensate(raw, near, config.roadSmoothing.beardCompensation);
 	}
 
+	/**
+	 * The noise caliber on its own. This context <em>is</em> the noise caliber, so
+	 * it is the same value {@link #surfaceTopY} returns (fix plan v4 D1-c lets the
+	 * collector re-probe a failed column here; on this path there is nothing else
+	 * to fall back to, which is why the T1.5 mask never has holes).
+	 */
+	@Override
+	public int noiseSurfaceTopY(int x, int z, VillagePathSmoothedConfig config) {
+		return surfaceTopY(x, z, config);
+	}
+
 	@Override
 	public boolean noiseHasWaterColumn(int x, int z) {
 		if (this.randomState == null) {

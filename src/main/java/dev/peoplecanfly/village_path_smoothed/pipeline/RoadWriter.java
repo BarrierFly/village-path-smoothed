@@ -42,6 +42,21 @@ public final class RoadWriter {
 	/** Aggregated diagnostic: cells clamped to a dimension bound instead of being written at the solved height. */
 	public static final AtomicLong CLAMPED_WRITES = new AtomicLong();
 	/**
+	 * Fix plan v4 F7 / M1: cells whose written walk surface is not the cell's
+	 * solved surface, i.e. the writer decided a height. This is the counter that
+	 * makes the reported "different chunks do not match" symptom visible at all:
+	 * the mask can be perfectly legal and the world still wrong.
+	 */
+	public static final AtomicLong OVERRIDDEN_WRITES = new AtomicLong();
+	/**
+	 * Fix plan v4 D4-a: side columns beside the road where the lateral drop is
+	 * more than one whole block, plus the worst such drop in half-block units.
+	 * Observation only - v4 leaves the mask edge unrepaired on purpose (D4-b/c/e
+	 * are all blocked), so the cliff stays and this number says how big it is.
+	 */
+	public static final AtomicLong EDGE_DROP_VIOLATIONS = new AtomicLong();
+	public static final AtomicLong EDGE_WORST_DROP = new AtomicLong();
+	/**
 	 * Aggregated diagnostic: cells whose solved walk surface is beyond any
 	 * affordable fill/cut. Observation only since fix plan v2 R3 (decision N7):
 	 * the solved height is kept and rendered (bridge deck above the surface,
@@ -130,6 +145,7 @@ public final class RoadWriter {
 			}
 			setBlock(ctx, cell.x, topY - 1, cell.z, road.defaultBlockState());
 			VpsPipeline.SURFACE_FALLBACK_WRITES.incrementAndGet();
+			OVERRIDDEN_WRITES.incrementAndGet();
 		} catch (Throwable t) {
 			VillagePathSmoothed.LOGGER.debug("[VPS] surface fallback failed at {} {}", cell.x, cell.z, t);
 		}
@@ -166,6 +182,12 @@ public final class RoadWriter {
 				} else {
 					VpsPipeline.SCAFFOLD_DRY.incrementAndGet();
 				}
+				// the scaffold lands on the vanilla surface height, not on the
+				// solved profile: one of the three per-cell overrides of F7, and
+				// the reason a water crossing is a step against its solved
+				// neighbours. Counted until fix plan v4 D6-b (M5) moves it onto
+				// the solved height.
+				OVERRIDDEN_WRITES.incrementAndGet();
 				placeScaffolding(cell, ctx, x, z, topY, waterAtWt, config);
 				VpsPipeline.SCAFFOLDS_PLACED.incrementAndGet();
 				return;
@@ -200,6 +222,7 @@ public final class RoadWriter {
 		// residual case diagnosable
 		if (roadTopBlockY <= ctx.getMinY() || roadTopBlockY >= ctx.getMaxY()) {
 			CLAMPED_WRITES.incrementAndGet();
+			OVERRIDDEN_WRITES.incrementAndGet();
 			if (!warnedClampedWrites) {
 				warnedClampedWrites = true;
 				VillagePathSmoothed.LOGGER.warn("[VPS] road cell at {} {} clamps to a dimension bound (y={}); this normally means a garbage height survived the probe filters", x, z, roadTopBlockY);
@@ -298,6 +321,13 @@ public final class RoadWriter {
 				continue;
 			}
 			int sSide2 = 2 * outTopY;
+			// fix plan v4 D4-a: measure the mask-edge drop once per side column
+			// (this branch only runs for the column's owner, see sideColumnOwner)
+			int lateralDrop = Math.abs(sSide2 - sRoad2);
+			if (lateralDrop > 2) {
+				EDGE_DROP_VIOLATIONS.incrementAndGet();
+				EDGE_WORST_DROP.accumulateAndGet(lateralDrop, Math::max);
+			}
 
 			if (config.kerb.enabled && RoadWritePolicy.kerbApplies(sSide2, sRoad2, config.kerb.minDropHeight)) {
 				placeKerb(ctx, outX, outZ, roadTopBlockY, outTopY, materials, kerbExtras);

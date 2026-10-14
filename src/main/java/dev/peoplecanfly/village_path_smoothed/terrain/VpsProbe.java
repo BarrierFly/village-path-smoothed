@@ -28,6 +28,16 @@ public interface VpsProbe {
 	/** Best available height for a column. */
 	int surfaceTopY(int x, int z, VillagePathSmoothedConfig config);
 
+	/**
+	 * The noise caliber on its own: the compensated {@code getBaseHeight} height,
+	 * whatever {@link #surfaceTopY} would have preferred (fix plan v4 D1-c).
+	 * The collector uses it to re-probe a column whose primary probe failed,
+	 * instead of dropping the column and splitting the mask.
+	 *
+	 * @return {@code VpsGenContext#NOISE_UNAVAILABLE} when no noise height exists
+	 */
+	int noiseSurfaceTopY(int x, int z, VillagePathSmoothedConfig config);
+
 	BlockState blockState(int x, int y, int z);
 
 	/** Noise water-column approximation used for anchor detection outside the readable window. */

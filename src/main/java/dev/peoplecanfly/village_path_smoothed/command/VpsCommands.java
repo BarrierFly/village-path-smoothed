@@ -230,7 +230,7 @@ public final class VpsCommands {
 		long splitVillages = RoadCollector.NETWORKS_SPLIT.get();
 		return String.format(
 				"[VPS] villages solved: %d (%.2f ms avg)%n"
-						+ "  roads      : cells written %d, kerbs %d, railings %d (skipped: water %d / door %d), scaffolds %d (water-self %d / water-below %d / dry %d), water bridges %d%n"
+						+ "  roads      : cells written %d, kerbs %d, roof lining %d, railings %d (skipped: water %d / door %d), scaffolds %d (water-self %d / water-below %d / dry %d), water bridges %d%n"
 						+ "  integrity  : dropped cells %d (noise-reprobed %d), split masks %d (solved per component), largest component %s%%, widest break avg %s / max %d%n"
 						+ "  defects    : writer overrides %d, nudged to the surface %d, refused %d (out of world %d), surface fallbacks %d, over-budget %d, edge drops > 1 block %d (worst %d half units)%n"
 						+ "  solve      : contradictions %d, step violations %d (worst %d), seam re-solves refused %d, polish moved %d (max delta %d half units, p90 %d, midpoint conflicts %d), water anchor deviations %d, villages without arms %d, solution cache hits %d%n"
@@ -243,6 +243,7 @@ public final class VpsCommands {
 				solved > 0 ? nanos / 1_000_000.0 / solved : 0.0,
 				VpsPipeline.ROAD_CELLS_WRITTEN.get(),
 				VpsPipeline.KERBS_PLACED.get(),
+				RoadWriter.ROOF_LINED_BLOCKS.get(),
 				VpsPipeline.RAILINGS_PLACED.get(),
 				RoadWriter.RAILINGS_SKIPPED_AT_WATER.get(),
 				RoadWriter.RAILINGS_SKIPPED_AT_DOOR.get(),

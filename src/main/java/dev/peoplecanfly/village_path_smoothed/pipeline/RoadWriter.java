@@ -23,9 +23,11 @@ import net.minecraft.world.level.block.state.properties.SlabType;
 import net.minecraft.world.level.levelgen.structure.BoundingBox;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -108,6 +110,13 @@ public final class RoadWriter {
 	 * surface equals the platform's real walk surface by the phase-2 pin.
 	 */
 	public static final AtomicLong PLAZA_CELLS_VANILLA = new AtomicLong();
+	/**
+	 * User decision 2026-10-15 (kerb rework): blocks of the ceiling run directly
+	 * above the walk surface that were lined with the kerb material - the whole
+	 * contiguous run, no longer only the single block at the clear cap and no
+	 * longer gated on a cap being configured at all.
+	 */
+	public static final AtomicLong ROOF_LINED_BLOCKS = new AtomicLong();
 	/** Railings suppressed on a movable building's door front (user decision 2026-10-15). */
 	public static final AtomicLong RAILINGS_SKIPPED_AT_DOOR = new AtomicLong();
 	/** Railings suppressed beside water because the road is not above the water surface (user decision 2026-10-15). */
@@ -127,20 +136,20 @@ public final class RoadWriter {
 			int[][] shiftedComponents, int[][] buildingBoxes, int[][] doorFronts, String village) {
 		RoadMaterialTable table = RoadMaterialTable.create(config);
 		List<Block> kerbExtras = resolveKerbExtras(config);
-		// Review 4 section 9.3: with the vanilla street layer suppressed on every
-		// claimed column, the kerb/railing work is the only thing left that two
-		// road cells at different heights can both do to the same side column -
-		// a low cell lining it with kerb and a high cell railing above. Deciding
-		// per chunk which cell owns each side column keeps exactly one writer,
-		// and the owner is the highest road, because that is the one whose edge
-		// actually has to be held up.
-		Map<Long, Integer> sideColumnOwner = highestRoadPerSideColumn(net, chunkBB);
+		// User decision 2026-10-15: every road cell applies its own edge details
+		// - the one-owner-per-side-column rule is gone. A shared column now gets
+		// the low road's kerb AND the high road's railing, which is the point:
+		// each road holds up its own edge. The side-column probes are memoised
+		// per (column, road level) so a shared column is scanned once per height,
+		// and the drop metric stays once per column.
+		Map<SideKey, SideFacts> sideFacts = new HashMap<>();
+		Set<Long> countedEdgeColumns = new HashSet<>();
 		for (RoadCell cell : net.cells) {
 			if (cell.x < chunkBB.minX() || cell.x > chunkBB.maxX() || cell.z < chunkBB.minZ() || cell.z > chunkBB.maxZ()) {
 				continue; // written when this cell's own chunk generates
 			}
 			try {
-				writeCell(net, cell, ctx, config, table, kerbExtras, sideColumnOwner, shiftedComponents,
+				writeCell(net, cell, ctx, config, table, kerbExtras, sideFacts, countedEdgeColumns, shiftedComponents,
 						buildingBoxes, doorFronts, village);
 			} catch (Throwable t) {
 				VillagePathSmoothed.LOGGER.debug("[VPS] failed to write road cell {} {}", cell.x, cell.z, t);
@@ -156,32 +165,45 @@ public final class RoadWriter {
 	}
 
 	/**
-	 * Highest road walk surface (half units) claiming each side column of this
-	 * chunk, keyed by the packed x/z of the column. The value is the cell's
-	 * <b>solved</b> surface ({@code solvedP}), the same key
-	 * {@code applyKerbsAndRailings} tests against.
+	 * Side column of one road cell's edge, keyed by column and road level: the
+	 * same column can adjoin roads at different heights and both probes start
+	 * from the road block's own Y.
 	 */
-	private static Map<Long, Integer> highestRoadPerSideColumn(RoadNetwork net, BoundingBox chunkBB) {
-		Map<Long, Integer> owner = new HashMap<>();
-		for (RoadCell cell : net.cells) {
-			if (cell.x < chunkBB.minX() || cell.x > chunkBB.maxX() || cell.z < chunkBB.minZ() || cell.z > chunkBB.maxZ()) {
-				continue;
-			}
-			int road2 = cell.solvedP;
-			for (int dir = 0; dir < 4; dir++) {
-				int outX = cell.x + SIDE_DX[dir];
-				int outZ = cell.z + SIDE_DZ[dir];
-				if (net.cellAt(outX, outZ) >= 0) {
-					continue; // road continues this way: no side edge
+	private record SideKey(int x, int z, int roadTopBlockY) {
+	}
+
+	/**
+	 * What the two probes found in one side column, starting from the road
+	 * block's own level:
+	 *
+	 * <ul>
+	 *   <li>{@code topmostY} - the highest block at or above the road block's
+	 *       level, scanning UP through air gaps to the column's height-spectrum
+	 *       top ({@link Integer#MIN_VALUE} when the column is empty up there);
+	 *       this is the wall the kerb wraps and the threshold it is measured
+	 *       against;</li>
+	 *   <li>{@code groundTopY} - first air above the ground found scanning DOWN
+	 *       from the road block's level; the surface a railing guards against
+	 *       (an overhang above an open edge must not hide the drop).</li>
+	 * </ul>
+	 */
+	private record SideFacts(int topmostY, int groundTopY) {
+	}
+
+	/** Returns the column's facts, or null when the column cannot be read (never fatal). */
+	private static SideFacts probeSideFacts(VpsGenContext ctx, int x, int z, int roadTopBlockY) {
+		try {
+			int topmost = Integer.MIN_VALUE;
+			for (int y = roadTopBlockY; y <= ctx.getMaxY(); y++) {
+				if (ctx.isSolidAt(x, y, z)) {
+					topmost = y;
 				}
-				long key = RoadCell.packedXZ(outX, outZ);
-				Integer current = owner.get(key);
-				if (current == null || road2 > current) {
-					owner.put(key, road2);
-				}
 			}
+			int ground = ctx.groundSurfaceTopY(x, z, roadTopBlockY);
+			return new SideFacts(topmost, ground);
+		} catch (Throwable t) {
+			return null; // +/-1 chunk of the current chunk: readable, but never fatal
 		}
-		return owner;
 	}
 
 	/**
@@ -245,7 +267,8 @@ public final class RoadWriter {
 	private static final int[] SIDE_DZ = {0, 0, -1, 1};
 
 	private static void writeCell(RoadNetwork net, RoadCell cell, VpsGenContext ctx, VillagePathSmoothedConfig config,
-			RoadMaterialTable table, List<Block> kerbExtras, Map<Long, Integer> sideColumnOwner, int[][] shiftedComponents,
+			RoadMaterialTable table, List<Block> kerbExtras, Map<SideKey, SideFacts> sideFacts,
+			Set<Long> countedEdgeColumns, int[][] shiftedComponents,
 			int[][] buildingBoxes, int[][] doorFronts, String village) {
 		int x = cell.x;
 		int z = cell.z;
@@ -259,7 +282,7 @@ public final class RoadWriter {
 			PLAZA_CELLS_VANILLA.incrementAndGet();
 			RoadMaterialTable.StyleMaterials plazaMaterials = table.forStyle(cell.style);
 			applyKerbsAndRailings(net, cell, ctx, config, plazaMaterials, kerbExtras,
-					RoadWritePolicy.roadTopBlockY(cell.solvedP), cell.solvedP, sideColumnOwner, doorFronts);
+					RoadWritePolicy.roadTopBlockY(cell.solvedP), cell.solvedP, sideFacts, countedEdgeColumns, doorFronts);
 			return;
 		}
 
@@ -444,15 +467,44 @@ public final class RoadWriter {
 			int clearTop = RoadWritePolicy.clearTopY(roadTopBlockY, heightTopY, config.roadSmoothing.maxClearLayers);
 			if (RoadWritePolicy.tunnelRoof(roadTopBlockY, heightTopY, clearTop, config.roadSmoothing.maxClearLayers)) {
 				OVER_BUDGET_CELLS.incrementAndGet();
-				// line the tunnel roof with the style's kerb material (report:
-				// "包边覆盖隧道顶"; the side kerb below keeps replacing #dirt only)
-				setBlock(ctx, x, clearTop + 1, z, materials.kerbBlock.defaultBlockState());
+			}
+			// User decision 2026-10-15 (kerb rework): the ceiling run directly above
+			// the walk surface is lined with the kerb material for its whole
+			// contiguous length - "转包顶". Whatever the capped clear left above the
+			// road (a tunnel roof, an overhang past the cap) gets the full lining;
+			// with the default unlimited clear the run is empty and this is a no-op.
+			// This replaces the old single-block lining at the clear cap and no
+			// longer depends on a cap being configured. Plaza cells never reach
+			// here (their early return above protects the fountain).
+			if (config.kerb.enabled && !aboveWater) {
+				lineCeiling(ctx, x, z, roadTopBlockY, materials);
 			}
 		}
 		VpsPipeline.ROAD_CELLS_WRITTEN.incrementAndGet();
 
 		// ---- kerbs and railings on side edges (5.5)
-		applyKerbsAndRailings(net, cell, ctx, config, materials, kerbExtras, roadTopBlockY, writtenWalkSurface2, sideColumnOwner, doorFronts);
+		applyKerbsAndRailings(net, cell, ctx, config, materials, kerbExtras, roadTopBlockY, writtenWalkSurface2,
+				sideFacts, countedEdgeColumns, doorFronts);
+	}
+
+	/**
+	 * Lines the contiguous run of blocks directly above the road block with the
+	 * style's kerb material, up to the first air (the run's top). The road block
+	 * itself and everything below are untouched.
+	 */
+	private static void lineCeiling(VpsGenContext ctx, int x, int z, int roadTopBlockY,
+			RoadMaterialTable.StyleMaterials materials) {
+		int lined = 0;
+		for (int y = roadTopBlockY + 1; y <= ctx.getMaxY(); y++) {
+			if (!ctx.isSolidAt(x, y, z)) {
+				break; // the ceiling run ends
+			}
+			setBlock(ctx, x, y, z, materials.kerbBlock.defaultBlockState());
+			lined++;
+		}
+		if (lined > 0) {
+			ROOF_LINED_BLOCKS.addAndGet(lined);
+		}
 	}
 
 	/** Support fill from the ground block up to (not including) the road block. */
@@ -569,29 +621,36 @@ public final class RoadWriter {
 	/**
 	 * Kerbs and railings on the road's side edges (5.5).
 	 *
-	 * <p>User decision 2026-10-14: the side column is probed <b>from the road
-	 * block's own Y</b>, in the direction that actually decides the detail, not
-	 * from the heightmap top:
+	 * <p>User decisions 2026-10-14 (directional probes) and 2026-10-15 (kerb
+	 * rework): the side column is probed <b>from the road block's own Y</b>. Two
+	 * probes decide the two details independently:
 	 *
 	 * <ul>
-	 *   <li>the block at the road level is solid (&quot;blocked&quot;) -&gt; scan
-	 *       <b>up</b> to the top of that solid run and apply a kerb when it rises
-	 *       more than {@code kerb.minDropHeight} above the road;</li>
-	 *   <li>it is empty (&quot;open&quot;) -&gt; scan <b>down</b> to the first
-	 *       standable ground and apply a railing when the road is more than
-	 *       {@code railing.minDropHeight} above it.</li>
+	 *   <li><b>Kerb (the wall)</b>: scan <b>up</b> from the road block's level
+	 *       through air gaps to the side column's height-spectrum top and wrap
+	 *       the blocks above the road when they rise more than
+	 *       {@code kerb.minDropHeight} above it. The old gate - "the side must be
+	 *       solid AT the road level" - is gone: an open edge with a shelf higher
+	 *       up is wrapped too, and the wrap skips the air gap and continues to
+	 *       the topmost block. The threshold itself is unchanged (user decision
+	 *       2026-10-15): a side rising exactly one block still gets no kerb.</li>
+	 *   <li><b>Railing</b>: scan <b>down</b> to the first standable ground and
+	 *       apply a railing when the road is more than {@code railing.minDropHeight}
+	 *       above it. Conditions unchanged: the door skip, the water rule and the
+	 *       threshold are exactly what they were.</li>
 	 * </ul>
 	 *
 	 * <p>The old code read {@code WORLD_SURFACE_WG} for the side column, so an
-	 * overhang or a canopy above the edge faked a huge drop (a kerb up to the
-	 * canopy) and a shelf under it faked a railing in the wrong place.
+	 * overhang or a canopy above the edge faked a huge drop and a shelf under it
+	 * faked a railing in the wrong place; the directional probes keep both
+	 * decisions honest.
 	 *
 	 * @param writtenWalkSurface2 the walk surface actually written (a crossing's
 	 *        scaffold is a full block, so it is half a unit above a slab)
 	 */
 	private static void applyKerbsAndRailings(RoadNetwork net, RoadCell cell, VpsGenContext ctx, VillagePathSmoothedConfig config,
 			RoadMaterialTable.StyleMaterials materials, List<Block> kerbExtras, int roadTopBlockY, int writtenWalkSurface2,
-			Map<Long, Integer> sideColumnOwner, int[][] doorFronts) {
+			Map<SideKey, SideFacts> sideFacts, Set<Long> countedEdgeColumns, int[][] doorFronts) {
 		int sRoad2 = writtenWalkSurface2;
 		for (int dir = 0; dir < 4; dir++) {
 			int outX = cell.x + SIDE_DX[dir];
@@ -599,43 +658,34 @@ public final class RoadWriter {
 			if (net.cellAt(outX, outZ) >= 0) {
 				continue; // road continues this way: no side edge
 			}
-			// review 4 section 7 (P2): one writer per side column. A shared
-			// column used to get a kerb from the lower road cell and a railing
-			// from the higher one, which is the "kerb and railing on the same
-			// spot" complaint; the highest road owns the column now. The owner
-			// key is the cell's solved surface so it matches
-			// highestRoadPerSideColumn exactly for every parity.
-			Integer owner = sideColumnOwner.get(RoadCell.packedXZ(outX, outZ));
-			if (owner != null && owner != cell.solvedP) {
-				continue;
+			SideFacts facts = sideFacts.computeIfAbsent(new SideKey(outX, outZ, roadTopBlockY),
+					k -> probeSideFacts(ctx, k.x(), k.z(), k.roadTopBlockY()));
+			if (facts == null) {
+				continue; // unreadable column: never fatal, skip the details here
 			}
-			int sSide2;
-			int sideSurfaceTopY;
-			try {
-				if (ctx.isSolidAt(outX, roadTopBlockY, outZ)) {
-					// blocked at the road level: the side terrain rises; the kerb
-					// runs from the road block to the top of this solid run
-					int runTop = ctx.solidRunTopY(outX, outZ, roadTopBlockY);
-					sideSurfaceTopY = runTop + 1;
-					sSide2 = 2 * sideSurfaceTopY;
-				} else {
-					// open at the road level: the side drops; find the ground below
-					sideSurfaceTopY = ctx.groundSurfaceTopY(outX, outZ, roadTopBlockY);
-					sSide2 = 2 * sideSurfaceTopY;
-				}
-			} catch (Throwable t) {
-				continue; // +/-1 chunk of the current chunk: readable, but never fatal
-			}
+
+			// the side surface the kerb threshold measures against: the column's
+			// height-spectrum top when it has any block at/above the road level,
+			// the ground below when it is empty up there
+			boolean rises = facts.topmostY() != Integer.MIN_VALUE;
+			int sSide2 = rises ? 2 * (facts.topmostY() + 1) : 2 * facts.groundTopY();
+			// the surface the railing guards against: always the WALKABLE ground
+			// below, so an open edge under a higher shelf still counts as a drop
+			int sSideGround2 = 2 * facts.groundTopY();
+
 			// fix plan v4 D4-a: measure the mask-edge drop once per side column
-			// (this branch only runs for the column's owner, see sideColumnOwner)
-			int lateralDrop = Math.abs(sSide2 - sRoad2);
-			if (lateralDrop > 2) {
-				EDGE_DROP_VIOLATIONS.incrementAndGet();
-				EDGE_WORST_DROP.accumulateAndGet(lateralDrop, Math::max);
+			// (every road cell still measures it; the metric just counts a column
+			// once - the ownership rule that used to guarantee that is gone)
+			if (countedEdgeColumns.add(RoadCell.packedXZ(outX, outZ))) {
+				int lateralDrop = Math.abs(sSide2 - sRoad2);
+				if (lateralDrop > 2) {
+					EDGE_DROP_VIOLATIONS.incrementAndGet();
+					EDGE_WORST_DROP.accumulateAndGet(lateralDrop, Math::max);
+				}
 			}
 
 			if (config.kerb.enabled && RoadWritePolicy.kerbApplies(sSide2, sRoad2, config.kerb.minDropHeight)) {
-				placeKerb(ctx, outX, outZ, roadTopBlockY, sideSurfaceTopY, materials, kerbExtras);
+				placeKerbWall(ctx, outX, outZ, roadTopBlockY, facts.topmostY(), materials, kerbExtras);
 			}
 
 			if (!config.railing.enabled) {
@@ -662,7 +712,7 @@ public final class RoadWriter {
 				}
 				continue;
 			}
-			if (RoadWritePolicy.railingApplies(sSide2, sRoad2, config.railing.minDropHeight)) {
+			if (RoadWritePolicy.railingApplies(sSideGround2, sRoad2, config.railing.minDropHeight)) {
 				placeRailing(ctx, outX, outZ, roadTopBlockY + 1, materials);
 			}
 		}
@@ -711,11 +761,19 @@ public final class RoadWriter {
 		return false;
 	}
 
-	/** Replaces dirt-tag blocks on the side column from the road block up to the side surface (Q07/Q08: no upper limit). */
-	private static void placeKerb(VpsGenContext ctx, int x, int z, int roadTopBlockY, int sideSurfaceTopY,
+	/**
+	 * Replaces dirt-tag blocks on the side column from one above the road block
+	 * up to the column's height-spectrum top, skipping air gaps (user decision
+	 * 2026-10-15; Q07 replaceable set unchanged). The block level with the road
+	 * block itself is below the wrap's start, so a level side gets nothing and a
+	 * rising side keeps its bottom course vanilla - the wrap is what "keep going
+	 * up until the outer cell runs out of blocks" asks for, from the first layer
+	 * above the walk surface.
+	 */
+	private static void placeKerbWall(VpsGenContext ctx, int x, int z, int roadTopBlockY, int topmostY,
 			RoadMaterialTable.StyleMaterials materials, List<Block> kerbExtras) {
 		boolean placed = false;
-		for (int y = Math.max(ctx.getMinY(), roadTopBlockY); y <= Math.min(ctx.getMaxY(), sideSurfaceTopY - 1); y++) {
+		for (int y = roadTopBlockY + 1; y <= Math.min(ctx.getMaxY(), topmostY); y++) {
 			BlockState existing = ctx.blockState(x, y, z);
 			if (existing.is(BlockTags.DIRT) || kerbExtras.contains(existing.getBlock())) {
 				setBlock(ctx, x, y, z, materials.kerbBlock.defaultBlockState());

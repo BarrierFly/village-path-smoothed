@@ -175,7 +175,8 @@ public final class RoadCollector {
 		}
 		ctx.setBeardBoxes(beardBoxes.toArray(new int[0][]));
 
-		for (StructurePiece piece : start.getPieces()) {
+		for (int pieceIndex = 0; pieceIndex < start.getPieces().size(); pieceIndex++) {
+			StructurePiece piece = start.getPieces().get(pieceIndex);
 			if (!(piece instanceof PoolElementStructurePiece poolPiece)) {
 				continue;
 			}
@@ -202,7 +203,7 @@ public final class RoadCollector {
 				continue;
 			}
 			pieceCount++;
-			collectPiece(poolPiece, singleElement, location, style, townCentre, templateManager, ctx, config, cellsByPos);
+			collectPiece(poolPiece, singleElement, location, style, townCentre, pieceIndex, templateManager, ctx, config, cellsByPos);
 		}
 
 		VillagePathSmoothed.LOGGER.debug("[VPS] village at {}: {} street pieces, {} road cells", start.getChunkPos(), pieceCount, cellsByPos.size());
@@ -348,6 +349,7 @@ public final class RoadCollector {
 			String location,
 			String style,
 			boolean townCentre,
+			int pieceIndex,
 			StructureTemplateManager templateManager,
 			VpsProbe ctx,
 			VillagePathSmoothedConfig config,
@@ -459,10 +461,18 @@ public final class RoadCollector {
 			}
 			RoadCell cell = new RoadCell(x, z, style, 2 * surfaceTopY, anchor);
 			cell.realHeight = realHeight;
-			cellsByPos.put(key, cell);
+			cell.pieceIndex = pieceIndex;
 			if (townCentre) {
+				// plan C (user decision 2026-10-15): the plaza is solved flat at a
+				// pinned level and rendered by its own rigid piece - the writer never
+				// writes a road block on it. Remember which platform renders this
+				// column and at what walk surface, so the pin can follow the piece
+				// across the T1.5 shift (re-read live after any move).
+				cell.plaza = true;
+				cell.plazaVanillaP = 2 * (piece.getBoundingBox().minY() + 1);
 				TOWN_CENTER_CELLS.incrementAndGet();
 			}
+			cellsByPos.put(key, cell);
 		}
 	}
 

@@ -236,7 +236,7 @@ public final class VpsCommands {
 						+ "  solve      : contradictions %d, step violations %d (worst %d), seam re-solves refused %d, polish moved %d (max delta %d half units, p90 %d, midpoint conflicts %d), water anchor deviations %d, villages without arms %d, solution cache hits %d%n"
 						+ "  suppression: vanilla road blocks dropped %d (passed through %d)%n"
 						+ "  buildings  : T1.5 applied %d (no-server %d), components %d, shifted %d, no-road %d, overlap guards %d, floating %d, buried %d, re-solved after shift %d (%d cells changed), road cells yielded %d%n"
-						+ "  centres    : town-centre plaza cells %d (non-road cells skipped %d)%n"
+						+ "  centres    : town-centre plaza cells %d (non-road cells skipped %d), vanilla-rendered %d, groups %d (shifted %d, pieces %d)%n"
 						+ "  model gap  : written surface vs real terrain: mean %s half units, worst %d, over threshold %d, cut below terrain %d, fill above %d%n"
 						+ "  misc       : floor-garbage probes %d, probe boundary switches %d, probe mismatch columns %d, villager freeze: %s (brain ticks skipped: %d)",
 				solved,
@@ -291,6 +291,10 @@ public final class VpsCommands {
 				RoadWriter.BUILDING_CELLS_SKIPPED.get(),
 				RoadCollector.TOWN_CENTER_CELLS.get(),
 				RoadCollector.TOWN_CENTER_NON_ROAD_SKIPPED.get(),
+				RoadWriter.PLAZA_CELLS_VANILLA.get(),
+				VpsPipeline.PLAZA_GROUPS.get(),
+				VpsPipeline.PLAZAS_SHIFTED.get(),
+				VpsPipeline.PLAZA_PIECES_SHIFTED.get(),
 				RoadWriter.DEVIATION_CELLS.get() > 0
 					? String.format("%.1f", (double) RoadWriter.DEVIATION_SUM.get() / RoadWriter.DEVIATION_CELLS.get())
 					: "-",

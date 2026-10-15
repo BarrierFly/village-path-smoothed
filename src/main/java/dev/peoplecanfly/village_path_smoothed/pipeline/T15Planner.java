@@ -23,6 +23,7 @@ import net.minecraft.world.level.levelgen.structure.pools.StructureTemplatePool;
 import net.minecraft.world.level.levelgen.structure.templatesystem.StructureTemplateManager;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
@@ -94,6 +95,10 @@ public final class T15Planner {
 		VpsNoiseContext ctx = new VpsNoiseContext(generator, randomState, heightAccessor);
 		RoadNetwork network = RoadCollector.collect(start, ctx, config);
 		if (config.roadSmoothing.enabled) {
+			// plan C phase 1: the plaza groups solve flat at the solver's own level
+			// (the group's median terrain height); the roads meet them via the
+			// normal seam constraints
+			network.applyPlazaPins(true);
 			VpsPipeline.accumulateSolveStats(RoadSmoother.solve(network, VpsPipeline.paramsFor(config)));
 		}
 		VpsVillageSolution solution = new VpsVillageSolution(network);
@@ -139,7 +144,16 @@ public final class T15Planner {
 			}
 		}
 		VpsPipeline.BUILDING_COMPONENTS.addAndGet(components.size());
-		syncJunctions(pieces, components);
+
+		// plan C: move each plaza group onto the level the solver pinned it to,
+		// so the rigid platform (and the well rim / fountain riding on it) renders
+		// exactly the solved plaza height
+		List<BuildingComponents.Component> plazaComponents = shiftPlazaGroups(network, pieces, minY, maxY, maxShift);
+
+		List<BuildingComponents.Component> allShifted = new ArrayList<>(components.size() + plazaComponents.size());
+		allShifted.addAll(components);
+		allShifted.addAll(plazaComponents);
+		syncJunctions(pieces, allShifted);
 		solution.shiftedComponents = shifted.toArray(new int[0][]);
 		// read after the shift: the boxes must describe where the buildings really
 		// are, because the writer uses them to refuse a road column (plan A).
@@ -166,12 +180,15 @@ public final class T15Planner {
 		// from the common path entirely. It is safe rather than merely cheap:
 		// solution.network already holds the first pass's network, and nothing
 		// between the two passes mutates it when dy == 0 for every component.
-		if (shifted.isEmpty()) {
+		if (shifted.isEmpty() && !plazaMoved(plazaComponents)) {
 			return solution;
 		}
 
 		RoadNetwork resolved = RoadCollector.collect(start, ctx, config);
 		if (config.roadSmoothing.enabled) {
+			// plan C phase 2: pin every plaza group at the level its pieces really
+			// render at after the move - the solve and the world agree by construction
+			resolved.applyPlazaPins(false);
 			VpsPipeline.accumulateSolveStats(RoadSmoother.solve(resolved, VpsPipeline.paramsFor(config)));
 		}
 		T15_RESOLVE_DELTA_CELLS.addAndGet(countProfileDelta(network, resolved));
@@ -203,6 +220,77 @@ public final class T15Planner {
 			}
 		}
 		return changed;
+	}
+
+	/**
+	 * Plan C (user decision 2026-10-15): moves each plaza GROUP's pieces so the
+	 * rigid platform renders the level the solver pinned the group to. One dy
+	 * per group - the pieces of a group share the assembled height in practice -
+	 * computed from the group's median piece minY; the world-height, shift-cap
+	 * and overlap guards are the building rules (a building always wins, a plaza
+	 * group is not an obstacle to another group's move). A piece claimed by two
+	 * groups moves once (first group wins); the phase-2 pin re-reads the
+	 * reality, so the leftover mismatch is consistent, never silent.
+	 */
+	private static List<BuildingComponents.Component> shiftPlazaGroups(RoadNetwork network, List<StructurePiece> pieces,
+			int minY, int maxY, int maxShift) {
+		List<BuildingComponents.Component> out = new ArrayList<>();
+		if (network.plazaGroups.isEmpty()) {
+			return out;
+		}
+		java.util.Set<Integer> movedPieces = new java.util.HashSet<>();
+		for (int[] group : network.plazaGroups) {
+			int level = network.cells.get(group[0]).plazaPinP; // one flat level per group
+			List<Integer> pieceIndices = new ArrayList<>();
+			for (int cellIdx : group) {
+				RoadCell cell = network.cells.get(cellIdx);
+				if (cell.pieceIndex >= 0 && !pieceIndices.contains(cell.pieceIndex) && !movedPieces.contains(cell.pieceIndex)) {
+					pieceIndices.add(cell.pieceIndex);
+				}
+			}
+			if (pieceIndices.isEmpty()) {
+				continue; // every piece of this group already moved with an earlier group
+			}
+			VpsPipeline.PLAZA_GROUPS.incrementAndGet();
+			BuildingComponents.Component component = new BuildingComponents.Component();
+			component.pieceIndices.addAll(pieceIndices);
+			int[] baseYs = new int[pieceIndices.size()];
+			for (int k = 0; k < baseYs.length; k++) {
+				baseYs[k] = pieces.get(pieceIndices.get(k)).getBoundingBox().minY();
+			}
+			Arrays.sort(baseYs);
+			int baseY = baseYs[baseYs.length / 2];
+			component.baseY = baseY;
+			// the pin is a walk surface in half units (always even); the platform
+			// block layer that renders it sits at level / 2 - 1
+			int dy = level / 2 - 1 - baseY;
+			dy = clampWorldHeight(pieces, component, dy, minY, maxY);
+			if (maxShift > 0) {
+				dy = Math.max(-maxShift, Math.min(maxShift, dy));
+			}
+			dy = resolveOverlap(pieces, component, dy);
+			component.dy = dy;
+			if (dy != 0) {
+				for (int idx : component.pieceIndices) {
+					pieces.get(idx).move(0, dy, 0);
+					movedPieces.add(idx);
+					VpsPipeline.PLAZA_PIECES_SHIFTED.incrementAndGet();
+				}
+				VpsPipeline.PLAZAS_SHIFTED.incrementAndGet();
+			}
+			out.add(component);
+		}
+		return out;
+	}
+
+	/** True when at least one plaza group actually moved. */
+	private static boolean plazaMoved(List<BuildingComponents.Component> plazaComponents) {
+		for (BuildingComponents.Component component : plazaComponents) {
+			if (component.dy != 0) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/**

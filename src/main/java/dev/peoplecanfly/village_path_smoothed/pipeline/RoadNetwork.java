@@ -41,6 +41,13 @@ public final class RoadNetwork {
 	/** Region cell index arrays. */
 	public final List<int[]> regions = new ArrayList<>();
 	/**
+	 * 4-connected groups of plaza cells (plan C, 2026-10-15): each group is
+	 * solved flat at ONE pinned level and its owning rigid piece(s) are moved to
+	 * render exactly that level. Built by {@link #build} from the cells'
+	 * {@code plaza} flags.
+	 */
+	public final List<int[]> plazaGroups = new ArrayList<>();
+	/**
 	 * Cells that belong to a region core. The region solver owns the seed of
 	 * exactly these cells; arm cells - including arms that fall back to the
 	 * region solver because their band blew the state budget - keep the phase-1
@@ -301,7 +308,65 @@ public final class RoadNetwork {
 			network.arms.add(arm);
 		}
 
+		network.buildPlazaGroups(neighbors);
 		return network;
+	}
+
+	/**
+	 * 4-connected components among the {@code plaza} cells, through plaza cells
+	 * only (a street cell wedged into the plaza splits the group - its own seam
+	 * keeps the two sides consistent).
+	 */
+	private void buildPlazaGroups(int[][] neighbors) {
+		boolean[] seen = new boolean[cells.size()];
+		for (int start = 0; start < cells.size(); start++) {
+			if (!cells.get(start).plaza || seen[start]) {
+				continue;
+			}
+			Deque<Integer> stack = new ArrayDeque<>();
+			List<Integer> group = new ArrayList<>();
+			stack.push(start);
+			seen[start] = true;
+			while (!stack.isEmpty()) {
+				int i = stack.pop();
+				group.add(i);
+				for (int dir = 0; dir < 4; dir++) {
+					int j = neighbors[i][dir];
+					if (j >= 0 && cells.get(j).plaza && !seen[j]) {
+						seen[j] = true;
+						stack.push(j);
+					}
+				}
+			}
+			plazaGroups.add(toSortedArray(group));
+		}
+	}
+
+	/**
+	 * Pins every plaza group to ONE flat walk surface (plan C, user decision
+	 * 2026-10-15): the solver's own choice of plaza level is the group's median
+	 * - of the noise-probed terrain ({@code fromBaseP}, T1.5 phase 1) or of the
+	 * level the rigid pieces actually render at ({@code fromBaseP = false}, T1.5
+	 * phase 2 after the pieces were moved and the whole T5 path, where nothing
+	 * may move). The pin makes the plaza horizontal by construction and turns
+	 * it into a hard seam boundary: the roads solve into {@code |dP| <= 1}
+	 * against it.
+	 */
+	public void applyPlazaPins(boolean fromBaseP) {
+		for (int[] group : plazaGroups) {
+			int[] values = new int[group.length];
+			for (int k = 0; k < group.length; k++) {
+				RoadCell cell = cells.get(group[k]);
+				values[k] = fromBaseP ? cell.baseP : cell.plazaVanillaP;
+			}
+			Arrays.sort(values);
+			int level = values[values.length / 2];
+			for (int idx : group) {
+				RoadCell cell = cells.get(idx);
+				cell.plazaPinned = true;
+				cell.plazaPinP = level;
+			}
+		}
 	}
 
 	/** Run lengths through each cell along one axis. */

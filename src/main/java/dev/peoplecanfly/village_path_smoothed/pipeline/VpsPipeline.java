@@ -100,6 +100,11 @@ public final class VpsPipeline {
 	public static final AtomicLong BUILDING_FLOATING = new AtomicLong();
 	public static final AtomicLong BUILDING_BURIED = new AtomicLong();
 	public static final AtomicLong DEBUG_VILLAGER_BRAIN_SKIPS = new AtomicLong();
+	// Plan C (user decision 2026-10-15): the plaza groups - one rigid flat level
+	// each, solved by the solver and rendered by the moved pieces.
+	public static final AtomicLong PLAZA_GROUPS = new AtomicLong();
+	public static final AtomicLong PLAZAS_SHIFTED = new AtomicLong();
+	public static final AtomicLong PLAZA_PIECES_SHIFTED = new AtomicLong();
 
 	private VpsPipeline() {
 	}
@@ -391,6 +396,10 @@ public final class VpsPipeline {
 		}
 		RoadNetwork network = RoadCollector.collect(start, ctx, config);
 		if (config.roadSmoothing.enabled) {
+			// plan C, T5 path: nothing may move at feature placement, so the plaza
+			// groups pin at the level their rigid pieces actually render at - the
+			// solve and the world agree by construction
+			network.applyPlazaPins(false);
 			RoadSmoother.SolveStats stats = RoadSmoother.solve(network, paramsFor(config));
 			accumulateSolveStats(stats);
 		}

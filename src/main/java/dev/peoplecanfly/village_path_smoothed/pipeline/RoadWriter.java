@@ -101,6 +101,13 @@ public final class RoadWriter {
 	 * which keeps the scaffold.
 	 */
 	public static final AtomicLong WATER_BRIDGE_CELLS = new AtomicLong();
+	/**
+	 * Plan C (user decision 2026-10-15): claimed plaza cells rendered by their
+	 * own rigid piece - the writer writes no road block, no support fill and no
+	 * upward clear on them (the clear would raze the fountain), and the solved
+	 * surface equals the platform's real walk surface by the phase-2 pin.
+	 */
+	public static final AtomicLong PLAZA_CELLS_VANILLA = new AtomicLong();
 	/** Railings suppressed on a movable building's door front (user decision 2026-10-15). */
 	public static final AtomicLong RAILINGS_SKIPPED_AT_DOOR = new AtomicLong();
 	/** Railings suppressed beside water because the road is not above the water surface (user decision 2026-10-15). */
@@ -242,6 +249,19 @@ public final class RoadWriter {
 			int[][] buildingBoxes, int[][] doorFronts, String village) {
 		int x = cell.x;
 		int z = cell.z;
+
+		// ---- plan C (user decision 2026-10-15): the plaza renders itself. The
+		// rigid piece's platform IS the solved surface (pinned in phase 2), so
+		// the writer only runs the edge details on the plaza's boundary and
+		// never writes a road block, a fill or a clear on it - the clear would
+		// destroy the fountain, the bell and the well rim riding on the platform.
+		if (cell.plaza) {
+			PLAZA_CELLS_VANILLA.incrementAndGet();
+			RoadMaterialTable.StyleMaterials plazaMaterials = table.forStyle(cell.style);
+			applyKerbsAndRailings(net, cell, ctx, config, plazaMaterials, kerbExtras,
+					RoadWritePolicy.roadTopBlockY(cell.solvedP), cell.solvedP, sideColumnOwner, doorFronts);
+			return;
+		}
 
 		// ---- plan A (user decision 2026-10-15): a building always wins. A claimed
 		// column whose road block would land inside a movable building's 3D box is

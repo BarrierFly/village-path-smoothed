@@ -174,8 +174,34 @@ public record SolveParams(
 		for (RoadCell cell : net.cells) {
 			cell.solvedP = cell.baseP;
 		}
-		BitSet regionCells = new BitSet(net.cells.size());
+		// plan C (user decision 2026-10-15): plaza cells are hard-pinned to their
+		// group's level. They act as pre-solved boundary references - exactly the
+		// role region cells play for the arms - so they are removed from the
+		// region membership below and the interpolation reads their pin as an
+		// outside reference. The seam to the roads is the normal |dP| <= 1 edge
+		// constraint, which the polish pass makes true by construction.
+		BitSet pinnedCells = new BitSet(net.cells.size());
+		for (int i = 0; i < net.cells.size(); i++) {
+			RoadCell cell = net.cells.get(i);
+			if (cell.plazaPinned) {
+				pinnedCells.set(i);
+				cell.solvedP = cell.plazaPinP;
+			}
+		}
+		List<int[]> regions = new ArrayList<>(net.regions.size());
 		for (int[] region : net.regions) {
+			List<Integer> kept = new ArrayList<>(region.length);
+			for (int cell : region) {
+				if (!pinnedCells.get(cell)) {
+					kept.add(cell);
+				}
+			}
+			if (!kept.isEmpty()) {
+				regions.add(toArray(kept));
+			}
+		}
+		BitSet regionCells = new BitSet(net.cells.size());
+		for (int[] region : regions) {
 			for (int cell : region) {
 				regionCells.set(cell);
 			}
@@ -201,7 +227,7 @@ public record SolveParams(
 				icmMembership.set(cell);
 			}
 		}
-		for (int[] region : net.regions) {
+		for (int[] region : regions) {
 			solveRegion(net, region, p, icmMembership, stats);
 		}
 		for (int[] fallback : icmFallback) {
@@ -233,11 +259,14 @@ public record SolveParams(
 		//    absorbs them, which is only sound because decision N3-a lets the
 		//    polish move a cell as far as legality requires (up to 5-8 whole
 		//    blocks in the measured worst case) instead of freezing the outliers.
-		PolishStats polish = polish(net, p.allowCut());
+		PolishStats polish = polish(net, p.allowCut(), pinnedCells);
 
 		// global final verification (review 3 P0-A item 3): walk every 4-adjacency
 		// edge of the finished network so no violation can stay invisible
 		for (int i = 0; i < net.cells.size(); i++) {
+			if (pinnedCells.get(i)) {
+				continue; // pinned plaza cells are pre-solved; the polish never moves them
+			}
 			for (int dir = 0; dir < 4; dir++) {
 				int j = net.neighbors[i][dir];
 				if (j <= i) {
@@ -253,7 +282,7 @@ public record SolveParams(
 		// fix plan v2 R4.3: the soft water anchor's counter - cells that left
 		// the water surface for a smoother profile
 		for (RoadCell cell : net.cells) {
-			if (cell.anchor && cell.solvedP != cell.baseP) {
+			if (cell.anchor && !cell.plazaPinned && cell.solvedP != cell.baseP) {
 				stats.waterAnchorDeviations++;
 			}
 		}
@@ -311,7 +340,15 @@ public record SolveParams(
 	 * silently legalising it would be the "quietly break the no-cut promise" the
 	 * plan forbids.
 	 */
-	private static PolishStats polish(RoadNetwork net, boolean allowCut) {
+	private static int[] toArray(List<Integer> values) {
+		int[] out = new int[values.size()];
+		for (int i = 0; i < out.length; i++) {
+			out[i] = values.get(i);
+		}
+		return out;
+	}
+
+	private static PolishStats polish(RoadNetwork net, boolean allowCut, BitSet pinnedCells) {
 		int n = net.cells.size();
 		if (n == 0) {
 			return PolishStats.EMPTY;
@@ -323,6 +360,11 @@ public record SolveParams(
 		int maxDelta = 0;
 		int conflicts = 0;
 
+		// plan C: pinned plaza cells start FIXED at their pin, so the walk clamps
+		// every road cell into the plaza's [pin - 1, pin + 1] when it reaches it
+		for (int i = pinnedCells.nextSetBit(0); i >= 0; i = pinnedCells.nextSetBit(i + 1)) {
+			fixed[i] = true;
+		}
 		for (int start = 0; start < n; start++) {
 			if (fixed[start]) {
 				continue;
@@ -1119,6 +1161,11 @@ public record SolveParams(
 	}
 
 	private static int[] candidatesFor(RoadCell cell, int window, SolveParams p, int[][] hardBounds, int[] bandLo, int[] bandHi, boolean[] hasBand, Stats stats) {
+		// plan C: a pinned plaza cell has exactly one candidate - its pin. Checked
+		// first so no band, no-cut floor or seam bound can empty the candidate set
+		if (cell.plazaPinned) {
+			return new int[]{cell.plazaPinP};
+		}
 		// fix plan v2 R4: water anchors are soft. The cell keeps its normal
 		// candidate band (which contains the water surface, its baseP), and the
 		// cost model decides whether leaving the water pays for itself
@@ -1510,6 +1557,10 @@ public record SolveParams(
 	 * fixed orthogonal neighbours.
 	 */
 	private static int[] runCandidates(RoadNetwork net, RoadCell cell, boolean rowsAlongX, SolveParams p, Stats stats) {
+		// plan C: a pinned plaza cell keeps its pin (see candidatesFor)
+		if (cell.plazaPinned) {
+			return new int[]{cell.plazaPinP};
+		}
 		int window = Math.max(1, p.windowHalf());
 		int centre = cell.baseP;
 		int lo = p.allowCut() ? centre - window : Math.max(centre, cell.baseP);

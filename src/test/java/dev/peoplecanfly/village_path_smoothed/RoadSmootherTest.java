@@ -572,4 +572,69 @@ public class RoadSmootherTest {
 		// the old snap-back parity helper is gone with R3: over-budget cells keep
 		// their solved height and are rendered as bridge deck / tunnel instead
 	}
+
+	// ------------------------------------------------------------------
+	// plan C (user decision 2026-10-15): the plaza pin
+	// ------------------------------------------------------------------
+
+	/** A 4x4 plaza attached to a 3-wide street along z, terrain per column. */
+	private static RoadNetwork plazaWithStreet(IntUnaryOperator streetTerrain, int[] plazaTerrainTopY) {
+		List<RoadCell> cells = new ArrayList<>();
+		for (int z = 0; z < 4; z++) {
+			for (int x = 0; x < 4; x++) {
+				RoadCell cell = new RoadCell(x, z, "plains", 2 * plazaTerrainTopY[z * 4 + x], false);
+				cell.plaza = true;
+				cell.plazaVanillaP = 2 * (plazaTerrainTopY[z * 4 + x] + 1);
+				cells.add(cell);
+			}
+		}
+		for (int z = 4; z < 12; z++) {
+			for (int x = 1; x <= 3; x++) {
+				cells.add(new RoadCell(x, z, "plains", 2 * streetTerrain.applyAsInt(z), false));
+			}
+		}
+		return RoadNetwork.build(cells, 4);
+	}
+
+	@Test
+	public void plazaPinsFlatAtItsMedianTerrainAndRoadsMeetItLegally() {
+		// plaza terrain rolls 64..67 (median 65/66 boundary); the street climbs
+		// away to 70. The pin forces the plaza flat at the median of its baseP,
+		// the street solves into |dP| <= 1 against the plaza edge.
+		int[] plazaTerrain = {64, 65, 65, 66, 65, 66, 66, 67, 64, 65, 65, 66, 65, 66, 66, 67};
+		RoadNetwork net = plazaWithStreet(z -> 70, plazaTerrain);
+		assertEquals("one 4-connected plaza group", 1, net.plazaGroups.size());
+		net.applyPlazaPins(true);
+		RoadSmoother.solve(net, params(Objective.SMOOTH_FIRST));
+
+		int pin = net.cells.get(net.cellAt(1, 1)).plazaPinP;
+		for (RoadCell cell : net.cells) {
+			if (cell.plaza) {
+				assertEquals("the plaza solves flat at the pin", pin, cell.solvedP);
+			}
+		}
+		assertViolationsAtMost(net, 0);
+		// the first street cell in front of the plaza is within one half unit of it
+		int seam = net.cells.get(net.cellAt(2, 4)).solvedP;
+		assertTrue("street seam within a half step of the plaza (" + seam + " vs " + pin + ")",
+				Math.abs(seam - pin) <= 1);
+	}
+
+	@Test
+	public void plazaPinFromVanillaRealityIsWhatTheT5PathAndPhaseTwoUse() {
+		int[] plazaTerrain = {64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64};
+		RoadNetwork net = plazaWithStreet(z -> 60, plazaTerrain);
+		// simulate the pieces rendering one block below the probed terrain
+		for (RoadCell cell : net.cells) {
+			if (cell.plaza) {
+				cell.plazaVanillaP = 2 * 64;
+			}
+		}
+		net.applyPlazaPins(false);
+		RoadSmoother.solve(net, params(Objective.SMOOTH_FIRST));
+		int pin = net.cells.get(net.cellAt(1, 1)).plazaPinP;
+		assertEquals("pinned at the platform's real walk surface", 2 * 64, pin);
+		assertViolationsAtMost(net, 0);
+	}
 }
+

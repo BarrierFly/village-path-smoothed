@@ -7,6 +7,7 @@ package dev.peoplecanfly.village_path_smoothed.pipeline;
 
 import dev.peoplecanfly.village_path_smoothed.compat.VpsCompat;
 import dev.peoplecanfly.village_path_smoothed.duck.FeaturePoolElementVpsAccess;
+import dev.peoplecanfly.village_path_smoothed.duck.SinglePoolElementVpsAccess;
 import net.minecraft.core.Holder;
 import net.minecraft.world.level.levelgen.structure.BoundingBox;
 import net.minecraft.world.level.levelgen.structure.PoolElementStructurePiece;
@@ -46,6 +47,9 @@ public final class BuildingComponents {
 	private BuildingComponents() {
 	}
 
+	/** Matches the {@code town_centers} template folder (fix plan v4 D5-c). */
+	private static final java.util.regex.Pattern TOWN_CENTERS = java.util.regex.Pattern.compile("/town_centers/");
+
 	/**
 	 * A piece T1.5 is allowed to move vertically.
 	 *
@@ -57,13 +61,34 @@ public final class BuildingComponents {
 	 * the road around it moves (user decision 2026-10-14). The decorative trees
 	 * and flowers are deliberately left alone - a moved tree would fight the
 	 * vanilla terrain adaptation, which raises the ground it stands on.
+	 *
+	 * <p>Plan C (user decision 2026-10-15): a {@code town_centers} piece is NOT
+	 * a movable building any more. The plaza is solved flat at a pinned level
+	 * and its pieces are moved by the dedicated plaza-group shift (which keeps
+	 * the well rim and the fountain together as one rigid body); treating it as
+	 * a building made the writer skip every plaza column ("road cells yielded")
+	 * and the mask claimed cells it could never write.
 	 */
 	public static boolean isMovable(StructurePiece piece) {
-		if (piece instanceof PoolElementStructurePiece pool
-				&& pool.getElement() instanceof FeaturePoolElement feature) {
-			return feature.getProjection() == StructureTemplatePool.Projection.RIGID && isHayPile(feature);
+		if (piece instanceof PoolElementStructurePiece pool) {
+			if (pool.getElement() instanceof SinglePoolElement element && isTownCentre(element)) {
+				return false;
+			}
+			if (pool.getElement() instanceof FeaturePoolElement feature) {
+				return feature.getProjection() == StructureTemplatePool.Projection.RIGID && isHayPile(feature);
+			}
 		}
 		return isRigid(piece);
+	}
+
+	/** True when the element's template lives in the {@code town_centers} pool folder. */
+	public static boolean isTownCentre(SinglePoolElement element) {
+		try {
+			String location = ((SinglePoolElementVpsAccess) element).village_path_smoothed$getTemplateLocation();
+			return location != null && TOWN_CENTERS.matcher(location).find();
+		} catch (Throwable t) {
+			return false; // an accessor failure must cost the building status, not the village
+		}
 	}
 
 	/** The village decor hay pile; anything else in the decor pool is left where vanilla put it. */

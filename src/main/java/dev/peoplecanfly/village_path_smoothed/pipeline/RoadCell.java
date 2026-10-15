@@ -43,6 +43,29 @@ public final class RoadCell {
 	public boolean realHeight;
 	/** Solved walk surface P = 2 * S; equals baseP until the solver runs. */
 	public int solvedP;
+	/**
+	 * Index of the {@code StructurePiece} this cell was claimed from (into the
+	 * start's piece list), or -1. Plan C (2026-10-15) needs it to move the
+	 * plaza piece that owns a pinned plaza group.
+	 */
+	public int pieceIndex = -1;
+	/**
+	 * True when this cell was claimed from a {@code town_centers} piece (the
+	 * plaza around a meeting point or fountain). Plaza cells are solved flat at
+	 * a pinned level and rendered by their own rigid piece - the writer never
+	 * writes a road block on them (plan C, user decision 2026-10-15).
+	 */
+	public boolean plaza;
+	/**
+	 * Walk surface the owning plaza piece's rigid platform actually renders at:
+	 * {@code 2 * (piece bounding-box minY + 1)}. Read live off the piece, so it
+	 * is re-collected after any T1.5 move and is what the post-shift pin uses.
+	 */
+	public int plazaVanillaP;
+	/** Set by {@link RoadNetwork#applyPlazaPins}: this cell's solved height is hard-pinned. */
+	public boolean plazaPinned;
+	/** The pinned walk surface (half units) for a {@link #plazaPinned} cell. */
+	public int plazaPinP;
 
 	public RoadCell(int x, int z, String style, int baseP, boolean anchor) {
 		this.index = -1;

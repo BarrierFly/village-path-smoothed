@@ -70,7 +70,11 @@ public final class VpsPlacementContext {
 		if (!PlacementPolicy.isRoadLayer(templateY)) {
 			return PlacementPolicy.Decision.PASS_THROUGH;
 		}
-		boolean claimed = network.cellAt(worldX, worldZ) >= 0;
+		int index = network.cellAt(worldX, worldZ);
+		// a fixed base seat is in the mask for the SOLVER only (its vanilla piece
+		// renders the block) - the suppression must not claim it either, or the
+		// seat block under the lamp/tree would be dropped with nothing written back
+		boolean claimed = index >= 0 && !network.cells.get(index).fixedBase;
 		PlacementPolicy.Decision decision = PlacementPolicy.decide(true, templateY, claimed);
 		if (decision == PlacementPolicy.Decision.SUPPRESS) {
 			VpsPipeline.SUPPRESSED_VANILLA_ROAD_BLOCKS.incrementAndGet();

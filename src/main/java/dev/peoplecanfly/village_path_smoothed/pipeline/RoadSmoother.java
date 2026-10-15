@@ -423,7 +423,7 @@ public record SolveParams(
 		// conflicts are rare; the sweep is a safety net, not the main mechanism
 		if (conflicts > 0) {
 			for (int sweep = 0; sweep < PROJECTION_SWEEPS; sweep++) {
-				if (!projectViolatedEdges(net, movedDeltas, allowCut)) {
+				if (!projectViolatedEdges(net, movedDeltas, allowCut, pinnedCells)) {
 					break;
 				}
 			}
@@ -441,14 +441,26 @@ public record SolveParams(
 	 * so the correction it cannot take is transferred to its neighbour. A terrain
 	 * step that no legal no-cut profile can bridge therefore keeps its residual -
 	 * which is what that flag asks for, and the solve's own verification counts it.
+	 *
+	 * <p>Pinned cells (plaza groups, fixed base seats) never move here. The sweep
+	 * used to shift them like any other cell, which broke the pin guarantee
+	 * whenever a polish conflict reached the safety net; now a pinned endpoint is
+	 * immovable and the free endpoint takes the whole excess (or the residual
+	 * stays, when both endpoints are pinned).
 	 */
-	private static boolean projectViolatedEdges(RoadNetwork net, List<Integer> movedDeltas, boolean allowCut) {
+	private static boolean projectViolatedEdges(RoadNetwork net, List<Integer> movedDeltas, boolean allowCut,
+			BitSet pinnedCells) {
 		boolean changed = false;
 		for (int i = 0; i < net.cells.size(); i++) {
 			for (int dir = 0; dir < 4; dir++) {
 				int j = net.neighbors[i][dir];
 				if (j <= i) {
 					continue;
+				}
+				boolean pinnedA = pinnedCells.get(i);
+				boolean pinnedB = pinnedCells.get(j);
+				if (pinnedA && pinnedB) {
+					continue; // both endpoints fixed: the residual stays, nothing can move
 				}
 				RoadCell a = net.cells.get(i);
 				RoadCell b = net.cells.get(j);
@@ -457,17 +469,28 @@ public record SolveParams(
 				if (excess <= 0) {
 					continue;
 				}
-				int half = (excess + 1) / 2;
 				RoadCell high = diff > 0 ? a : b;
 				RoadCell low = diff > 0 ? b : a;
-				int room = allowCut ? half : Math.min(half, high.solvedP - high.baseP);
-				if (room < 0) {
-					room = 0;
-				}
+				boolean pinnedHigh = diff > 0 ? pinnedA : pinnedB;
+				boolean pinnedLow = diff > 0 ? pinnedB : pinnedA;
 				int beforeHigh = high.solvedP;
 				int beforeLow = low.solvedP;
-				high.solvedP -= room;
-				low.solvedP += half - room;
+				if (pinnedHigh) {
+					// the pinned high cannot come down: the free low takes the whole excess up
+					low.solvedP += excess;
+				} else if (pinnedLow) {
+					// the pinned low cannot go up: the high gives what its own floor allows
+					int room = allowCut ? excess : Math.max(0, Math.min(excess, high.solvedP - high.baseP));
+					high.solvedP -= room;
+				} else {
+					int half = (excess + 1) / 2;
+					int room = allowCut ? half : Math.min(half, high.solvedP - high.baseP);
+					if (room < 0) {
+						room = 0;
+					}
+					high.solvedP -= room;
+					low.solvedP += half - room;
+				}
 				if (high.solvedP != beforeHigh || low.solvedP != beforeLow) {
 					changed = true;
 					movedDeltas.add(Math.abs(high.solvedP - beforeHigh));

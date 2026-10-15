@@ -49,6 +49,43 @@ public class RoadSmootherTest {
 		assertViolationsAtMost(net, allowViolations ? 2 : 0);
 	}
 
+	@Test
+	public void pinnedCellsSurviveTheConflictSweep() {
+		// A pinned cell (a plaza group or a fixed base seat) must never be moved
+		// by the polish's projection sweep - before the fix, a conflict between
+		// disagreeing pins let the sweep walk the pins themselves. Line: pin 10,
+		// free, seed 13, free, pin 14 with no-cut floors: the seed is forced high
+		// by its baseP, the cell next to the low pin has no legal value (conflict)
+		// and the sweep must correct around the pins, never through them.
+		List<RoadCell> cells = new ArrayList<>();
+		int[] baseP = {10, 12, 13, 13, 14};
+		for (int x = 0; x < 5; x++) {
+			RoadCell cell = new RoadCell(x, 0, "plains", baseP[x], false);
+			if (x == 0 || x == 4) {
+				cell.plazaPinned = true;
+				cell.plazaPinP = baseP[x];
+			}
+			cells.add(cell);
+		}
+		RoadNetwork net = RoadNetwork.build(cells, 4);
+		RoadSmoother.SolveParams noCut = new RoadSmoother.SolveParams(Objective.SMOOTH_FIRST, 8 * 16, 32, 16, 4, false);
+		RoadSmoother.solve(net, noCut);
+		assertEquals("the low pin holds", 10, net.cells.get(0).solvedP);
+		assertEquals("the high pin holds", 14, net.cells.get(4).solvedP);
+		// the squeezed cell next to the low pin cannot be legal against both the
+		// pin and the seed: the residual stays and is counted (review 3 P0-A)
+		int violations = 0;
+		for (int i = 0; i < net.cells.size(); i++) {
+			for (int dir = 0; dir < 4; dir++) {
+				int j = net.neighbors[i][dir];
+				if (j > i && Math.abs(net.cells.get(i).solvedP - net.cells.get(j).solvedP) > 1) {
+					violations++;
+				}
+			}
+		}
+		assertTrue("a conflict squeezed against a pin keeps a counted residual", violations >= 1);
+	}
+
 	private static void assertViolationsAtMost(RoadNetwork net, int allowed) {
 		int violations = 0;
 		for (int i = 0; i < net.cells.size(); i++) {

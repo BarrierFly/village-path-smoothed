@@ -111,6 +111,13 @@ public final class RoadWriter {
 	 */
 	public static final AtomicLong PLAZA_CELLS_VANILLA = new AtomicLong();
 	/**
+	 * Fixed base seats rendered by their own street piece (原版多向道路结构调查
+	 * 2026-10-15): the writer writes no road block, no fill and no clear on
+	 * them - clearing would raze the lamp/tree/villager seat standing on the
+	 * seat block, and paving it would lose the vanilla base material.
+	 */
+	public static final AtomicLong FIXED_BASE_CELLS_VANILLA = new AtomicLong();
+	/**
 	 * User decision 2026-10-15 (kerb rework): blocks of the ceiling run directly
 	 * above the walk surface that were lined with the kerb material - the whole
 	 * contiguous run, no longer only the single block at the clear cap and no
@@ -283,6 +290,15 @@ public final class RoadWriter {
 			RoadMaterialTable.StyleMaterials plazaMaterials = table.forStyle(cell.style);
 			applyKerbsAndRailings(net, cell, ctx, config, plazaMaterials, kerbExtras,
 					RoadWritePolicy.roadTopBlockY(cell.solvedP), cell.solvedP, sideFacts, countedEdgeColumns, doorFronts);
+			return;
+		}
+
+		// ---- fixed base seat (原版多向道路结构调查 2026-10-15): the street piece
+		// renders the seat block itself (the jigsaw's final_state - the lamp/tree
+		// base). The cell exists in the mask only so the solver pins the road to
+		// its height; writing here would raze the decor standing on it.
+		if (cell.fixedBase) {
+			FIXED_BASE_CELLS_VANILLA.incrementAndGet();
 			return;
 		}
 

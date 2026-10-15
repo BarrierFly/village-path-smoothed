@@ -16,9 +16,12 @@ import dev.peoplecanfly.village_path_smoothed.terrain.VpsGenContext;
 import dev.peoplecanfly.village_path_smoothed.terrain.VpsProbe;
 import dev.peoplecanfly.village_path_smoothed.terrain.WaterCrossings;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.level.levelgen.structure.BoundingBox;
 import net.minecraft.world.level.levelgen.structure.PoolElementStructurePiece;
 import net.minecraft.world.level.levelgen.structure.StructurePiece;
@@ -115,6 +118,34 @@ public final class RoadCollector {
 	public static final AtomicLong TOWN_CENTER_CELLS = new AtomicLong();
 	/** Centre-piece cells skipped because their y=0 block is not road material. */
 	public static final AtomicLong TOWN_CENTER_NON_ROAD_SKIPPED = new AtomicLong();
+	/**
+	 * Fixed base seats taken into the mask (原版多向道路结构调查 2026-10-15): a
+	 * street piece's up-facing y=0 jigsaw whose final_state is one of the base
+	 * materials. 167 such seats exist per vanilla version (survey section 5.2).
+	 */
+	public static final AtomicLong FIXED_BASE_CELLS = new AtomicLong();
+
+	/**
+	 * The base materials a street seat's jigsaw renders ({@code final_state}).
+	 * Deliberately the survey's list and nothing more: the 44 dirt_path + 2
+	 * cobblestone y=0 up-facing jigsaws per version are villager/decor seats in
+	 * road material and stay OUT of the mask per the user decision of
+	 * 2026-10-15 (their height mismatch is a separate, unscoped problem).
+	 */
+	private static final java.util.Set<String> FIXED_BASE_MATERIALS = java.util.Set.of(
+			"grass_block",
+			"dirt",
+			"sand",
+			"smooth_sandstone"
+	);
+
+	/** One collected fixed base seat: world column, owning piece, road style. */
+	private record Seat(int x, int z, int pieceIndex, String style) {
+	}
+
+	/** A collected cell's height probe, shared by road cells and fixed base seats. */
+	private record ProbedHeight(int surfaceTopY, boolean realHeight) {
+	}
 
 	/**
 	 * Which y=0 blocks the town-centre rule actually rejected, by block id (fix
@@ -156,6 +187,7 @@ public final class RoadCollector {
 		Pattern pattern = patternFor(config);
 		StructureTemplateManager templateManager = null;
 		Map<Long, RoadCell> cellsByPos = new HashMap<>();
+		List<Seat> seats = new ArrayList<>();
 		int pieceCount = 0;
 
 		// RIGID piece boxes are the beard sources: vanilla adapts the noise
@@ -203,7 +235,25 @@ public final class RoadCollector {
 				continue;
 			}
 			pieceCount++;
-			collectPiece(poolPiece, singleElement, location, style, townCentre, pieceIndex, templateManager, ctx, config, cellsByPos);
+			collectPiece(poolPiece, singleElement, location, style, townCentre, pieceIndex, templateManager, ctx, config, cellsByPos, seats);
+		}
+
+		// Fixed base seats join the mask AFTER the road cells: a road cell on the
+		// same column keeps its claim, the seat yields (the road wins).
+		for (Seat seat : seats) {
+			long key = RoadCell.packedXZ(seat.x(), seat.z());
+			if (cellsByPos.containsKey(key)) {
+				continue;
+			}
+			ProbedHeight probe = probeCellHeight(ctx, config, seat.x(), seat.z());
+			if (probe == null) {
+				continue; // dropped probe: the seat keeps its vanilla block
+			}
+			RoadCell cell = new RoadCell(seat.x(), seat.z(), seat.style(), 2 * probe.surfaceTopY(), false);
+			cell.fixedBase = true;
+			cell.realHeight = probe.realHeight();
+			cell.pieceIndex = seat.pieceIndex();
+			cellsByPos.put(key, cell);
 		}
 
 		VillagePathSmoothed.LOGGER.debug("[VPS] village at {}: {} street pieces, {} road cells", start.getChunkPos(), pieceCount, cellsByPos.size());
@@ -214,6 +264,16 @@ public final class RoadCollector {
 		}
 		List<RoadCell> cells = new ArrayList<>(cellsByPos.values());
 		alignProbeBoundaries(cells);
+		for (RoadCell cell : cells) {
+			if (cell.fixedBase) {
+				// the seat pins at its own vanilla height - plaza style, one level
+				// per seat (a crossroad's seats can sit at different heights on a
+				// slope and no street piece may be moved to flatten them). Set
+				// after the probe-boundary alignment so the pin is the final baseP.
+				cell.plazaPinned = true;
+				cell.plazaPinP = cell.baseP;
+			}
+		}
 		RoadNetwork network = RoadNetwork.build(cells, config.roadSmoothing.maxExactSectionWidth);
 		recordIntegrity(network);
 		// Fix plan v4 D1-e used to hand a split mask back to vanilla whole "instead
@@ -353,7 +413,8 @@ public final class RoadCollector {
 			StructureTemplateManager templateManager,
 			VpsProbe ctx,
 			VillagePathSmoothedConfig config,
-			Map<Long, RoadCell> cellsByPos
+			Map<Long, RoadCell> cellsByPos,
+			List<Seat> seats
 	) {
 		StructureTemplate template;
 		try {
@@ -389,6 +450,13 @@ public final class RoadCollector {
 					recordTownCenterSkip(infoState);
 					continue;
 				}
+			} else if (infoState.is(Blocks.JIGSAW)) {
+				// A street piece's y=0 jigsaw is a DECOR SEAT: placement replaces it
+				// with its final_state (the lamp/tree/villager base block), so it
+				// must not be paved over. Qualifying seats join the mask as fixed
+				// anchors; other jigsaws stay excluded exactly as before.
+				collectFixedBaseSeat(infoState, info, infoPos, settings, offset, pieceIndex, style, seats);
+				continue;
 			} else if (!isRoadSurfaceCell(infoState, style, config)) {
 				continue;
 			}
@@ -402,43 +470,13 @@ public final class RoadCollector {
 				continue; // overlapping pieces (crossroads) keep the first claim
 			}
 
-			int surfaceTopY;
-			boolean realHeight = ctx.hasRealHeight(x, z);
-			boolean anchor = false;
-			int noiseTopY = VpsGenContext.NOISE_UNAVAILABLE;
-			try {
-				surfaceTopY = ctx.surfaceTopY(x, z, config);
-			} catch (Throwable t) {
-				VillagePathSmoothed.LOGGER.warn("[VPS] height probe failed at {} {} while collecting; retrying on the noise caliber", x, z, t);
-				surfaceTopY = VpsGenContext.NOISE_UNAVAILABLE;
-			}
-			// Analysis report section 5-2: a probe exactly at the dimension floor
-			// is the signature of a lazily-primed all-air chunk (firstAvailable =
-			// min_y). VpsGenContext already cross-checks floor-adjacent reads
-			// against the noise height; what still arrives here at the exact floor
-			// has no better source to confirm it. A genuinely low world (superflat)
-			// sits ABOVE the floor and is unaffected.
-			if (surfaceTopY != VpsGenContext.NOISE_UNAVAILABLE
-					&& HeightSanity.isExactFloorProbe(surfaceTopY, ctx.getMinY())) {
-				VillagePathSmoothed.LOGGER.warn("[VPS] floor-level probe at {} {} ({}); looks like an empty chunk, re-probing on the noise caliber", x, z, surfaceTopY);
-				surfaceTopY = VpsGenContext.NOISE_UNAVAILABLE;
-			}
-			if (surfaceTopY == VpsGenContext.NOISE_UNAVAILABLE) {
-				noiseTopY = ctx.noiseSurfaceTopY(x, z, config);
-			}
-			// fix plan v4 D1-c: a failed probe used to drop the column. The noise
-			// caliber is a pure function of x/z, so a noisier height is always
-			// available before the column is given up - a noisier height costs
-			// deviation, a dropped column splits the mask.
-			ProbeHeights.Outcome outcome = ProbeHeights.resolve(surfaceTopY, noiseTopY, ctx.getMinY(), VpsGenContext.NOISE_UNAVAILABLE);
-			if (outcome == ProbeHeights.Outcome.USE_NOISE) {
-				surfaceTopY = noiseTopY;
-				realHeight = false; // the column is now on the noise caliber
-				NOISE_FALLBACK_CELLS.incrementAndGet();
-			} else if (outcome == ProbeHeights.Outcome.DROP) {
-				PROBE_SKIPPED_CELLS.incrementAndGet();
+			ProbedHeight probe = probeCellHeight(ctx, config, x, z);
+			if (probe == null) {
 				continue;
 			}
+			int surfaceTopY = probe.surfaceTopY();
+			boolean realHeight = probe.realHeight();
+			boolean anchor = false;
 			if (realHeight) {
 				// over-water cells are fixed anchors; the same fluid predicate
 				// as the writer (A2) is used here: water at the vanilla road
@@ -474,6 +512,101 @@ public final class RoadCollector {
 			}
 			cellsByPos.put(key, cell);
 		}
+	}
+
+	/**
+	 * Shared height probe for one collected column (road cell or fixed base
+	 * seat): the real/noise caliber dance of fix plan v4 D1-c, extracted
+	 * verbatim from the road-cell path so both cell kinds probe identically.
+	 * Returns null when the column must be dropped (the caller counts it as
+	 * probe-skipped and leaves the vanilla block).
+	 */
+	private static ProbedHeight probeCellHeight(VpsProbe ctx, VillagePathSmoothedConfig config, int x, int z) {
+		int surfaceTopY;
+		boolean realHeight = ctx.hasRealHeight(x, z);
+		int noiseTopY = VpsGenContext.NOISE_UNAVAILABLE;
+		try {
+			surfaceTopY = ctx.surfaceTopY(x, z, config);
+		} catch (Throwable t) {
+			VillagePathSmoothed.LOGGER.warn("[VPS] height probe failed at {} {} while collecting; retrying on the noise caliber", x, z, t);
+			surfaceTopY = VpsGenContext.NOISE_UNAVAILABLE;
+		}
+		// Analysis report section 5-2: a probe exactly at the dimension floor
+		// is the signature of a lazily-primed all-air chunk (firstAvailable =
+		// min_y). VpsGenContext already cross-checks floor-adjacent reads
+		// against the noise height; what still arrives here at the exact floor
+		// has no better source to confirm it. A genuinely low world (superflat)
+		// sits ABOVE the floor and is unaffected.
+		if (surfaceTopY != VpsGenContext.NOISE_UNAVAILABLE
+				&& HeightSanity.isExactFloorProbe(surfaceTopY, ctx.getMinY())) {
+			VillagePathSmoothed.LOGGER.warn("[VPS] floor-level probe at {} {} ({}); looks like an empty chunk, re-probing on the noise caliber", x, z, surfaceTopY);
+			surfaceTopY = VpsGenContext.NOISE_UNAVAILABLE;
+		}
+		if (surfaceTopY == VpsGenContext.NOISE_UNAVAILABLE) {
+			noiseTopY = ctx.noiseSurfaceTopY(x, z, config);
+		}
+		// fix plan v4 D1-c: a failed probe used to drop the column. The noise
+		// caliber is a pure function of x/z, so a noisier height is always
+		// available before the column is given up - a noisier height costs
+		// deviation, a dropped column splits the mask.
+		ProbeHeights.Outcome outcome = ProbeHeights.resolve(surfaceTopY, noiseTopY, ctx.getMinY(), VpsGenContext.NOISE_UNAVAILABLE);
+		if (outcome == ProbeHeights.Outcome.USE_NOISE) {
+			NOISE_FALLBACK_CELLS.incrementAndGet();
+			return new ProbedHeight(noiseTopY, false);
+		}
+		if (outcome == ProbeHeights.Outcome.DROP) {
+			PROBE_SKIPPED_CELLS.incrementAndGet();
+			return null;
+		}
+		return new ProbedHeight(surfaceTopY, realHeight);
+	}
+
+	/**
+	 * A street piece's up-facing y=0 jigsaw whose {@code final_state} is one of
+	 * the base materials is a DECOR SEAT (vanilla multi-way road survey
+	 * 2026-10-15, section 7): placement replaces the jigsaw with that block and
+	 * the decor piece (lamp, tree, flower, villager) stands on it. The cell
+	 * joins the mask as a FIXED anchor - pinned at its vanilla height, never
+	 * written, never suppressed - so the road around it solves within half a
+	 * block of it instead of leaving a step at the grass island.
+	 */
+	private static void collectFixedBaseSeat(BlockState state, StructureTemplate.StructureBlockInfo info, BlockPos infoPos,
+			StructurePlaceSettings settings, BlockPos offset, int pieceIndex, String style, List<Seat> seats) {
+		if (!state.hasProperty(BlockStateProperties.ORIENTATION)) {
+			return;
+		}
+		try {
+			if (state.getValue(BlockStateProperties.ORIENTATION).front() != Direction.UP) {
+				return;
+			}
+		} catch (Throwable t) {
+			return; // an unreadable orientation must cost the seat, not the village
+		}
+		String finalState;
+		try {
+			//#if MC >= 12001
+			//$$ CompoundTag nbt = info.nbt();
+			//#else
+			CompoundTag nbt = info.nbt;
+			//#endif
+			//#if MC >= 12111
+			//$$ finalState = nbt == null ? null : nbt.getString("final_state").orElse(null);
+			//#else
+			finalState = nbt == null ? null : nbt.getString("final_state");
+			//#endif
+		} catch (Throwable t) {
+			return;
+		}
+		if (finalState == null) {
+			return;
+		}
+		String id = finalState.startsWith("minecraft:") ? finalState.substring("minecraft:".length()) : finalState;
+		if (!FIXED_BASE_MATERIALS.contains(id)) {
+			return; // villager/decor seats in road material stay out (user decision 2026-10-15)
+		}
+		BlockPos worldPos = StructureTemplate.calculateRelativePosition(settings, infoPos).offset(offset);
+		seats.add(new Seat(worldPos.getX(), worldPos.getZ(), pieceIndex, style));
+		FIXED_BASE_CELLS.incrementAndGet();
 	}
 
 	private static boolean isRoadSurfaceCell(BlockState state, String style, VillagePathSmoothedConfig config) {

@@ -66,6 +66,15 @@ public final class RoadCell {
 	public boolean plazaPinned;
 	/** The pinned walk surface (half units) for a {@link #plazaPinned} cell. */
 	public int plazaPinP;
+	/**
+	 * Fixed base seat (原版多向道路结构调查 2026-10-15): a street piece's up-facing
+	 * y=0 jigsaw whose final_state is one of the base materials. The cell joins
+	 * the mask only so the SOLVER pins the road to its vanilla height (plaza
+	 * style); the vanilla piece renders the block itself, so the writer never
+	 * writes it and the suppression never claims it - clearing or paving it
+	 * would raze the lamp/tree/villager seat standing on it.
+	 */
+	public boolean fixedBase;
 
 	public RoadCell(int x, int z, String style, int baseP, boolean anchor) {
 		this.index = -1;

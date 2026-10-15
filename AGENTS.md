@@ -182,6 +182,22 @@ Rules:
   (`RAILINGS_SKIPPED_AT_DOOR`); `railing.skipAtBuildingDoors` gates it.
   `door anchor offsets 0/1/2/3/4+` in /vps stats is the junction-to-door
   distance distribution (F-D) that documents why the junction is not a door.
+- **Street decor base seats are fixed anchors, pinned per seat (vanilla multi-way
+  road structure survey 2026-10-15).** A street piece's up-facing y=0 jigsaw whose
+  `final_state` is grass_block/dirt/sand/smooth_sandstone joins the mask as a
+  FIXED cell (167 per vanilla version): the solver pins it at its own vanilla
+  height (plaza style, one level per seat) and the road solves within half a
+  block of it; the writer NEVER writes, fills or clears it and the suppression
+  never claims it (`VpsPlacementContext` excludes `fixedBase` cells) - the
+  vanilla piece renders the seat block and the lamp/tree/villager stands on it
+  (`FIXED_BASE_CELLS` / `FIXED_BASE_CELLS_VANILLA` in /vps stats). The 44
+  dirt_path + 2 cobblestone road-material seats per version stay OUT of the mask
+  (user decision 2026-10-15). Do not "fix" a seat mismatch by writing the cell.
+- **The polish conflict sweep never moves a pinned cell (2026-10-15).**
+  `RoadSmoother#projectViolatedEdges` treats pinned cells (plaza groups, fixed
+  base seats) as immovable: a pinned endpoint stays, the free endpoint takes the
+  whole excess, two pinned endpoints keep their counted residual. The old sweep
+  walked the pins themselves whenever a polish conflict reached the safety net.
 - **Plan A: a building always wins its column (user decision 2026-10-15).**
   `VpsVillageSolution#buildingBoxes` carries the 3D boxes of every movable piece
   (read after the T1.5 shift, so they describe where the buildings really are).

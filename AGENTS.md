@@ -191,27 +191,55 @@ Rules:
   `WORLD_SURFACE_WG` read stays for `recordDeviation` and `runBuildingGuard`
   (observations) and for the crossing predicate - never for a write decision.
 - **Every kerb/railing decision is a side-column probe from the road block's own
-  Y, in the direction that decides it (user decision 2026-10-14).** Solid at the
-  road level -> scan **up** to the top of the solid run and compare for a kerb;
-  empty -> scan **down** to the first standable ground and compare for a railing.
-  The old code read `WORLD_SURFACE_WG` for the side column, so an overhang faked
-  a kerb up to the canopy.
-- **The side-column owner key is the cell's `solvedP`, in both
-  `highestRoadPerSideColumn` and `applyKerbsAndRailings`.** Deriving it
-  independently used to be off by 2 half units for every slab cell
-  (`roadTopBlockY` was taken as `solvedP / 2 - 1` for both parities), so the
-  owner test never matched and no slab cell ever wrote a kerb or a railing.
-- **Building shift rules (user decisions 2026-10-14):**
+  Y, in the direction that decides it (user decisions 2026-10-14, reworked
+  2026-10-15).** Two probes, memoised per (column, road level): the kerb
+  measures the column's **height-spectrum top** (scan up from the road block's
+  level THROUGH air gaps - an open edge with a shelf higher up is wrapped too),
+  the railing measures the **walkable ground below** (scan down, so an overhang
+  cannot hide a drop). The old code read `WORLD_SURFACE_WG` for the side column,
+  so an overhang faked a kerb up to the canopy.
+- **Every road cell dresses its own edges (user decision 2026-10-15).** The
+  review-4 one-owner-per-side-column rule (`highestRoadPerSideColumn`) is gone:
+  a column shared by a low and a high road gets the low road's kerb AND the high
+  road's railing. Do not reintroduce a single-writer gate "to keep kerb and
+  railing apart" - that combination is the point. The drop metric still counts a
+  column once (`countedEdgeColumns`).
+- **The kerb wall wraps from one above the road block to the column's top
+  (user decision 2026-10-15).** The wrap starts at `roadTopBlockY + 1` (never at
+  the road block's own level - a level side gets nothing), skips air gaps,
+  replaces the Q07 dirt set only, and stops at the side column's topmost block
+  ("the height-spectrum top"). `kerb.minDropHeight` is **kept**: a side rising
+  exactly one block still gets no kerb. The bottom course level with the road
+  block stays vanilla - that is the chosen start level, not a bug.
+- **The ceiling above the walk surface is fully lined with the kerb material
+  (user decision 2026-10-15).** `RoadWriter#lineCeiling` coats the contiguous
+  run directly above the road block - the old tunnel-roof lining generalised to
+  the whole run and decoupled from `maxClearLayers` (with the default unlimited
+  clear it is a no-op because the clear removed the run). Plaza cells never
+  reach it - the run above a plaza platform is the fountain.
+- **Building shift rules (user decisions 2026-10-14 and 2026-10-15):**
   - a movable piece is a RIGID `SinglePoolElement` (a building) or a RIGID
     `FeaturePoolElement` whose placed feature is `minecraft:pile_hay`
     (`BuildingComponents#isMovable`). The decor pool's trees and flowers are
     deliberately **not** moved - a moved tree fights the vanilla terrain
-    adaptation that raises the ground under it;
+    adaptation that raises the ground under it. A `town_centers` piece is
+    **not** a movable building any more (plan C): the plaza group has its own
+    shift;
   - the alignment target is the road cells at the component's **door** - its
     junctions whose `destProjection` is not RIGID, i.e. its connection to a
     street/terminator/centre piece (`T15Planner#adjacentRoadHeights`). Do not go
     back to "every road cell within the footprint plus one ring": that pulled a
     long house or a farm to a road several blocks away;
+  - the alignment reference is the **door interior walk surface** (`baseY + 1`,
+    plan D 2026-10-15) - the y=0 template layer is the floor block, the door
+    opens at y=1. Aligning `baseY` itself left every door one whole block above
+    its road (the measured +1.5 door offsets);
+  - the shift is chosen from the **legal interval** (plan D 2026-10-15): the
+    shifted door floor must stay within half a block of every door road cell;
+    inside the interval the shift closest to zero wins; the median is only the
+    fallback when the interval is empty. `buildingShiftMedianWingBlocks`
+    (default 0 = off) optionally clamps the shift around the median scheme's
+    shift;
   - the overlap guard compares **only against other movable pieces**
     (`T15Planner#overlaps`). A street or terminator box is one block tall but
     sits exactly along the road edge the building opens onto, so the old
@@ -243,19 +271,38 @@ Rules:
   `dropped cells` / `widest break` and costs one vanilla column; probe failures
   re-probe the noise caliber first (`ProbeHeights`), which makes that rare.
   `split masks` / `largest component` in `/vps stats` stay as observations.
-- **`town_centers` plazas are part of the road network (fix plan v4 D5-c).** The
-  mask regex matches them, but only road-material y=0 cells are taken: a claimed
-  column has its vanilla y=0 block suppressed and rewritten, so the fountain's
-  basin, water, bell and logs must stay out (`TOWN_CENTER_NON_ROAD_SKIPPED`
-  counts what was skipped).
+- **`town_centers` plazas are part of the road network, pinned flat, and render
+  themselves (fix plan v4 D5-c + plan C, user decision 2026-10-15).** The mask
+  regex matches them, but only road-material y=0 cells are taken
+  (`TOWN_CENTER_NON_ROAD_SKIPPED` counts what was skipped). Each 4-connected
+  plaza group pins to ONE flat walk surface - the group's median terrain height
+  on the T1.5 first solve, the level the pieces really render at on the
+  post-shift re-solve and on the whole T5 path - and the solver treats the pin
+  as a hard seam boundary (`|dP| <= 1` to the roads). A dedicated group shift
+  moves the owning pieces onto the solved level (well rim and fountain riding
+  along as one rigid body) before the re-collect. The writer **never** writes a
+  road block, a fill or a clear on a plaza cell (the clear would raze the
+  fountain): the vanilla rigid platform IS the solved surface by construction,
+  and only the edge details run on the plaza boundary
+  (`PLAZA_CELLS_VANILLA` / `PLAZA_GROUPS` / `PLAZAS_SHIFTED` in `/vps stats`).
+- **The solved village is cached on the anchor chunk, not only on the start
+  instance (plan E, 2026-10-15).** A village spans many chunks and later
+  placements can meet fresh `StructureStart` instances; the extra instances used
+  to run a full T5 re-solve (no building move!) and the writer consumed a
+  network that did not match the shifted pieces. `VpsPipeline`'s LRU cache keys
+  on (dimension id, Structure instance, anchor chunk) - every instance of the
+  same village shares one solution, and `/vps config reload` clears it.
+  `hasCustomRegex` must compare against `RoadSmoothing.DEFAULT_ROAD_PIECES_REGEX`
+  (the constant the field default uses), not a copied string.
 - **All drop criteria are computed in half-block walk-surface units** (`S = 2 *
   walk surface`); never use `roadTopBlockY + 1` as the walk surface (it is 0.5
   too high for a slab). The pure helpers live in `RoadWritePolicy`
   (`roadWalkSurface2` / `kerbApplies` / `railingApplies`).
 - **T1.5 runs during STRUCTURE_STARTS**, not FEATURES: `MixinStructureGenerate`
   hooks `Structure#generate` RETURN (pieces assembled, bounding box not yet
-  cached) and `MixinChunkGenerator` captures the MinecraftServer into
-  `VpsGenThread` around `ChunkGenerator#createStructures`. If the server cannot
+  cached) and `MixinChunkGenerator` captures the MinecraftServer and the owning
+  dimension id into `VpsGenThread` around `ChunkGenerator#createStructures`. If
+  the server cannot
   be resolved, T1.5 must move nothing and let the T5 solve run at FEATURES
   (never "default allow" - a disabled world must not get its buildings moved).
 - **RIGID building components move as a group**: `BuildingComponents` unions

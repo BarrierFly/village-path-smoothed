@@ -69,19 +69,22 @@ water use scaffolding, and dangerous edges get leaf railings.
 4. **Kerbs and leaf railings / 路肩包边与树叶护栏** — each side column is probed
    **from the road block's own height**, in the direction that decides the
    detail:
-   - the block at the road level is **solid** (the side terrain rises): scan up
-     to the top of that solid run. When it is **at least 2 whole blocks** above
-     the road, the dirt wall on the road side is replaced with a village-style
-     stone (plains/snowy/taiga `cobblestone`, desert `smooth_sandstone`, savanna
-     `terracotta`), for every block that belongs to the vanilla `#minecraft:dirt`
-     tag;
-   - it is **empty** (the side drops away): scan down to the first standable
-     ground. When the road is **at least 2 whole blocks** above it, persistent
-     leaves (plains `oak`, desert/savanna `acacia`, snowy/taiga `spruce`) are
-     placed on the road edge at the road block's height plus one.
+   - the **kerb wall**: scan **up** from the road block's level, skipping air
+     gaps, to the side column's topmost block (its height-spectrum top). When
+     that is **at least 2 whole blocks** above the road (`kerb.minDropHeight`,
+     strictly more than 1), every block from one above the road block up to that
+     topmost block that belongs to the vanilla `#minecraft:dirt` tag is replaced
+     with a village-style stone (plains/snowy/taiga `cobblestone`, desert
+     `smooth_sandstone`, savanna `terracotta`). A side does **not** have to be
+     solid at the road level any more - an open edge with a shelf higher up is
+     wrapped too;
+   - the **railing**: scan **down** to the first standable ground. When the road
+     is **at least 2 whole blocks** above it, persistent leaves (plains `oak`,
+     desert/savanna `acacia`, snowy/taiga `spruce`) are placed on the road edge
+     at the road block's height plus one.
 
-   Each edge column is claimed by exactly one road cell — the highest one — so a
-   shared column can never end up with both a kerb and a railing.
+   Every road cell dresses its own edges: a column shared by a low and a high
+   road gets the low road's kerb AND the high road's railing (2026-10-15).
 5. **Directional terrain probes / 双向地形探测** — the fill/cut decision is made
    per cell too, never from the heightmap top: a **downward** probe finds the
    ground the road is built up from (fill versus bridge deck), an **upward** probe
@@ -147,6 +150,7 @@ ModMenu is installed) but optional. / 无必装依赖；装有 ModMenu 时会出
 | `roadSmoothing.objective` | `SMOOTH_FIRST` | `SMOOTH_FIRST` = strict lexicographic *cliff penalty > total steps > deviation from the terrain*; `MIN_DEVIATION` weighs deviation and steps together; `SHORTEST_CATCHUP` hugs the terrain and catches up as fast as legal steps allow; `HYBRID` blends both (`hybridWeightDeviation`) |
 | `roadSmoothing.roadShapeStage` | `T1_5` | `T1_5` solves the profile (and shifts buildings) during structure assembly; `T5` is the legacy feature-placement solve with no building move (fallback / A-B comparison) |
 | `roadSmoothing.maxBuildingShift` | `0` | cap on the building component vertical shift in blocks (`0` = unlimited, only the world height clamps; fix plan v2 R7 default) |
+| `roadSmoothing.buildingShiftMedianWingBlocks` | `0` | optional median two-wing limit for the building shift: `> 0` clamps the chosen shift (legal-interval or median fallback) within that many whole blocks of the legacy median scheme's shift (`0` = off) |
 | `roadSmoothing.buildingGuard` | `true` | diagnostic only: count floating/buried moved components (`/vps stats`); never repairs and never reverts a shift |
 | `roadSmoothing.beardCompensation` | `0` | legacy: blocks added to the noise probe next to buildings. Default 0 since fix plan v2 R6: the +1 step compensated the beard but made doorways sit on a 1-block bump that real-heightmap columns do not have. Keep 0; raise only for A-B comparisons (`< 0` or `0` disables, in both kernel modes) |
 | `roadSmoothing.beardRadius` | `4` | legacy: horizontal radius of that beard zone around building footprints (step kernel mode only) |
@@ -328,10 +332,14 @@ Two things are worth spelling out:
 - **功能**：路面平滑化（半砖台阶，顺向/横向 ≤ 半格；默认 `SMOOTH_FIRST` 目标函数按
   **断崖 > 总台阶数 > 对地形的偏差** 排序，坡地下沉路段 + 包边收壁，断崖软约束
   兜底且计数）；地形追线候选带（无独立参考剖面，偏差直接对地形量，接缝带向区域
-  侧延伸保证合法坡道可达）；路肩包边（土类方块换村庄风格石材，到地表顶、
-  无上限）；树叶护栏（每条侧列只由最高的那格路负责，不会再出现"护栏+包边"同列）；
-  过水段脚手架（`distance` 有支撑 0 / 无支撑 1，`waterlogged=true`；过水锚点为软
-  约束，偏离水面会被计数）。
+  侧延伸保证合法坡道可达）；路肩包边（从路块上一层起，越过空腔一直包到侧列最高块，
+  土类方块换村庄风格石材，侧比路高 >1 格才触发，不再要求路面处固体）；路面列上方
+  的连续顶板整段铺包边材质（不再依赖清理上限）；树叶护栏（条件不变；每条路各管
+  各的边缘，同侧列可同时出现矮路的包边和高路的护栏）；过水段脚手架（`distance` 有
+  支撑 0 / 无支撑 1，`waterlogged=true`；过水锚点为软约束，偏离水面会被计数）。
+  广场（town_centers）进路网并钉定为水平（T1.5 把广场件整体移到解出的高度，写入端
+  由原版刚性平台自己呈现，井沿/喷泉原样）；房屋对齐到门内地面（`baseY+1`），位移取
+  门邻路格的合法区间内离 0 最近者；解算结果按（维度+结构+锚点区块）跨实例共享。
   路面由本 mod **写入**而非覆盖：认领列上的原版街道路块在放置链里被丢弃，未认领列
   保留原版路，因此不会再出现上下两层路。写入端只渲染不解题（R3）：超预算格保留
   解算高度并计数，不再吸附回真实地表。

@@ -57,6 +57,9 @@ public final class VpsCommands {
 						}))
 						.then(Commands.literal("reload").executes(context -> {
 							VillagePathSmoothedConfig.load();
+							// solutions are a function of the config: the anchor-keyed cache
+							// must not serve pre-reload networks (F10)
+							VpsPipeline.clearSolutionCache();
 							context.getSource().sendSystemMessage(Component.literal("[VPS] config reloaded from " + VillagePathSmoothedConfig.getConfigPath()));
 							return 1;
 						})))
@@ -230,7 +233,7 @@ public final class VpsCommands {
 						+ "  roads      : cells written %d, kerbs %d, railings %d (skipped: water %d / door %d), scaffolds %d (water-self %d / water-below %d / dry %d), water bridges %d%n"
 						+ "  integrity  : dropped cells %d (noise-reprobed %d), split masks %d (solved per component), largest component %s%%, widest break avg %s / max %d%n"
 						+ "  defects    : writer overrides %d, nudged to the surface %d, refused %d (out of world %d), surface fallbacks %d, over-budget %d, edge drops > 1 block %d (worst %d half units)%n"
-						+ "  solve      : contradictions %d, step violations %d (worst %d), seam re-solves refused %d, polish moved %d (max delta %d half units, p90 %d, midpoint conflicts %d), water anchor deviations %d, villages without arms %d%n"
+						+ "  solve      : contradictions %d, step violations %d (worst %d), seam re-solves refused %d, polish moved %d (max delta %d half units, p90 %d, midpoint conflicts %d), water anchor deviations %d, villages without arms %d, solution cache hits %d%n"
 						+ "  suppression: vanilla road blocks dropped %d (passed through %d)%n"
 						+ "  buildings  : T1.5 applied %d (no-server %d), components %d, shifted %d, no-road %d, overlap guards %d, floating %d, buried %d, re-solved after shift %d (%d cells changed), road cells yielded %d%n"
 						+ "  centres    : town-centre plaza cells %d (non-road cells skipped %d)%n"
@@ -272,6 +275,7 @@ public final class VpsCommands {
 				VpsPipeline.ROAD_POLISH_CONFLICTS.get(),
 				VpsPipeline.WATER_ANCHOR_DEVIATIONS.get(),
 				VpsPipeline.VILLAGES_WITHOUT_ARMS.get(),
+				VpsPipeline.SOLUTION_CACHE_HITS.get(),
 				VpsPipeline.SUPPRESSED_VANILLA_ROAD_BLOCKS.get(),
 				VpsPipeline.SUPPRESSION_PASSED_THROUGH.get(),
 				VpsPipeline.T15_APPLIED.get(),

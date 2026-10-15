@@ -151,7 +151,8 @@ public final class VillagePathSmoothedConfig {
 		 * bell and logs keep their vanilla blocks and the piece's y=0 layer is
 		 * never suppressed where it is not road.
 		 */
-		public String roadPiecesRegex = "^minecraft:village/([a-z_]+)/(streets|terminators|town_centers)/";
+		public static final String DEFAULT_ROAD_PIECES_REGEX = "^minecraft:village/([a-z_]+)/(streets|terminators|town_centers)/";
+		public String roadPiecesRegex = DEFAULT_ROAD_PIECES_REGEX;
 		/**
 		 * Road-material test for {@code town_centers} cells. A centre piece's y=0
 		 * layer holds the plaza (dirt path / smooth sandstone) next to the

@@ -497,7 +497,12 @@ public final class RoadCollector {
 	}
 
 	public static boolean hasCustomRegex(VillagePathSmoothedConfig config) {
-		return !"^minecraft:village/([a-z_]+)/(streets|terminators)/".equals(config.roadSmoothing.roadPiecesRegex);
+		// Fix plan analysis 2026-10-15 (section 4.2): this used to compare against
+		// the pre-D5-c default string, so the current default was judged "custom"
+		// and the non-village fast path in VpsPipeline#prepare never fired - every
+		// mineshaft ran a collect and polluted VILLAGES_SOLVED. Compare against the
+		// constant the field default actually uses.
+		return !VillagePathSmoothedConfig.RoadSmoothing.DEFAULT_ROAD_PIECES_REGEX.equals(config.roadSmoothing.roadPiecesRegex);
 	}
 
 	/** Piece-bounding-box based quick check used for the /vps dump command. */

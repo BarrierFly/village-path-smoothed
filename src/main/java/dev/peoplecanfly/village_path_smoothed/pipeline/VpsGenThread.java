@@ -23,16 +23,19 @@ import net.minecraft.server.MinecraftServer;
  */
 public final class VpsGenThread {
 	private static final ThreadLocal<MinecraftServer> SERVER = new ThreadLocal<>();
+	/** Dimension id ("namespace:path") of the level being generated, captured next to the server. */
+	private static final ThreadLocal<String> DIMENSION = new ThreadLocal<>();
 	private static final ThreadLocal<int[]> DEPTH = ThreadLocal.withInitial(() -> new int[1]);
 
 	private VpsGenThread() {
 	}
 
-	public static void push(MinecraftServer server) {
+	public static void push(MinecraftServer server, String dimensionKey) {
 		DEPTH.get()[0]++;
 		// always overwrite (even with null): a stale server from a previous step
 		// on a reused worker thread must never leak into an unresolved step
 		SERVER.set(server);
+		DIMENSION.set(dimensionKey);
 	}
 
 	public static void pop() {
@@ -41,11 +44,17 @@ public final class VpsGenThread {
 		if (depth[0] <= 0) {
 			DEPTH.remove();
 			SERVER.remove();
+			DIMENSION.remove();
 		}
 	}
 
 	/** The server captured for the current structure-generation step, or null. */
 	public static MinecraftServer server() {
 		return SERVER.get();
+	}
+
+	/** The dimension id ("namespace:path") captured for the current structure-generation step, or null. */
+	public static String dimensionKey() {
+		return DIMENSION.get();
 	}
 }

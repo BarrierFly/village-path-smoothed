@@ -36,6 +36,16 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public final class VpsPipeline {
 	public static final AtomicLong VILLAGES_SOLVED = new AtomicLong();
+	/**
+	 * Villages re-solved by a SECOND StructureStart instance of an already-solved
+	 * village (fix plan analysis 2026-10-15 section 3.5, F10). The T1.5 solution
+	 * is cached on the start instance that ran {@code Structure#generate}, but a
+	 * village spans many chunks and not every chunk's placement sees that same
+	 * instance - the extra instances used to fall through to a full T5 re-solve
+	 * (no building move!) and the writer then consumed a network that did not
+	 * match the shifted pieces. The anchor-keyed cache below closes that.
+	 */
+	public static final AtomicLong SOLUTION_CACHE_HITS = new AtomicLong();
 	public static final AtomicLong SOLVE_NANOS = new AtomicLong();
 	public static final AtomicLong ROAD_CELLS_WRITTEN = new AtomicLong();
 	public static final AtomicLong KERBS_PLACED = new AtomicLong();
@@ -92,6 +102,61 @@ public final class VpsPipeline {
 	public static final AtomicLong DEBUG_VILLAGER_BRAIN_SKIPS = new AtomicLong();
 
 	private VpsPipeline() {
+	}
+
+	/**
+	 * Fix plan analysis 2026-10-15 section 3.5 (F10): the solved village is
+	 * keyed by (dimension, structure, anchor chunk) instead of only by the
+	 * StructureStart instance. Every instance of the same village reports the
+	 * same anchor chunk ({@code start.getChunkPos()} is serialised with the
+	 * start), so a placement that meets a fresh instance finds the exact network
+	 * the T1.5 shift was computed against - "the write consumes the solution the
+	 * shift used" now holds across instances, and the duplicate per-instance T5
+	 * re-solves (three for the diagnosed village) disappear.
+	 *
+	 * <p>Bounded LRU: a solution carries a road network (up to the 20k-cell
+	 * cap), so 16 entries is a few MB at worst. Cleared by {@code /vps config
+	 * reload} because a solution is a function of the config.
+	 */
+	private static final int SOLUTION_CACHE_LIMIT = 16;
+	private static final java.util.LinkedHashMap<CacheKey, VpsVillageSolution> SOLUTION_CACHE =
+			new java.util.LinkedHashMap<>(32, 0.75f, true) {
+				@Override
+				protected boolean removeEldestEntry(java.util.Map.Entry<CacheKey, VpsVillageSolution> eldest) {
+					return size() > SOLUTION_CACHE_LIMIT;
+				}
+			};
+
+	/**
+	 * Cache key: dimension id, the Structure INSTANCE (identity is stable within
+	 * a server session and needs no registry lookup - the T1.5 site has no
+	 * LevelReader) and the anchor chunk, which is serialised with every
+	 * StructureStart of the village.
+	 */
+	private record CacheKey(String dimension, net.minecraft.world.level.levelgen.structure.Structure structure, long anchor) {
+	}
+
+	private static CacheKey cacheKey(String dimension, StructureStart start) {
+		return new CacheKey(dimension, start.getStructure(), start.getChunkPos().toLong());
+	}
+
+	private static VpsVillageSolution cachedSolution(String dimension, StructureStart start) {
+		synchronized (SOLUTION_CACHE) {
+			return SOLUTION_CACHE.get(cacheKey(dimension, start));
+		}
+	}
+
+	private static void cacheSolution(String dimension, StructureStart start, VpsVillageSolution solution) {
+		synchronized (SOLUTION_CACHE) {
+			SOLUTION_CACHE.put(cacheKey(dimension, start), solution);
+		}
+	}
+
+	/** Clears the anchor-keyed solution cache; called when the config (and with it every solution) goes stale. */
+	public static void clearSolutionCache() {
+		synchronized (SOLUTION_CACHE) {
+			SOLUTION_CACHE.clear();
+		}
 	}
 
 	public static void onStructurePlacementHead(
@@ -154,6 +219,7 @@ public final class VpsPipeline {
 		if (server == null || !VpsWorldSettings.isEnabled(server)) {
 			return null;
 		}
+		String dimensionKey = dimensionKeyOf(level);
 		boolean isVanillaVillage = VpsCompat.isVanillaVillageStructure(level, start.getStructure());
 		if (!isVanillaVillage && !RoadCollector.hasCustomRegex(config)) {
 			return null; // fast path: other structures cost nothing
@@ -166,7 +232,17 @@ public final class VpsPipeline {
 			synchronized (start) {
 				solution = access.village_path_smoothed$getSolution();
 				if (solution == null) {
-					solution = solveVillage(start, level, generator, chunkPos, config);
+					// F10: another instance of this village may have solved it already
+					// (the T1.5 pass, or the first chunk that reached the T5 solve).
+					solution = dimensionKey != null ? cachedSolution(dimensionKey, start) : null;
+					if (solution != null) {
+						SOLUTION_CACHE_HITS.incrementAndGet();
+					} else {
+						solution = solveVillage(start, level, generator, chunkPos, config);
+						if (dimensionKey != null) {
+							cacheSolution(dimensionKey, start, solution);
+						}
+					}
 					access.village_path_smoothed$setSolution(solution);
 				}
 			}
@@ -216,7 +292,36 @@ public final class VpsPipeline {
 		}
 		VpsVillageSolution solution = T15Planner.plan(start, generator, randomState, templateManager, chunkPos, heightAccessor, config);
 		access.village_path_smoothed$setSolution(solution);
+		// F10: publish the T1.5 solution under the anchor key, so every later
+		// StructureStart instance of the same village (deserialized per chunk)
+		// consumes the network the shift was computed against. The dimension id
+		// comes from the createStructures capture; without it (no server resolved)
+		// the instance field alone still serves this instance's own chunks.
+		String dimension = VpsGenThread.dimensionKey();
+		if (dimension != null) {
+			cacheSolution(dimension, start, solution);
+		}
 		T15_APPLIED.incrementAndGet();
+	}
+
+	/**
+	 * Dimension id ("namespace:path") of the level being placed into, or null
+	 * when it cannot be resolved. 1.21.11 has no {@code dimension()} on
+	 * {@code WorldGenRegion}/{@code WorldGenLevel}, so go through the owning
+	 * {@code ServerLevel} - the same route {@link #serverOf} uses.
+	 */
+	private static String dimensionKeyOf(WorldGenLevel level) {
+		try {
+			if (level instanceof net.minecraft.server.level.WorldGenRegion region) {
+				return VpsCompat.registryKeyId(region.getLevel().dimension());
+			}
+			if (level instanceof net.minecraft.server.level.ServerLevel serverLevel) {
+				return VpsCompat.registryKeyId(serverLevel.dimension());
+			}
+		} catch (Throwable t) {
+			return null;
+		}
+		return null;
 	}
 
 	private static boolean hasStreetPiece(StructureStart start, VillagePathSmoothedConfig config) {

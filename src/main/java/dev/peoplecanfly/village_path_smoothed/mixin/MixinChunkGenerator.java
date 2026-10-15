@@ -6,6 +6,7 @@
 package dev.peoplecanfly.village_path_smoothed.mixin;
 
 import dev.peoplecanfly.village_path_smoothed.duck.StructureManagerVpsAccess;
+import dev.peoplecanfly.village_path_smoothed.compat.VpsCompat;
 import dev.peoplecanfly.village_path_smoothed.pipeline.VpsGenThread;
 import net.minecraft.core.RegistryAccess;
 import net.minecraft.resources.ResourceKey;
@@ -54,7 +55,7 @@ public abstract class MixinChunkGenerator {
 	//$$ 		ResourceKey<Level> level,
 	//$$ 		CallbackInfo ci
 	//$$ ) {
-	//$$ 	VpsGenThread.push(serverOf(structureManager));
+	//$$ 	pushContext(structureManager);
 	//$$ }
 	//
 	//$$ @Inject(method = "createStructures", at = @At("RETURN"), require = 1)
@@ -79,7 +80,7 @@ public abstract class MixinChunkGenerator {
 			StructureTemplateManager structureTemplateManager,
 			CallbackInfo ci
 	) {
-		VpsGenThread.push(serverOf(structureManager));
+		pushContext(structureManager);
 	}
 
 	@Inject(method = "createStructures", at = @At("RETURN"), require = 1)
@@ -95,18 +96,28 @@ public abstract class MixinChunkGenerator {
 	}
 	//#endif
 
-	private static MinecraftServer serverOf(StructureManager structureManager) {
+	/**
+	 * Captures the owning server AND the dimension id for the STRUCTURE_STARTS
+	 * step. The dimension is needed by the T1.5 solution cache (F10, anchor-keyed
+	 * across StructureStart instances): {@code Structure#generate} has no level
+	 * parameter, so the only chance to learn it is here, where the
+	 * StructureManager's level is reachable.
+	 */
+	private static void pushContext(StructureManager structureManager) {
 		try {
 			LevelAccessor level = ((StructureManagerVpsAccess) (Object) structureManager).village_path_smoothed$getLevel();
 			if (level instanceof ServerLevel serverLevel) {
-				return serverLevel.getServer();
+				VpsGenThread.push(serverLevel.getServer(), VpsCompat.registryKeyId(serverLevel.dimension()));
+				return;
 			}
 			if (level instanceof WorldGenRegion region) {
-				return region.getLevel().getServer();
+				// 1.21.11 has no dimension() on WorldGenRegion; the owning ServerLevel does
+				VpsGenThread.push(region.getLevel().getServer(), VpsCompat.registryKeyId(region.getLevel().dimension()));
+				return;
 			}
 		} catch (Throwable ignored) {
 			// fall through: the T1.5 pass degrades to the legacy T5 solve
 		}
-		return null;
+		VpsGenThread.push(null, null);
 	}
 }

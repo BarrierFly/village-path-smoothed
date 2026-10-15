@@ -117,7 +117,7 @@ public final class T15Planner {
 		List<int[]> shifted = new ArrayList<>();
 
 		for (BuildingComponents.Component component : components) {
-			int desired = desiredShift(network, component, pieces);
+			int desired = desiredShift(network, component, pieces, config);
 			if (desired == Integer.MIN_VALUE) {
 				continue; // no road access / unserved: left where it is
 			}
@@ -290,25 +290,37 @@ public final class T15Planner {
 	}
 
 	/**
-	 * Vertical shift so the component base meets the median adjacent road walk
-	 * surface, delegated to the pure {@link BuildingShift} helper (review 3 T5)
-	 * with the diagnostic counters kept here.
+	 * Vertical shift so the component's door interior floor meets the adjacent
+	 * road walk surfaces, delegated to the pure {@link BuildingShift} helper
+	 * (review 3 T5, plan D interval rework 2026-10-15) with the diagnostic
+	 * counters kept here. The optional median two-wing limit
+	 * ({@code buildingShiftMedianWingBlocks}, 0 = off) clamps the chosen shift
+	 * around the legacy median scheme's shift.
 	 */
-	private static int desiredShift(RoadNetwork network, BuildingComponents.Component component, List<StructurePiece> pieces) {
+	private static int desiredShift(RoadNetwork network, BuildingComponents.Component component, List<StructurePiece> pieces,
+			VillagePathSmoothedConfig config) {
 		int[] adjacent = adjacentRoadHeights(network, component, pieces);
 		BuildingShift.ShiftDecision decision = BuildingShift.desiredShift(adjacent, component.baseY);
 		switch (decision.reason()) {
 			case NO_ROAD:
 				VpsPipeline.BUILDINGS_NO_ROAD_ACCESS.incrementAndGet();
 				return BuildingShift.DO_NOT_MOVE;
-			default:
+			default: {
+				int shift = decision.shift();
+				int wing = config.roadSmoothing.buildingShiftMedianWingBlocks;
+				if (wing > 0) {
+					shift = Math.max(decision.medianShift() - wing, Math.min(decision.medianShift() + wing, shift));
+				}
 				if (decision.doorParityOdd()) {
-					// B3-4: an odd median means the door aligns to a half block. The
-					// optional third (hard-boundary) solve pass that would force an even
-					// door cell is not run, so count it as a parity fallback.
+					// B3-4: the MEDIAN FALLBACK aligned the door to a slab level. The
+					// optional third (hard-boundary) solve pass that would force an
+					// even door cell is not run, so count it as a parity fallback. An
+					// interval pick never flags: the door floor is whole-block by
+					// construction and the half-block tolerance already accepted it.
 					VpsPipeline.DOOR_PARITY_FALLBACK.incrementAndGet();
 				}
-				return decision.shift();
+				return shift;
+			}
 		}
 	}
 

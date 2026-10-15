@@ -59,6 +59,14 @@ public final class VillagePathSmoothedConfig {
 		/** Cap on the building component vertical shift in whole blocks (0 = unlimited, only the world height clamps; fix plan v2 R7/N6 default). */
 		public int maxBuildingShift = 0;
 		/**
+		 * Optional median two-wing limit for the building shift (plan D, 2026-10-15,
+		 * default 0 = off): when greater than 0, the chosen shift - whether it came
+		 * from the legal interval or the median fallback - is clamped into
+		 * {@code [medianShift - wing, medianShift + wing]} whole blocks around the
+		 * shift the legacy single-median rule would have produced.
+		 */
+		public int buildingShiftMedianWingBlocks = 0;
+		/**
 		 * Fix plan v4 D2 / R2-1: which height caliber the T5 (feature placement)
 		 * solve reads.
 		 *

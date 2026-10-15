@@ -10,6 +10,7 @@ import dev.peoplecanfly.village_path_smoothed.VillagePathSmoothedConfig;
 import dev.peoplecanfly.village_path_smoothed.VillagePathSmoothedConfig.ProbeCaliber;
 import dev.peoplecanfly.village_path_smoothed.VillagePathSmoothedConfig.RoadShapeStage;
 import dev.peoplecanfly.village_path_smoothed.compat.VpsCompat;
+import dev.peoplecanfly.village_path_smoothed.duck.PoolElementStructurePieceVpsAccess;
 import dev.peoplecanfly.village_path_smoothed.duck.StructureStartVpsAccess;
 import dev.peoplecanfly.village_path_smoothed.terrain.VpsGenContext;
 import net.minecraft.server.MinecraftServer;
@@ -19,10 +20,12 @@ import net.minecraft.world.level.WorldGenLevel;
 import net.minecraft.world.level.chunk.ChunkGenerator;
 import net.minecraft.world.level.levelgen.RandomState;
 import net.minecraft.world.level.levelgen.structure.BoundingBox;
+import net.minecraft.world.level.levelgen.structure.PoolElementStructurePiece;
 import net.minecraft.world.level.levelgen.structure.StructurePiece;
 import net.minecraft.world.level.levelgen.structure.StructureStart;
 import net.minecraft.world.level.levelgen.structure.templatesystem.StructureTemplateManager;
 
+import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -65,6 +68,16 @@ public final class VpsPipeline {
 	public static final AtomicLong BUILDINGS_NO_ROAD_ACCESS = new AtomicLong();
 	public static final AtomicLong OVERLAP_GUARDS = new AtomicLong();
 	public static final AtomicLong DOOR_PARITY_FALLBACK = new AtomicLong();
+	// F-D (door two-symptom recheck 2026-10-15): the per-junction Chebyshev
+	// distance from the connection point to the nearest template door block.
+	// The distribution that makes the old anchor mismatch (candidate C of the
+	// recheck report) visible - 53 of the 120 vanilla house templates sit at
+	// offset 2 or more and used to align on the wrong side.
+	public static final AtomicLong DOOR_ANCHOR_OFFSET_0 = new AtomicLong();
+	public static final AtomicLong DOOR_ANCHOR_OFFSET_1 = new AtomicLong();
+	public static final AtomicLong DOOR_ANCHOR_OFFSET_2 = new AtomicLong();
+	public static final AtomicLong DOOR_ANCHOR_OFFSET_3 = new AtomicLong();
+	public static final AtomicLong DOOR_ANCHOR_OFFSET_4_PLUS = new AtomicLong();
 	// Review 3 P0-A: the solver's residual diagnostics. Everything here used to
 	// be silent: contradictory candidate bands quietly kept the first-pass value
 	// and leftover |dP|>1 edges were never looked at again. The dead
@@ -347,6 +360,25 @@ public final class VpsPipeline {
 		return false;
 	}
 
+	/**
+	 * The template manager carried by the first pool-element piece (the same
+	 * route RoadCollector uses), or null - the T5 path needs it for the
+	 * template door scan, and a null degrades the doors to the junction
+	 * fallback instead of failing the solve.
+	 */
+	private static StructureTemplateManager templateManagerOf(List<StructurePiece> pieces) {
+		for (StructurePiece piece : pieces) {
+			if (piece instanceof PoolElementStructurePiece) {
+				try {
+					return ((PoolElementStructurePieceVpsAccess) piece).village_path_smoothed$getTemplateManager();
+				} catch (Throwable t) {
+					return null;
+				}
+			}
+		}
+		return null;
+	}
+
 	/** B4: pure diagnostic - count moved components that ended up floating or buried; never repairs. */
 	private static void runBuildingGuard(VpsVillageSolution solution, VpsGenContext ctx, VillagePathSmoothedConfig config) {
 		for (int[] component : solution.shiftedComponents) {
@@ -421,7 +453,8 @@ public final class VpsPipeline {
 		solution.solved = true;
 		// T5 never moves buildings, so the boxes are already final here
 		solution.buildingBoxes = BuildingComponents.movableBoxes(start.getPieces());
-		solution.doorFronts = BuildingComponents.doorFronts(start.getPieces());
+		solution.doorFronts = BuildingComponents.doorFronts(start.getPieces(),
+				BuildingComponents.templateDoors(start.getPieces(), templateManagerOf(start.getPieces())));
 
 		long nanos = System.nanoTime() - begin;
 		SOLVE_NANOS.addAndGet(nanos);

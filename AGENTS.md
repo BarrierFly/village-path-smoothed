@@ -168,12 +168,20 @@ Rules:
   above** the water surface, and a railing as soon as it is above it - even half
   a block (`RAILINGS_SKIPPED_AT_WATER` counts the suppressed ones). Detection
   scans the side column at the road block's Y and one below.
-- **No railing on a movable building's door front (user decision 2026-10-15).**
-  `BuildingComponents#doorFronts` derives, for every non-RIGID junction (a
-  connection to a street/terminator/centre), the block one step outside the wall
-  along the footprint-centre-to-junction axis. The writer skips railings on that
-  cell (within one block) so a doorway can never be fenced in
+- **No railing on a movable building's door front (user decision 2026-10-15;
+  re-anchored on the template's real doors, F-C/R7, 2026-10-15).**
+  `BuildingComponents#doorFronts` derives one front cell per lower door half
+  read from the piece's template (`BuildingComponents#templateDoors`), one step
+  outside the wall along the footprint-centre-to-door axis; template facings are
+  deliberately not used (only 30% of vanilla door leaves face outward). A piece
+  without template doors (farm/pen, unloaded template) falls back to its
+  non-RIGID junctions. EVERY template door gets a front, including doors facing
+  RIGID attachments or plazas (the R7 fix). The writer skips railings on that
+  cell (within one block; the 3x3 box shape is kept per the R8 decision of
+  2026-10-15) so a doorway can never be fenced in
   (`RAILINGS_SKIPPED_AT_DOOR`); `railing.skipAtBuildingDoors` gates it.
+  `door anchor offsets 0/1/2/3/4+` in /vps stats is the junction-to-door
+  distance distribution (F-D) that documents why the junction is not a door.
 - **Plan A: a building always wins its column (user decision 2026-10-15).**
   `VpsVillageSolution#buildingBoxes` carries the 3D boxes of every movable piece
   (read after the T1.5 shift, so they describe where the buildings really are).
@@ -225,25 +233,38 @@ Rules:
     adaptation that raises the ground under it. A `town_centers` piece is
     **not** a movable building any more (plan C): the plaza group has its own
     shift;
-  - the alignment target is the road cells at the component's **door** - its
-    junctions whose `destProjection` is not RIGID, i.e. its connection to a
-    street/terminator/centre piece (`T15Planner#adjacentRoadHeights`). Do not go
-    back to "every road cell within the footprint plus one ring": that pulled a
-    long house or a farm to a road several blocks away;
-  - the alignment reference is the **door interior walk surface** (`baseY + 1`,
-    plan D 2026-10-15) - the y=0 template layer is the floor block, the door
-    opens at y=1. Aligning `baseY` itself left every door one whole block above
-    its road (the measured +1.5 door offsets);
+  - the alignment target is the road cells at the component's **door** - the
+    lower door halves read from the piece's TEMPLATE (`F-C`, 2026-10-15: the
+    jigsaw connection sits 2-7 blocks from the real door on 53 of the 120
+    vanilla house templates, so anchoring on the junction left the door-side
+    road unconstrained - the measured "road higher than the door"). Junctions
+    (`destProjection` not RIGID) are only the fallback for pieces without
+    template doors (`T15Planner#adjacentRoadHeights`). Do not go back to "every
+    road cell within the footprint plus one ring": that pulled a long house or
+    a farm to a road several blocks away;
+  - the alignment reference is the **top of the structure's Y0 layer**
+    (`baseY + 1`, plan D 2026-10-15, re-derived as plan E 2026-10-15) - the y=0
+    template layer is the foundation, and vanilla houses are designed with their
+    bottom layer facing the road, NOT the door: a template whose door sits
+    higher (doorY > 1, e.g. the stilt fisher cottage) keeps its door above the
+    road on purpose. Aligning `baseY` itself left every door one whole block
+    above its road (the measured +1.5 door offsets);
+  - every door road cell presents its **SOLID level** (`BuildingShift#solidTargetP`,
+    plan E 2026-10-15): a full block its own top, a bottom slab counts as AIR
+    and presents the level below - the house's Y0 layer sits flush with a
+    full-block road and half a block below a slab road. All targets are
+    whole-block levels, so the interval is a single exact value or empty;
   - the shift is chosen from the **legal interval** (plan D 2026-10-15): the
-    shifted door floor must stay within half a block of every door road cell;
-    inside the interval the shift closest to zero wins; the median is only the
-    fallback when the interval is empty. `buildingShiftMedianWingBlocks`
-    (default 0 = off) optionally clamps the shift around the median scheme's
-    shift;
-  - the overlap guard compares **only against other movable pieces**
-    (`T15Planner#overlaps`). A street or terminator box is one block tall but
-    sits exactly along the road edge the building opens onto, so the old
-    all-pieces comparison walked almost every shift back to zero;
+    shifted Y0 top must stay within half a block of every door road cell's
+    solid level; inside the interval the shift closest to zero wins; the median
+    is only the fallback when the interval is empty (a mixed full+slab door).
+    `buildingShiftMedianWingBlocks` (default 0 = off) optionally clamps the
+    shift around the median scheme's shift;
+  - the overlap guard compares **only against other movable pieces** and only
+    on a **strict intersection** (`T15Planner#overlaps`, F-A 2026-10-15: the old
+    `<=`/`>=` counted touching boxes, so any flush neighbour - even a 1x1 hay
+    pile - could pin the component at the vanilla position). A street or
+    terminator box is not an obstacle at all;
   - `BuildingShift` has **no `SPAN_TOO_WIDE` refusal** any more. It left the
     building at the vanilla terrain height beside a smoothed road, which is the
     symptom it was supposed to avoid.

@@ -8,7 +8,12 @@ package dev.peoplecanfly.village_path_smoothed.pipeline;
 import dev.peoplecanfly.village_path_smoothed.compat.VpsCompat;
 import dev.peoplecanfly.village_path_smoothed.duck.FeaturePoolElementVpsAccess;
 import dev.peoplecanfly.village_path_smoothed.duck.SinglePoolElementVpsAccess;
+import dev.peoplecanfly.village_path_smoothed.duck.StructureTemplateVpsAccess;
+import net.minecraft.core.BlockPos;
 import net.minecraft.core.Holder;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.BlockStateProperties;
+import net.minecraft.world.level.block.state.properties.DoubleBlockHalf;
 import net.minecraft.world.level.levelgen.structure.BoundingBox;
 import net.minecraft.world.level.levelgen.structure.PoolElementStructurePiece;
 import net.minecraft.world.level.levelgen.structure.StructurePiece;
@@ -16,9 +21,13 @@ import net.minecraft.world.level.levelgen.structure.pools.FeaturePoolElement;
 import net.minecraft.world.level.levelgen.structure.pools.JigsawJunction;
 import net.minecraft.world.level.levelgen.structure.pools.SinglePoolElement;
 import net.minecraft.world.level.levelgen.structure.pools.StructureTemplatePool;
+import net.minecraft.world.level.levelgen.structure.templatesystem.StructurePlaceSettings;
+import net.minecraft.world.level.levelgen.structure.templatesystem.StructureTemplate;
+import net.minecraft.world.level.levelgen.structure.templatesystem.StructureTemplateManager;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -122,46 +131,128 @@ public final class BuildingComponents {
 		return out.toArray(new int[0][]);
 	}
 
+	private static final int[][] NO_DOORS = new int[0][];
+
+	/**
+	 * Lower door halves {x, z} per movable piece index, read from the piece's
+	 * template (F-C, door two-symptom recheck 2026-10-15): the jigsaw connection
+	 * sits 2-7 blocks from the real door on 53 of the 120 vanilla house
+	 * templates, so the junction is not a door anchor. The template cell is
+	 * rotated with the piece the same way RoadCollector rotates road cells
+	 * (pivot ZERO, no mirror - exactly {@code SinglePoolElement#getSettings});
+	 * only the XZ position is needed. Pieces without a template, without doors
+	 * or with a failing load map to an empty array - callers fall back to the
+	 * junctions (farms and pens carry no doors either).
+	 */
+	public static Map<Integer, int[][]> templateDoors(List<StructurePiece> pieces, StructureTemplateManager templateManager) {
+		Map<Integer, int[][]> out = new HashMap<>();
+		if (templateManager == null) {
+			return out;
+		}
+		for (int i = 0; i < pieces.size(); i++) {
+			StructurePiece piece = pieces.get(i);
+			if (!isMovable(piece) || !(piece instanceof PoolElementStructurePiece pool)
+					|| !(pool.getElement() instanceof SinglePoolElement element)) {
+				continue;
+			}
+			String location = ((SinglePoolElementVpsAccess) element).village_path_smoothed$getTemplateLocation();
+			if (location == null) {
+				out.put(i, NO_DOORS); // runtime pool element without a location
+				continue;
+			}
+			try {
+				StructureTemplate template = VpsCompat.loadTemplate(templateManager, location);
+				List<StructureTemplate.Palette> palettes = ((StructureTemplateVpsAccess) template).village_path_smoothed$getPalettes();
+				if (palettes == null || palettes.isEmpty()) {
+					out.put(i, NO_DOORS);
+					continue;
+				}
+				StructurePlaceSettings settings = new StructurePlaceSettings().setRotation(pool.getRotation());
+				StructureTemplate.Palette palette = settings.getRandomPalette(palettes, pool.getPosition());
+				List<int[]> doors = new ArrayList<>();
+				for (StructureTemplate.StructureBlockInfo info : palette.blocks()) {
+					//#if MC >= 12001
+					//$$ BlockState state = info.state();
+					//$$ BlockPos infoPos = info.pos();
+					//#else
+					BlockState state = info.state;
+					BlockPos infoPos = info.pos;
+					//#endif
+					if (!state.hasProperty(BlockStateProperties.DOUBLE_BLOCK_HALF)
+							|| state.getValue(BlockStateProperties.DOUBLE_BLOCK_HALF) != DoubleBlockHalf.LOWER) {
+						continue; // upper half or not a door at all
+					}
+					BlockPos worldPos = StructureTemplate.calculateRelativePosition(settings, infoPos).offset(pool.getPosition());
+					doors.add(new int[]{worldPos.getX(), worldPos.getZ()});
+				}
+				out.put(i, doors.toArray(new int[0][]));
+			} catch (Throwable t) {
+				// an unloadable template must cost the door anchors, not the village
+				out.put(i, NO_DOORS);
+			}
+		}
+		return out;
+	}
+
 	/**
 	 * Door-front cells {frontX, frontZ, outwardDX, outwardDZ} of every movable
-	 * piece: one block outside each non-RIGID junction, i.e. each connection to a
-	 * street/terminator/centre piece rather than to another building. The outward
-	 * axis is the dominant axis from the footprint centre to the junction source
-	 * (the junction stores only the building-side position, not the direction), so
-	 * the door front is the first block outside the wall.
+	 * piece. Since F-C (door two-symptom recheck 2026-10-15) the anchor is the
+	 * piece's template door block: one front cell per lower door half, one step
+	 * outside the wall along the dominant axis from the footprint centre to the
+	 * door. Template door facings are deliberately NOT used - measured on the
+	 * 120 vanilla house templates, only 30% of the unambiguous door leaves face
+	 * outward, 56% face inward.
 	 *
-	 * <p>The writer suppresses the railing on the door front so a doorway can never
-	 * be fenced in (user decision 2026-10-15).
+	 * <p>A piece without template doors (a farm or a pen, or a template that
+	 * failed to load) falls back to its non-RIGID junctions - each connection to
+	 * a street/terminator/centre piece rather than to another building - with
+	 * the same footprint-centre axis rule. Every door of the template gets a
+	 * front, including the ones facing RIGID attachments or plazas (R7 fix).
+	 *
+	 * <p>The writer suppresses the railing on the door front (within one block)
+	 * so a doorway can never be fenced in (user decision 2026-10-15; the 3x3
+	 * box shape is kept per the R8 decision of 2026-10-15).
 	 */
-	public static int[][] doorFronts(List<StructurePiece> pieces) {
+	public static int[][] doorFronts(List<StructurePiece> pieces, Map<Integer, int[][]> doorsByPiece) {
 		List<int[]> out = new ArrayList<>();
-		for (StructurePiece piece : pieces) {
+		for (int i = 0; i < pieces.size(); i++) {
+			StructurePiece piece = pieces.get(i);
 			if (!isMovable(piece) || !(piece instanceof PoolElementStructurePiece pool)) {
 				continue;
 			}
 			BoundingBox box = piece.getBoundingBox();
 			int cx = (box.minX() + box.maxX()) / 2;
 			int cz = (box.minZ() + box.maxZ()) / 2;
-			for (JigsawJunction junction : pool.getJunctions()) {
-				if (junction.getDestProjection() == StructureTemplatePool.Projection.RIGID) {
-					continue; // attaches to another building, not a door
+			int[][] pieceDoors = doorsByPiece != null ? doorsByPiece.get(i) : null;
+			if (pieceDoors != null && pieceDoors.length > 0) {
+				for (int[] door : pieceDoors) {
+					addDoorFront(out, door[0], door[1], cx, cz);
 				}
-				int sx = junction.getSourceX();
-				int sz = junction.getSourceZ();
-				int dx = Integer.compare(sx, cx);
-				int dz = Integer.compare(sz, cz);
-				if (Math.abs(sx - cx) < Math.abs(sz - cz)) {
-					dx = 0; // z is the dominant axis
-				} else {
-					dz = 0; // x is the dominant axis (ties pick x)
+			} else {
+				for (JigsawJunction junction : pool.getJunctions()) {
+					if (junction.getDestProjection() == StructureTemplatePool.Projection.RIGID) {
+						continue; // attaches to another building, not a door
+					}
+					addDoorFront(out, junction.getSourceX(), junction.getSourceZ(), cx, cz);
 				}
-				if (dx == 0 && dz == 0) {
-					continue; // junction at the footprint centre: no direction to derive
-				}
-				out.add(new int[]{sx + dx, sz + dz, dx, dz});
 			}
 		}
 		return out.toArray(new int[0][]);
+	}
+
+	/** One front cell one step outside the wall along the dominant axis from the footprint centre to the anchor. */
+	private static void addDoorFront(List<int[]> out, int ax, int az, int cx, int cz) {
+		int dx = Integer.compare(ax, cx);
+		int dz = Integer.compare(az, cz);
+		if (Math.abs(ax - cx) < Math.abs(az - cz)) {
+			dx = 0; // z is the dominant axis
+		} else {
+			dz = 0; // x is the dominant axis (ties pick x)
+		}
+		if (dx == 0 && dz == 0) {
+			return; // anchor at the footprint centre: no direction to derive
+		}
+		out.add(new int[]{ax + dx, az + dz, dx, dz});
 	}
 
 	public static List<Component> group(List<StructurePiece> pieces) {

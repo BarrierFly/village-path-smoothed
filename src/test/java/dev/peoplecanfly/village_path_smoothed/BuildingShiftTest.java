@@ -26,6 +26,14 @@ import static org.junit.Assert.assertTrue;
  * median is replaced by the legal interval: the door floor must stay within
  * half a block of every door road cell, the shift inside the interval closest
  * to zero wins, the median is only the fallback.
+ *
+ * <p>Plan E (user decision 2026-10-15, door two-symptom recheck): the anchor
+ * is the template's real door block (not the junction), the reference is the
+ * Y0 layer (vanilla designs the foundation to face the road), and every door
+ * road cell presents its SOLID level - a slab counts as air and presents the
+ * level below, so the house's Y0 layer sits half a block below a slab road.
+ * All targets are whole-block levels: the interval is a single exact value or
+ * empty, and the parity fallback flag cannot fire any more.
  */
 public class BuildingShiftTest {
 	private static ShiftDecision shift(int[] road, int baseY) {
@@ -74,41 +82,50 @@ public class BuildingShiftTest {
 	}
 
 	@Test
-	public void slabRoadKeepsTheBuildingWhereItIsWhenLegal() {
-		// median 129 = walk surface 64.5: the door floor at 65 is half a block
-		// above it - legal (a half-slab step), and the shift closest to zero is
-		// 0. The old code moved the building a whole block and flagged parity;
-		// the interval accepts the half step and moves nothing.
+	public void slabRoadCountsAsAirAndSitsTheFloorHalfBelow() {
+		// plan E: the slab cells (129 = walk 64.5) count as AIR and present the
+		// level below (target 128 = walk 64) - the door floor aligns exactly onto
+		// it, half a block below the slab's walk surface, moving the building
+		// down one. The old plan D rule kept the building where it was (floor
+		// half ABOVE the slab); the user decision flipped it ("让房屋底层比半砖路低半格").
 		ShiftDecision d = shift(new int[]{129, 129}, 64);
 		assertEquals(Reason.SERVED, d.reason());
 		assertTrue(d.viaInterval());
-		assertEquals(0, d.shift());
+		assertEquals("floor 65 -> 64: the slab is air", -1, d.shift());
 		assertFalse("an interval pick never flags parity", d.doorParityOdd());
 	}
 
 	@Test
-	public void oddMedianParityIsFlaggedOnlyOnTheFallback() {
-		// {129, 133} spans 2 whole blocks: the interval is empty, the median
-		// (133 -> walk 66.5) decides: shift = round(66.5 - 65) = 2, odd parity
+	public void slabSpanFallsBackToTheMedianOfWholeLevels() {
+		// {129, 133} are slabs at walks 64.5/66.5; plan E converts them to the
+		// solid levels {128, 132} (2 whole blocks apart): the interval is empty,
+		// the median of the TARGETS (132 -> floor 66) decides: shift = 66 - 65 =
+		// 1. The parity flag cannot fire any more - every target is a whole
+		// block, so the floor always matches exactly on the fallback.
 		ShiftDecision d = shift(new int[]{129, 133}, 64);
 		assertEquals(Reason.SERVED, d.reason());
 		assertFalse(d.viaInterval());
-		assertTrue(d.doorParityOdd());
-		assertEquals(2, d.shift());
+		assertFalse("whole-block targets never flag parity (plan E)", d.doorParityOdd());
+		assertEquals(1, d.shift());
 	}
 
 	@Test
 	public void intervalPicksTheShiftClosestToZero() {
-		// {133, 133} = walk 66.5: legal shifts are {1, 2} (door floor 66 or 67),
-		// closest to zero is 1
+		// {133, 133} = slabs at walk 66.5 -> solid targets 132: the floor goes to
+		// 66 exactly, shift 1
 		ShiftDecision d = shift(new int[]{133, 133}, 64);
 		assertTrue(d.viaInterval());
 		assertEquals(1, d.shift());
 		// a single legal value stays exactly there
 		assertEquals(2, shift(new int[]{134, 134}, 64).shift());
-		// two slab cells one whole block apart share the legal door floor 65
-		assertEquals(0, shift(new int[]{129, 131}, 64).shift());
-		// a full block and a slab one apart: only the slab-matched floor fits
+		// two slab cells one whole block apart (walks 64.5/65.5) convert to
+		// targets {128, 130} - no single floor fits both, so the median of the
+		// targets (130) decides: shift 0 via the fallback, not the interval
+		ShiftDecision slabs = shift(new int[]{129, 131}, 64);
+		assertEquals(0, slabs.shift());
+		assertFalse(slabs.viaInterval());
+		// a full block and a slab one apart: the slab converts to the full
+		// block's level, the floor matches it exactly
 		assertEquals(-1, shift(new int[]{128, 129}, 64).shift());
 	}
 
@@ -143,6 +160,19 @@ public class BuildingShiftTest {
 		assertEquals(0, d.shift());
 		// a road one block above: shift up one
 		assertEquals(1, shift(new int[]{-58, -58, -58}, -31).shift());
+	}
+
+	@Test
+	public void solidTargetPresentsTheLevelBelowASlab() {
+		// plan E: a full road block presents its own top walk surface; a bottom
+		// slab counts as air and presents the walk surface of the block below
+		assertEquals(128, BuildingShift.solidTargetP(128));
+		assertEquals(128, BuildingShift.solidTargetP(129));
+		assertEquals(130, BuildingShift.solidTargetP(131));
+		assertEquals(0, BuildingShift.solidTargetP(0));
+		assertEquals(0, BuildingShift.solidTargetP(1));
+		assertEquals(-60, BuildingShift.solidTargetP(-60));
+		assertEquals(-60, BuildingShift.solidTargetP(-59));
 	}
 
 	@Test

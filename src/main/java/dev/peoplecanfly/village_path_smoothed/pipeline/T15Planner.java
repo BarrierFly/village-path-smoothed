@@ -115,6 +115,10 @@ public final class T15Planner {
 		if (components.isEmpty()) {
 			return solution;
 		}
+		// F-C: the template's real door blocks, loaded once per plan and shared by
+		// the alignment, the door fronts and the offset counter below
+		Map<Integer, int[][]> doorsByPiece = BuildingComponents.templateDoors(pieces, templateManager);
+		countDoorAnchorOffsets(pieces, components, doorsByPiece);
 
 		int minY = ctx.getMinY();
 		int maxY = ctx.getMaxY();
@@ -122,7 +126,7 @@ public final class T15Planner {
 		List<int[]> shifted = new ArrayList<>();
 
 		for (BuildingComponents.Component component : components) {
-			int desired = desiredShift(network, component, pieces, config);
+			int desired = desiredShift(network, component, pieces, doorsByPiece, config);
 			if (desired == Integer.MIN_VALUE) {
 				continue; // no road access / unserved: left where it is
 			}
@@ -158,7 +162,7 @@ public final class T15Planner {
 		// read after the shift: the boxes must describe where the buildings really
 		// are, because the writer uses them to refuse a road column (plan A).
 		solution.buildingBoxes = BuildingComponents.movableBoxes(pieces);
-		solution.doorFronts = BuildingComponents.doorFronts(pieces);
+		solution.doorFronts = BuildingComponents.doorFronts(pieces, doorsByPiece);
 
 		// Review 4 section 7 (P1): close the probe gap that the move just opened.
 		// The road profile was solved against beard boxes taken BEFORE the shift,
@@ -303,19 +307,22 @@ public final class T15Planner {
 	 * road several blocks away and ended up off its own doorstep. Now:
 	 *
 	 * <ol>
-	 *   <li>the door is the component's junctions whose {@code destProjection} is
-	 *       not RIGID - that is exactly a connection to a non-building piece (a
-	 *       street, terminator or centre piece), and its source position is the
-	 *       parent jigsaw, i.e. the doorstep;</li>
+	 *   <li>the door is the component's <b>template door block</b> - the lower
+	 *       door halves read from the piece's template (F-C, 2026-10-15: the
+	 *       junction sits 2-7 blocks from the door on 53 of the 120 vanilla
+	 *       house templates, so anchoring on it left the door-side road
+	 *       unconstrained - the measured "road higher than the door" symptom);</li>
 	 *   <li>the candidates are the road cells closest (Chebyshev) to a door
 	 *       point, searched within a small radius of the footprint;</li>
-	 *   <li>with no door junction (a component that only touches other buildings)
-	 *       the nearest ring of the footprint is used instead.</li>
+	 *   <li>with no template door (a component that only touches other
+	 *       buildings, or a farm/pen without door blocks) the connection
+	 *       junctions are the fallback, and with no junction at all the nearest
+	 *       ring of the footprint is used instead.</li>
 	 * </ol>
 	 */
 	private static int[] adjacentRoadHeights(RoadNetwork network, BuildingComponents.Component component,
-			List<StructurePiece> pieces) {
-		int[][] doors = doorPoints(component, pieces);
+			List<StructurePiece> pieces, Map<Integer, int[][]> doorsByPiece) {
+		int[][] doors = doorPoints(component, pieces, doorsByPiece);
 		int searchPad = DOOR_SEARCH_PAD;
 		int best = Integer.MAX_VALUE;
 		List<Integer> values = new ArrayList<>();
@@ -346,9 +353,26 @@ public final class T15Planner {
 	/** How far past the footprint a door's road cell may sit and still count. */
 	private static final int DOOR_SEARCH_PAD = 4;
 
-	/** Door positions {x, z}: junctions on this component that connect to a non-building piece. */
-	private static int[][] doorPoints(BuildingComponents.Component component, List<StructurePiece> pieces) {
+	/**
+	 * Door positions {x, z} of one component: the template's lower door halves
+	 * (F-C), or - when the component carries none - its non-RIGID connection
+	 * junctions (the pre-F-C rule, kept as the fallback for farms, pens and
+	 * unloadable templates).
+	 */
+	private static int[][] doorPoints(BuildingComponents.Component component, List<StructurePiece> pieces,
+			Map<Integer, int[][]> doorsByPiece) {
 		List<int[]> doors = new ArrayList<>();
+		for (int idx : component.pieceIndices) {
+			int[][] pieceDoors = doorsByPiece.get(idx);
+			if (pieceDoors != null) {
+				for (int[] door : pieceDoors) {
+					doors.add(door);
+				}
+			}
+		}
+		if (!doors.isEmpty()) {
+			return doors.toArray(new int[0][]);
+		}
 		for (int idx : component.pieceIndices) {
 			StructurePiece piece = pieces.get(idx);
 			if (!(piece instanceof PoolElementStructurePiece pool)) {
@@ -378,16 +402,17 @@ public final class T15Planner {
 	}
 
 	/**
-	 * Vertical shift so the component's door interior floor meets the adjacent
-	 * road walk surfaces, delegated to the pure {@link BuildingShift} helper
-	 * (review 3 T5, plan D interval rework 2026-10-15) with the diagnostic
-	 * counters kept here. The optional median two-wing limit
-	 * ({@code buildingShiftMedianWingBlocks}, 0 = off) clamps the chosen shift
-	 * around the legacy median scheme's shift.
+	 * Vertical shift so the component's Y0 layer top (the interior floor) meets
+	 * the solid levels of the adjacent road cells, delegated to the pure
+	 * {@link BuildingShift} helper (review 3 T5, plan D interval rework and
+	 * plan E slab-as-air targets, 2026-10-15) with the diagnostic counters kept
+	 * here. The optional median two-wing limit ({@code
+	 * buildingShiftMedianWingBlocks}, 0 = off) clamps the chosen shift around
+	 * the legacy median scheme's shift.
 	 */
 	private static int desiredShift(RoadNetwork network, BuildingComponents.Component component, List<StructurePiece> pieces,
-			VillagePathSmoothedConfig config) {
-		int[] adjacent = adjacentRoadHeights(network, component, pieces);
+			Map<Integer, int[][]> doorsByPiece, VillagePathSmoothedConfig config) {
+		int[] adjacent = adjacentRoadHeights(network, component, pieces, doorsByPiece);
 		BuildingShift.ShiftDecision decision = BuildingShift.desiredShift(adjacent, component.baseY);
 		switch (decision.reason()) {
 			case NO_ROAD:
@@ -400,11 +425,10 @@ public final class T15Planner {
 					shift = Math.max(decision.medianShift() - wing, Math.min(decision.medianShift() + wing, shift));
 				}
 				if (decision.doorParityOdd()) {
-					// B3-4: the MEDIAN FALLBACK aligned the door to a slab level. The
-					// optional third (hard-boundary) solve pass that would force an
-					// even door cell is not run, so count it as a parity fallback. An
-					// interval pick never flags: the door floor is whole-block by
-					// construction and the half-block tolerance already accepted it.
+					// B3-4: the MEDIAN FALLBACK aligned the door to a slab level. Since
+					// plan E (slab-as-air targets, 2026-10-15) every target is a whole
+					// block, so this can no longer fire; the counter is kept so a
+					// regression to raw-slab targets stays visible.
 					VpsPipeline.DOOR_PARITY_FALLBACK.incrementAndGet();
 				}
 				return shift;
@@ -427,8 +451,8 @@ public final class T15Planner {
 	}
 
 	/**
-	 * Reduces the shift toward zero until the moved component no longer intersects
-	 * any <b>other movable (building) piece</b>.
+	 * Reduces the shift toward zero until the moved component no longer
+	 * <b>strictly intersects</b> any other movable (building) piece.
 	 *
 	 * <p>User decision 2026-10-14: only movable pieces count. Comparing against
 	 * every piece (the old rule) meant a street or terminator piece - whose
@@ -437,6 +461,12 @@ public final class T15Planner {
 	 * walked the shift all the way back to zero and the building stayed at the
 	 * vanilla terrain height. Interpenetrating a street with a correctly aligned
 	 * building is not a defect; interpenetrating another building is.
+	 *
+	 * <p>F-A (door two-symptom recheck 2026-10-15): the AABB test is a STRICT
+	 * intersection. The old {@code <=}/{@code >=} comparison counted touching
+	 * boxes as overlapping, so any movable neighbour flush against the building
+	 * (even a 1x1 hay pile) could pin the whole component at the vanilla
+	 * position - the alignment then lost by the slope's 1-2 blocks.
 	 */
 	private static int resolveOverlap(List<StructurePiece> pieces, BuildingComponents.Component component, int dy) {
 		int candidate = dy;
@@ -463,9 +493,10 @@ public final class T15Planner {
 					continue; // streets, terminators and decor: not an obstacle (user decision 2026-10-14)
 				}
 				BoundingBox o = pieces.get(other).getBoundingBox();
-				if (minX <= o.maxX() && maxX >= o.minX()
-						&& minY <= o.maxY() && maxY >= o.minY()
-						&& minZ <= o.maxZ() && maxZ >= o.minZ()) {
+				// F-A: strict intersection - touching boxes are not an overlap
+				if (minX < o.maxX() && maxX > o.minX()
+						&& minY < o.maxY() && maxY > o.minY()
+						&& minZ < o.maxZ() && maxZ > o.minZ()) {
 					return true;
 				}
 			}
@@ -552,6 +583,57 @@ public final class T15Planner {
 		return a.getDeltaY() == -b.getDeltaY()
 				&& Math.abs(a.getSourceX() - b.getSourceX()) <= 1
 				&& Math.abs(a.getSourceZ() - b.getSourceZ()) <= 1;
+	}
+
+	/**
+	 * F-D (door two-symptom recheck 2026-10-15): the Chebyshev distance from
+	 * every non-RIGID connection junction to the nearest template door block of
+	 * its component, bucketed into /vps stats. This is the distribution that
+	 * made candidate C visible - 53 of the 120 vanilla house templates sit at
+	 * offset 2 or more, and every one of them used to align on the wrong side.
+	 * Components without template doors (farms, pens) contribute nothing.
+	 */
+	private static void countDoorAnchorOffsets(List<StructurePiece> pieces, List<BuildingComponents.Component> components,
+			Map<Integer, int[][]> doorsByPiece) {
+		for (BuildingComponents.Component component : components) {
+			List<int[]> doors = new ArrayList<>();
+			for (int idx : component.pieceIndices) {
+				int[][] pieceDoors = doorsByPiece.get(idx);
+				if (pieceDoors != null) {
+					for (int[] door : pieceDoors) {
+						doors.add(door);
+					}
+				}
+			}
+			if (doors.isEmpty()) {
+				continue;
+			}
+			for (int idx : component.pieceIndices) {
+				StructurePiece piece = pieces.get(idx);
+				if (!(piece instanceof PoolElementStructurePiece pool)) {
+					continue;
+				}
+				for (JigsawJunction junction : pool.getJunctions()) {
+					if (junction.getDestProjection() == StructureTemplatePool.Projection.RIGID) {
+						continue;
+					}
+					int best = Integer.MAX_VALUE;
+					for (int[] door : doors) {
+						best = Math.min(best, Math.max(Math.abs(junction.getSourceX() - door[0]), Math.abs(junction.getSourceZ() - door[1])));
+					}
+					if (best == Integer.MAX_VALUE) {
+						continue;
+					}
+					switch (Math.min(best, 4)) {
+						case 0 -> VpsPipeline.DOOR_ANCHOR_OFFSET_0.incrementAndGet();
+						case 1 -> VpsPipeline.DOOR_ANCHOR_OFFSET_1.incrementAndGet();
+						case 2 -> VpsPipeline.DOOR_ANCHOR_OFFSET_2.incrementAndGet();
+						case 3 -> VpsPipeline.DOOR_ANCHOR_OFFSET_3.incrementAndGet();
+						default -> VpsPipeline.DOOR_ANCHOR_OFFSET_4_PLUS.incrementAndGet();
+					}
+				}
+			}
+		}
 	}
 
 }

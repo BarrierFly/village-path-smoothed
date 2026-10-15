@@ -214,7 +214,15 @@ public final class VillagePathSmoothedConfig {
 
 	public static class WaterCrossing {
 		public boolean enabled = true;
+		/**
+		 * Deprecated (user decision 2026-10-15): the placed scaffold distance now
+		 * mirrors vanilla's own {@code getDistance} exactly (sturdy below anchors
+		 * at 0, scaffolding chains propagate at +1), so the first tick recomputes
+		 * the same value by construction. Both fields are kept for config
+		 * compatibility and are unused.
+		 */
 		public int distanceWhenSupported = 0;
+		/** Deprecated together with {@link #distanceWhenSupported}. */
 		public int distanceWhenUnsupported = 1;
 	}
 

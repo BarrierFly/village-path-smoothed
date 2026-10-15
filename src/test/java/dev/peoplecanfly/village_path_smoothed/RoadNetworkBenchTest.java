@@ -422,11 +422,20 @@ public class RoadNetworkBenchTest {
 	 * triggered it" structural rather than a convention.
 	 */
 	private static int baseP(int x, int z, Height model, Height real, MaskBuilder mask, SolverPath path) {
+		int topY;
 		if (path == SolverPath.NOISE || mask.shape != NetworkShape.WINDOW) {
-			return 2 * model.topY(x, z);
+			topY = model.topY(x, z);
+		} else {
+			int[] center = ProbeWindow.centerChunk(mask.minX, mask.maxX, mask.minZ, mask.maxZ);
+			topY = ProbeWindow.inWindow(x, z, center[0], center[1]) ? real.topY(x, z) : model.topY(x, z);
 		}
-		int[] center = ProbeWindow.centerChunk(mask.minX, mask.maxX, mask.minZ, mask.maxZ);
-		return 2 * (ProbeWindow.inWindow(x, z, center[0], center[1]) ? real.topY(x, z) : model.topY(x, z));
+		// plan E (user decision 2026-10-15): the water counts as SOLID, so an
+		// underwater column's baseP is the FLAT water surface walk - the same
+		// value the real collector probes off the heightmap (WORLD_SURFACE_WG
+		// includes the water), never the bed below it. The bed-walk model was
+		// indistinguishable while the anchor was soft and became an
+		// unsatisfiable wiggly floor once the water went hard.
+		return 2 * (topY <= WATER_LEVEL ? WATER_LEVEL : topY);
 	}
 
 	// ==================================================================
@@ -591,9 +600,10 @@ public class RoadNetworkBenchTest {
 			// the water rule the writer applies (user decision 2026-10-15): a
 			// crossing is raised to the water surface (scaffold) when at or below
 			// it, and keeps its solved surface as a bridge deck when above. The
-			// bench's surfaceTopY convention makes the water surface 2 * realTop.
+			// water surface is the flat WATER_LEVEL walk (2 * WATER_LEVEL), the
+			// same raise target the real writer computes off the heightmap.
 			written[i] = crossing
-					? RoadWritePolicy.crossingWrittenWalkSurface2(column.walkSurface2(), 2 * realTop)
+					? RoadWritePolicy.crossingWrittenWalkSurface2(column.walkSurface2(), 2 * WATER_LEVEL)
 					: column.walkSurface2();
 			crossingCells[i] = column.written() && crossing;
 			if (column.written() && column.overrodeSolved()) {

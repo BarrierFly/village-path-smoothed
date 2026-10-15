@@ -70,6 +70,9 @@ Rules:
     (>= 1.20.1): `MixinGravityProcessor`. The **parameter list** of
     `GravityProcessor#processBlock` itself is identical in all six versions,
     so no branch is needed for the descriptor - only for the accessor.
+- `CompoundTag#getString` returns `Optional<String>` from **1.21.10** (was
+  `String`) - see `RoadCollector`'s jigsaw `final_state` read for the branch
+  shape (`//#if MC >= 12110`).
 - `SinglePoolElement#getTemplateLocation()` does not exist on 1.19.4 - always
   go through the `@Accessor("template")` mixin (the field name is stable).
 - `GravityProcessor` is added **last** by `SinglePoolElement#getSettings`
@@ -139,22 +142,41 @@ Rules:
   clamped. What is left of the old "snap onto the real surface" behaviour is the
   guarded single-cell nudge below.
 - **A water crossing is never below the water surface (user decision
-  2026-10-15).** `RoadWritePolicy.crossingWrittenWalkSurface2(profile, water)` is
-  `max(profile, water)` over the water surface `2 * surfaceTopY`:
-  - profile **at or below** the water -> raised to the water surface; the
-    **scaffold IS the walk surface** there (user decision 2026-10-14): it
-    replaces the road block at the water block's Y, which is what makes a
-    crossing read as a plank bridge. The old rule (scaffold as support *under*
-    the road block) put it one block under the water surface and out of sight.
+  2026-10-15; enforced in the SOLVE since plan E, 2026-10-15).** The water
+  counts as SOLID when the road height is determined: an anchor cell's `baseP`
+  (the water surface) is a hard floor in `candidatesFor`, `runCandidates`, the
+  polish and the conflict sweep, regardless of `allowCutIntoTerrain` - the
+  solve no longer produces a soaked profile, so
+  `RoadWritePolicy.crossingWrittenWalkSurface2` (`max(profile, water)`) is the
+  writer's safety net, not a hoist that fires:
+  - profile **at** the water -> the **scaffold IS the walk surface** (user
+    decision 2026-10-14): it replaces the road block at the water block's Y,
+    which is what makes a crossing read as a plank bridge. The old rule
+    (scaffold as support *under* the road block) put it one block under the
+    water surface and out of sight.
   - profile **above** the water -> the solved surface is kept and the cell is a
     **forced bridge deck**: no scaffold and **no support fill from the waterbed**,
     however shallow the water is (`WATER_BRIDGE_CELLS`). Never stack a dirt
     causeway up from the bottom.
+  - **A water scaffold is a pure deck (user decision 2026-10-15, 纯桥面不支撑):**
+    no support fill from the waterbed at all - the water stays under the bridge
+    and the old underwater dirt causeway is gone. The placed distance mirrors
+    vanilla's own `ScaffoldingBlock#getDistance` (sturdy below anchors at 0,
+    scaffolding chains propagate at +1, else 7), so a span further than 7 blocks
+    from any sturdy support decays on the first tick exactly like a
+    player-built scaffold bridge would - accepted; the old
+    `waterCrossing.distanceWhenSupported/Unsupported` are deprecated (the honest
+    computation replaces them).
   A scaffold is a full block, so at the water surface a crossing cell whose
   solved surface is a slab is written half a block high; that half step is
   **accepted** and modelled in `RoadNetworkBenchTest` as `crossingViolEdg`
   (exempted from the continuity gate). Do not "fix" it by snapping the solved
   height - that breaks the half-step chain.
+- **Slabs and leaves placed into water go down waterlogged (user decision
+  2026-10-15).** Road slabs and leaf railings check the target cell for a water
+  source and set WATERLOGGED (`WATERLOGGED_PLACEMENTS` in /vps stats) instead of
+  silently displacing the water. Full road blocks are not waterloggable and are
+  unaffected; desert villages have no water and need no special case.
 - **Clearing runs to `min(clear cap, real surface top)` (user decision
   2026-10-15).** `RoadWriter#clearAbove` / `RoadWritePolicy#clearTopY` end at
   `min(road + maxClearLayers, WORLD_SURFACE_WG - 1)`, not at the first air of the

@@ -57,6 +57,8 @@ public final class VpsPipeline {
 	public static final AtomicLong SCAFFOLD_WATER_SELF = new AtomicLong();
 	public static final AtomicLong SCAFFOLD_WATER_BELOW = new AtomicLong();
 	public static final AtomicLong SCAFFOLD_DRY = new AtomicLong();
+	/** User decision 2026-10-15: slabs and leaf railings placed into water go down waterlogged. */
+	public static final AtomicLong WATERLOGGED_PLACEMENTS = new AtomicLong();
 	// Review 4 risk R3: a claimed cell whose profile write threw and fell back
 	// to a surface-anchored road block. Should stay at zero; a non-zero value
 	// means the profile write is throwing per cell.

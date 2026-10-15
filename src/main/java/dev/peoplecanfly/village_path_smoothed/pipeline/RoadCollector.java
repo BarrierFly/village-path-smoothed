@@ -589,7 +589,7 @@ public final class RoadCollector {
 			//#else
 			CompoundTag nbt = info.nbt;
 			//#endif
-			//#if MC >= 12111
+			//#if MC >= 12110
 			//$$ finalState = nbt == null ? null : nbt.getString("final_state").orElse(null);
 			//#else
 			finalState = nbt == null ? null : nbt.getString("final_state");

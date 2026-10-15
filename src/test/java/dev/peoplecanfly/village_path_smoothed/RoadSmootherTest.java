@@ -86,6 +86,23 @@ public class RoadSmootherTest {
 		assertTrue("a conflict squeezed against a pin keeps a counted residual", violations >= 1);
 	}
 
+	@Test
+	public void waterCellsNeverSolveBelowTheirSurface() {
+		// plan E: the water counts as SOLID when the road height is determined -
+		// even with allowCutIntoTerrain the solve may not dip a crossing below
+		// the water surface. Without the floor SMOOTH_FIRST would flatten the
+		// whole crossing down to the bank level (0 violations, 0 steps); with it
+		// the profile climbs to the water instead and the crossing stays on it.
+		List<RoadCell> cells = new ArrayList<>();
+		for (int x = 0; x < 5; x++) {
+			boolean water = x == 2;
+			cells.add(new RoadCell(x, 0, "plains", water ? 30 : 20, water));
+		}
+		RoadNetwork net = RoadNetwork.build(cells, 4);
+		RoadSmoother.solve(net, params(Objective.SMOOTH_FIRST));
+		assertTrue("the crossing stays on the water surface", net.cells.get(2).solvedP >= 30);
+	}
+
 	private static void assertViolationsAtMost(RoadNetwork net, int allowed) {
 		int violations = 0;
 		for (int i = 0; i < net.cells.size(); i++) {

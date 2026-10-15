@@ -396,8 +396,10 @@ public record SolveParams(
 					int before = target.solvedP;
 					// fix plan v4 D7: with allowCutIntoTerrain = false the road may
 					// never sit below the terrain, so the cell's own baseP is a hard
-					// floor the polish cannot push through either
-					int floor = allowCut ? Integer.MIN_VALUE : target.baseP;
+					// floor the polish cannot push through either. plan E: the same
+					// floor holds for water cells at every config - the water surface
+					// is solid ground.
+					int floor = (!allowCut || target.anchor) ? target.baseP : Integer.MIN_VALUE;
 					lo = Math.max(lo, floor);
 					int after;
 					if (lo > hi) {
@@ -480,11 +482,11 @@ public record SolveParams(
 					low.solvedP += excess;
 				} else if (pinnedLow) {
 					// the pinned low cannot go up: the high gives what its own floor allows
-					int room = allowCut ? excess : Math.max(0, Math.min(excess, high.solvedP - high.baseP));
+					int room = (allowCut && !high.anchor) ? excess : Math.max(0, Math.min(excess, high.solvedP - high.baseP));
 					high.solvedP -= room;
 				} else {
 					int half = (excess + 1) / 2;
-					int room = allowCut ? half : Math.min(half, high.solvedP - high.baseP);
+					int room = (allowCut && !high.anchor) ? half : Math.min(half, high.solvedP - high.baseP);
 					if (room < 0) {
 						room = 0;
 					}
@@ -1203,7 +1205,12 @@ public record SolveParams(
 			lo = cell.baseP - window;
 			hi = cell.baseP + window;
 		}
-		if (!p.allowCut()) {
+		// plan E (user decision 2026-10-15): a water cell counts as SOLID - the
+		// road surface is determined with the water as the ground, so its baseP
+		// (the water surface) is a hard floor regardless of allowCutIntoTerrain.
+		// The writer never hoists a soaked road any more because the solve no
+		// longer produces one.
+		if (!p.allowCut() || cell.anchor) {
 			lo = Math.max(lo, cell.baseP);
 		}
 		if (hardBounds != null && hardBounds[cell.index] != null) {
@@ -1586,7 +1593,8 @@ public record SolveParams(
 		}
 		int window = Math.max(1, p.windowHalf());
 		int centre = cell.baseP;
-		int lo = p.allowCut() ? centre - window : Math.max(centre, cell.baseP);
+		// plan E: a water cell's baseP (the water surface) is a hard floor - see candidatesFor
+		int lo = (!p.allowCut() || cell.anchor) ? Math.max(centre, cell.baseP) : centre - window;
 		int hi = centre + window;
 		int perpA = rowsAlongX ? RoadNetwork.DIR_NORTH : RoadNetwork.DIR_WEST;
 		int perpB = rowsAlongX ? RoadNetwork.DIR_SOUTH : RoadNetwork.DIR_EAST;

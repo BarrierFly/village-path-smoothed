@@ -19,6 +19,7 @@ import net.minecraft.world.level.block.LeavesBlock;
 import net.minecraft.world.level.block.ScaffoldingBlock;
 import net.minecraft.world.level.block.SlabBlock;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.level.block.state.properties.SlabType;
 import net.minecraft.world.level.levelgen.structure.BoundingBox;
 
@@ -128,6 +129,11 @@ public final class RoadWriter {
 	public static final AtomicLong RAILINGS_SKIPPED_AT_DOOR = new AtomicLong();
 	/** Railings suppressed beside water because the road is not above the water surface (user decision 2026-10-15). */
 	public static final AtomicLong RAILINGS_SKIPPED_AT_WATER = new AtomicLong();
+	/**
+	 * User decision 2026-10-15: road slabs and leaf railings placed into a water
+	 * source block go down WATERLOGGED instead of silently displacing the water.
+	 */
+	public static final AtomicLong WATERLOGGED_PLACEMENTS = new AtomicLong();
 	private static volatile boolean warnedClampedWrites;
 	private static volatile boolean warnedFallbackReanchors;
 
@@ -407,7 +413,7 @@ public final class RoadWriter {
 		// manufactured a |dP| >= 2 step against the neighbouring solved cells
 		// (exactly the drop class N1 forbids) to hide a probe error that this
 		// counter now exposes instead.
-		if (config.roadSmoothing.enabled && !aboveWater
+		if (config.roadSmoothing.enabled && !aboveWater && !scaffold
 				&& RoadWritePolicy.overBudget(cell.solvedP, groundTopY, ceilingTopY,
 						config.roadSmoothing.maxFillLayers, config.roadSmoothing.maxClearLayers)) {
 			FALLBACK_REANCHORS.incrementAndGet();
@@ -433,14 +439,24 @@ public final class RoadWriter {
 				// and no support fill from the waterbed, however close the bottom is
 				// (user decision 2026-10-15). The deck stays at the solved height.
 				if (slab) {
-					setBlock(ctx, x, roadTopBlockY - 1, z, materials.slabBlock
+					setWaterloggableBlock(ctx, x, roadTopBlockY - 1, z, materials.slabBlock
 							.defaultBlockState()
 							.setValue(SlabBlock.TYPE, SlabType.TOP));
 				}
 				BlockState roadState = slab
 						? materials.slabBlock.defaultBlockState()
 						: roadBlock.defaultBlockState();
-				setBlock(ctx, x, roadTopBlockY, z, roadState);
+				setWaterloggableBlock(ctx, x, roadTopBlockY, z, roadState);
+			} else if (scaffold) {
+				// Pure scaffold deck (user decision 2026-10-15): the scaffold IS
+				// the crossing's walk surface (user decision 2026-10-14) and the
+				// water stays under it - the old support fill from the waterbed
+				// (the underwater dirt causeway) is gone. The placed distance
+				// mirrors vanilla's own getDistance, so a span further than 7
+				// blocks from any sturdy support decays on the first tick exactly
+				// like a player-built scaffold bridge would.
+				placeScaffolding(ctx, x, z, roadTopBlockY, isWater(ctx, x, roadTopBlockY, z));
+				VpsPipeline.SCAFFOLDS_PLACED.incrementAndGet();
 			} else {
 				// Support below the walk surface, down to the ground the downward
 				// probe found (never above it); when the fill exceeds maxFillLayers
@@ -455,25 +471,15 @@ public final class RoadWriter {
 					fillSupport(ctx, x, z, groundTopY, roadTopBlockY, materials, config);
 				}
 
-				if (scaffold) {
-					// The scaffold IS the crossing's walk surface (user decision
-					// 2026-10-14): replacing the road block is what makes a water
-					// crossing read as a plank bridge instead of a road with an
-					// invisible support block below it. Only AT the water surface
-					// now; a crossing above it takes the bridge branch above.
-					placeScaffolding(ctx, x, z, roadTopBlockY, isWater(ctx, x, roadTopBlockY, z), config);
-					VpsPipeline.SCAFFOLDS_PLACED.incrementAndGet();
-				} else {
-					if (bridge && slab) {
-						setBlock(ctx, x, roadTopBlockY - 1, z, materials.slabBlock
-								.defaultBlockState()
-								.setValue(SlabBlock.TYPE, SlabType.TOP));
-					}
-					BlockState roadState = slab
-							? materials.slabBlock.defaultBlockState()
-							: roadBlock.defaultBlockState();
-					setBlock(ctx, x, roadTopBlockY, z, roadState);
+				if (bridge && slab) {
+					setWaterloggableBlock(ctx, x, roadTopBlockY - 1, z, materials.slabBlock
+							.defaultBlockState()
+							.setValue(SlabBlock.TYPE, SlabType.TOP));
 				}
+				BlockState roadState = slab
+						? materials.slabBlock.defaultBlockState()
+						: roadBlock.defaultBlockState();
+				setWaterloggableBlock(ctx, x, roadTopBlockY, z, roadState);
 			}
 			// Clear upward to min(clear cap, real surface top): never stop at the
 			// first air, so a cave inside the cap is cleared out too (user decision
@@ -810,8 +816,23 @@ public final class RoadWriter {
 		if (leaves.hasProperty(LeavesBlock.PERSISTENT)) {
 			leaves = leaves.setValue(LeavesBlock.PERSISTENT, true);
 		}
-		setBlock(ctx, x, walkSurfaceY, z, leaves);
+		setWaterloggableBlock(ctx, x, walkSurfaceY, z, leaves);
 		VpsPipeline.RAILINGS_PLACED.incrementAndGet();
+	}
+
+	/**
+	 * Places a block that carries the WATERLOGGED property (a road slab or a
+	 * leaf railing), waterlogged when it lands in a water source block (user
+	 * decision 2026-10-15 - rare, but a wet slab must not silently displace the
+	 * water it was placed into). Full road blocks (dirt path, sandstone) are not
+	 * waterloggable and never route through here.
+	 */
+	private static void setWaterloggableBlock(VpsGenContext ctx, int x, int y, int z, BlockState state) {
+		if (state.hasProperty(BlockStateProperties.WATERLOGGED) && isWater(ctx, x, y, z)) {
+			state = state.setValue(BlockStateProperties.WATERLOGGED, true);
+			VpsPipeline.WATERLOGGED_PLACEMENTS.incrementAndGet();
+		}
+		setBlock(ctx, x, y, z, state);
 	}
 
 	/**
@@ -820,19 +841,37 @@ public final class RoadWriter {
 	 *
 	 * <p>waterlogged = water at the scaffold block itself; the caller passes that
 	 * exact read, not the wider crossing predicate (review 3 F8-1).
+	 *
+	 * <p>The placed DISTANCE mirrors vanilla {@code ScaffoldingBlock#getDistance}
+	 * exactly (AGENTS.md: the first tick must recompute the same distance we
+	 * placed): a sturdy block below anchors the column at 0, a scaffolding block
+	 * below inherits its distance, horizontal scaffolding neighbours propagate at
+	 * +1, anything else reads 7. The old two config distances are superseded by
+	 * this honest computation; a span further than 7 blocks from any support
+	 * decays on the first tick - the accepted price of the pure scaffold deck
+	 * (user decision 2026-10-15).
 	 */
-	private static void placeScaffolding(VpsGenContext ctx, int x, int z, int scaffoldY, boolean waterlogged, VillagePathSmoothedConfig config) {
+	private static void placeScaffolding(VpsGenContext ctx, int x, int z, int scaffoldY, boolean waterlogged) {
 		BlockPos belowPos = new BlockPos(x, scaffoldY - 1, z);
 		BlockState below = ctx.blockState(x, scaffoldY - 1, z);
-		// vanilla ScaffoldingBlock#getDistance counts a column as supported when
-		// the block below has a sturdy UP face - NOT when it is a full collision
-		// cube, so slabs or snow-covered grass count as support too; our writer
-		// must use the identical criterion or the first tick will recompute a
-		// different distance than we placed (bottom-of-village drift)
-		boolean supported = below.isFaceSturdy(ctx.level, belowPos, Direction.UP);
-		int distance = supported
-				? Math.max(0, Math.min(7, config.waterCrossing.distanceWhenSupported))
-				: Math.max(0, Math.min(7, config.waterCrossing.distanceWhenUnsupported));
+		int distance;
+		if (below.is(Blocks.SCAFFOLDING)) {
+			distance = below.getValue(ScaffoldingBlock.DISTANCE);
+		} else if (below.isFaceSturdy(ctx.level, belowPos, Direction.UP)) {
+			distance = 0;
+		} else {
+			distance = 7;
+			for (int side = 0; side < SIDE_DX.length; side++) {
+				BlockState neighbour = ctx.blockState(x + SIDE_DX[side], scaffoldY, z + SIDE_DZ[side]);
+				if (neighbour.is(Blocks.SCAFFOLDING)) {
+					distance = Math.min(distance, neighbour.getValue(ScaffoldingBlock.DISTANCE) + 1);
+					if (distance == 1) {
+						break;
+					}
+				}
+			}
+		}
+		distance = Math.max(0, Math.min(7, distance));
 		// vanilla isBottom: distance > 0 && the block below is NOT scaffolding,
 		// i.e. a hanging scaffold reads bottom=true (the old check here was
 		// inverted: it flagged scaffolds resting on another scaffold)

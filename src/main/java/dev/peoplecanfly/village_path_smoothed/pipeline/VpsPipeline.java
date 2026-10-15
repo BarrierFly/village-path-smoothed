@@ -142,7 +142,16 @@ public final class VpsPipeline {
 	}
 
 	private static CacheKey cacheKey(String dimension, StructureStart start) {
-		return new CacheKey(dimension, start.getStructure(), start.getChunkPos().toLong());
+		return new CacheKey(dimension, start.getStructure(), anchorChunkLong(start.getChunkPos()));
+	}
+
+	/** Packs the anchor chunk; 26.3 turned ChunkPos's x/z fields into accessors. */
+	private static long anchorChunkLong(ChunkPos pos) {
+		//#if MC >= 260000
+		//$$ return ((long) pos.x() << 32) | (pos.z() & 0xFFFFFFFFL);
+		//#else
+		return ((long) pos.x << 32) | (pos.z & 0xFFFFFFFFL);
+		//#endif
 	}
 
 	private static VpsVillageSolution cachedSolution(String dimension, StructureStart start) {

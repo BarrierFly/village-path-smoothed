@@ -287,13 +287,13 @@ public final class VpsCommands {
 				RoadWriter.BUILDING_CELLS_SKIPPED.get(),
 				RoadCollector.TOWN_CENTER_CELLS.get(),
 				RoadCollector.TOWN_CENTER_NON_ROAD_SKIPPED.get(),
-				RoadWriter.FILL_ABOVE_TERRAIN_CELLS.get(),
 				RoadWriter.DEVIATION_CELLS.get() > 0
-						? String.format("%.1f", (double) RoadWriter.DEVIATION_SUM.get() / RoadWriter.DEVIATION_CELLS.get())
-						: "-",
+					? String.format("%.1f", (double) RoadWriter.DEVIATION_SUM.get() / RoadWriter.DEVIATION_CELLS.get())
+					: "-",
 				RoadWriter.DEVIATION_WORST.get(),
 				RoadWriter.DEVIATION_OVER_THRESHOLD_CELLS.get(),
 				RoadWriter.CUT_BELOW_TERRAIN_CELLS.get(),
+				RoadWriter.FILL_ABOVE_TERRAIN_CELLS.get(),
 				VpsGenContext.FLOOR_GARBAGE_HITS.get(),
 				RoadCollector.PROBE_BOUNDARY_SWITCHES.get(),
 				RoadCollector.PROBE_MISMATCH_COLUMNS.get(),

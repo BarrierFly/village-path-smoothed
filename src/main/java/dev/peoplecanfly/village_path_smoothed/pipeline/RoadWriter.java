@@ -32,6 +32,7 @@ import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.level.block.state.properties.RotationSegment;
 import net.minecraft.world.level.block.state.properties.SlabType;
 import net.minecraft.world.level.levelgen.structure.BoundingBox;
+import net.minecraft.world.level.Level;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -162,7 +163,8 @@ public final class RoadWriter {
 	 *        cell may take the single-cell surface nudge (never at a building door)
 	 */
 	public static void write(RoadNetwork net, VpsGenContext ctx, BoundingBox chunkBB, VillagePathSmoothedConfig config,
-			int[][] shiftedComponents, int[][] buildingBoxes, int[][] doorFronts, int[][] doorSigns, String village) {
+			int[][] shiftedComponents, int[][] buildingBoxes, int[][] doorFronts, int[][] doorSigns,
+			int[][] seamSigns, String village) {
 		RoadMaterialTable table = RoadMaterialTable.create(config);
 		List<Block> kerbExtras = resolveKerbExtras(config);
 		// User decision 2026-10-15: every road cell applies its own edge details
@@ -194,6 +196,7 @@ public final class RoadWriter {
 		// debug door signs run LAST: a road write or a clear in this pass can
 		// never take a sign back down
 		writeDoorSigns(ctx, chunkBB, doorSigns, net);
+		writeSeamSigns(ctx, chunkBB, seamSigns);
 	}
 
 	/**
@@ -1001,33 +1004,116 @@ public final class RoadWriter {
 					.setValue(StandingSignBlock.ROTATION, RotationSegment.convertToSegment(facing));
 			setBlock(ctx, frontX, signY, frontZ, state);
 			if (ctx.level.getBlockEntity(new BlockPos(frontX, signY, frontZ)) instanceof SignBlockEntity signBlock) {
-				// road Y with exactly one decimal digit, no locale float formatting
-				String roadY = (sign[6] & 1) == 0 ? (sign[6] / 2) + ".0" : ((sign[6] - 1) / 2) + ".5";
+				attachLevel(signBlock, ctx);
 				// R4-2 (user decision 2026-10-16): line 3 is the ACTUAL door floor
 				// Y of the template's lower door half after the shift, so the
 				// assumed reference on line 1 and the real floor can be compared
 				String doorFloorY = sign.length > 8 ? Integer.toString(sign[8]) : "?";
-				//#if MC >= 260000
-				//$$ SignText.Mutable text = signBlock.getText(SignTextSlot.FRONT).asMutable();
-				//$$ text.setLine(0, Component.literal(sign[0] + " " + sign[1] + " " + sign[2]));
-				//$$ text.setLine(1, Component.literal(sign[5] + " " + roadY + " " + sign[7]));
-				//$$ text.setLine(2, Component.literal(doorFloorY));
-				//$$ signBlock.setText(text.asImmutable(), SignTextSlot.FRONT);
-				//#elseif MC >= 12001
-				//$$ SignText text = signBlock.getText(true);
-				//$$ text = text.setMessage(0, Component.literal(sign[0] + " " + sign[1] + " " + sign[2]));
-				//$$ text = text.setMessage(1, Component.literal(sign[5] + " " + roadY + " " + sign[7]));
-				//$$ text = text.setMessage(2, Component.literal(doorFloorY));
-				//$$ signBlock.setText(text, true);
-				//#else
-				signBlock.setMessage(0, Component.literal(sign[0] + " " + sign[1] + " " + sign[2]));
-				signBlock.setMessage(1, Component.literal(sign[5] + " " + roadY + " " + sign[7]));
-				signBlock.setMessage(2, Component.literal(doorFloorY));
-				//#endif
-				signBlock.setChanged();
+				setSignLines(signBlock,
+						sign[0] + " " + sign[1] + " " + sign[2],
+						sign[5] + " " + walkY(sign[6]) + " " + sign[7],
+						doorFloorY,
+						"");
 				VpsPipeline.DOOR_SIGNS_PLACED.incrementAndGet();
 			}
 		}
+	}
+
+	/**
+	 * Debug seam signs (user request 2026-10-16): one standing sign above the
+	 * anchor road cell of every mask seam, printing the two solved coordinates
+	 * and - when the seam breaks the half-block guarantee - the known cause.
+	 * Line 1/2 are "x y z" with y = solvedP / 2 (x.0 / x.5); line 3 is the
+	 * cause, line 4 the magnitude, both empty on a legal seam. The sign stands
+	 * one block ABOVE the anchor's written road block (unlike the door sign it
+	 * does not replace the road block itself). Clamped into the world so the
+	 * write cannot be silently dropped; placed when the anchor's own chunk
+	 * generates, the same incremental rule the door signs follow.
+	 */
+	private static void writeSeamSigns(VpsGenContext ctx, BoundingBox chunkBB, int[][] seamSigns) {
+		if (seamSigns == null || seamSigns.length == 0) {
+			return;
+		}
+		for (int[] seam : seamSigns) {
+			int x = seam[0];
+			int z = seam[2];
+			if (x < chunkBB.minX() || x > chunkBB.maxX() || z < chunkBB.minZ() || z > chunkBB.maxZ()) {
+				continue; // the sign's own chunk places it
+			}
+			int roadTopBlockY = RoadWritePolicy.roadBlockY(seam[1], (seam[1] & 1) != 0);
+			int signY = Math.max(ctx.getMinY(), Math.min(ctx.getMaxY(), roadTopBlockY + 1));
+			BlockState state = Blocks.OAK_SIGN.defaultBlockState()
+					.setValue(StandingSignBlock.ROTATION, RotationSegment.convertToSegment(Direction.NORTH));
+			setBlock(ctx, x, signY, z, state);
+			if (!(ctx.level.getBlockEntity(new BlockPos(x, signY, z)) instanceof SignBlockEntity signBlock)) {
+				VpsPipeline.SEAM_SIGNS_NO_BE.incrementAndGet();
+				continue;
+			}
+			attachLevel(signBlock, ctx);
+			String reason = SeamSigns.reasonName(seam[6]);
+			int diff = Math.abs(seam[1] - seam[4]);
+			String magnitude = reason.isEmpty() ? "" : "d " + walkY(diff);
+			setSignLines(signBlock,
+					seam[0] + " " + walkY(seam[1]) + " " + seam[2],
+					seam[3] + " " + walkY(seam[4]) + " " + seam[5],
+					reason,
+					magnitude);
+			VpsPipeline.SEAM_SIGNS_PLACED.incrementAndGet();
+		}
+	}
+
+	/** Walk surface (half units) as "x.0" / "x.5", locale-free, no float formatting. */
+	private static String walkY(int halfP) {
+		return (halfP & 1) == 0 ? (halfP / 2) + ".0" : ((halfP - 1) / 2) + ".5";
+	}
+
+	/**
+	 * Worldgen block entities are created without a {@code Level}, so the sign
+	 * text API (which calls {@code Level#sendBlockUpdated} from
+	 * {@code SignBlockEntity#markUpdated}) throws a NullPointerException at write
+	 * time. Attaching the owning Level first makes the same write path work during
+	 * worldgen (no players receive the update). A {@code WorldGenRegion} is not a
+	 * {@code Level}, so its ServerLevel is used.
+	 */
+	private static void attachLevel(SignBlockEntity signBlock, VpsGenContext ctx) {
+		Level level = null;
+		try {
+			if (ctx.level instanceof net.minecraft.server.level.WorldGenRegion region) {
+				level = region.getLevel();
+			} else if (ctx.level instanceof Level serverLevel) {
+				level = serverLevel;
+			}
+		} catch (Throwable ignored) {
+			return;
+		}
+		if (level != null) {
+			signBlock.setLevel(level);
+		}
+	}
+
+	/** Writes four sign lines with the version-correct API. */
+	private static void setSignLines(SignBlockEntity signBlock, String l0, String l1, String l2, String l3) {
+		//#if MC >= 260000
+		//$$ SignText.Mutable text = signBlock.getText(SignTextSlot.FRONT).asMutable();
+		//$$ text.setLine(0, Component.literal(l0));
+		//$$ text.setLine(1, Component.literal(l1));
+		//$$ text.setLine(2, Component.literal(l2));
+		//$$ text.setLine(3, Component.literal(l3));
+		//$$ signBlock.setText(text.asImmutable(), SignTextSlot.FRONT);
+		//#elseif MC >= 12001
+		//$$ SignText text = signBlock.getText(true);
+		//$$ text = text.setMessage(0, Component.literal(l0));
+		//$$ text = text.setMessage(1, Component.literal(l1));
+		//$$ text = text.setMessage(2, Component.literal(l2));
+		//$$ text = text.setMessage(3, Component.literal(l3));
+		//$$ signBlock.setText(text, true);
+		//#else
+		signBlock.setMessage(0, Component.literal(l0));
+		signBlock.setMessage(1, Component.literal(l1));
+		signBlock.setMessage(2, Component.literal(l2));
+		signBlock.setMessage(3, Component.literal(l3));
+		//#endif
+		signBlock.setChanged();
 	}
 
 	private static void setBlock(VpsGenContext ctx, int x, int y, int z, BlockState state) {

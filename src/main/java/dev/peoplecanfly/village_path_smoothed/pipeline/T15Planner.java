@@ -148,6 +148,7 @@ public final class T15Planner {
 		int maxY = ctx.getMaxY();
 		if (components.isEmpty()) {
 			settleSeats(solution.network, pieces, minY, maxY, config);
+			solution.seamSigns = computeSeamSigns(solution.network, config);
 			return solution;
 		}
 
@@ -224,6 +225,7 @@ public final class T15Planner {
 		if (shifted.isEmpty() && !plazaMoved(plazaComponents) && !plazaPinsMismatch(network)) {
 			settleSeats(solution.network, pieces, minY, maxY, config);
 			solution.doorSigns = computeDoorSigns(components, pieces, doorsByPiece, solution.network);
+			solution.seamSigns = computeSeamSigns(solution.network, config);
 			return solution;
 		}
 
@@ -239,6 +241,7 @@ public final class T15Planner {
 		T15_RESOLVED_AFTER_SHIFT.incrementAndGet();
 		settleSeats(resolved, pieces, minY, maxY, config);
 		solution.doorSigns = computeDoorSigns(components, pieces, doorsByPiece, resolved);
+		solution.seamSigns = computeSeamSigns(resolved, config);
 
 		if (config.diagnostics.dumpRoadNetwork) {
 			VillagePathSmoothed.LOGGER.info("[VPS] T1.5 village at {}: {} cells, {} building components, {} shifted, {} cells after the post-shift re-solve",
@@ -300,6 +303,19 @@ public final class T15Planner {
 			doorCount += doors.length;
 		}
 		VpsPipeline.DOOR_SIGNS_WITHOUT_ROAD.addAndGet(doorCount - signs.length);
+		return signs;
+	}
+
+	/**
+	 * Debug seam signs (user request 2026-10-16, always on): one sign per seam
+	 * cell of the solved mask, so the half-block guarantee can be verified on
+	 * foot. The illegal edges (|dP| more than half a block) are counted as
+	 * observations; the sign itself names the cause on lines 3/4.
+	 */
+	static int[][] computeSeamSigns(RoadNetwork net, VillagePathSmoothedConfig config) {
+		int[][] signs = SeamSigns.compute(net, config.roadSmoothing.allowCutIntoTerrain);
+		VpsPipeline.SEAM_SIGNS_COMPUTED.addAndGet(signs.length);
+		VpsPipeline.SEAM_STEP_VIOLATIONS.addAndGet(SeamSigns.violationCount(signs));
 		return signs;
 	}
 
@@ -778,6 +794,7 @@ public final class T15Planner {
 					// R1-4 (2026-10-16): counted only - the clean fix (pin the seat
 					// before the solve) waits for the edge-village frequency.
 					SEAT_EDGE_CLAMPED.incrementAndGet();
+					cell.edgeClamped = true;
 					cell.solvedP = (box.minY() + clamped) * 2;
 				}
 				piece.move(0, clamped, 0);

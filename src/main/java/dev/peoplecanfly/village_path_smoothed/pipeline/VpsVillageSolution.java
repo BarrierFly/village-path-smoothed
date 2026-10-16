@@ -47,6 +47,16 @@ public final class VpsVillageSolution {
 	 * network so line 2 names the surface the writer really renders.
 	 */
 	public int[][] doorSigns = new int[0][];
+	/**
+	 * Debug seam signs (user request 2026-10-16, always on): one entry per seam
+	 * cell of the solved mask - {anchorX, anchorSolvedP, anchorZ, farX,
+	 * farSolvedP, farZ, reason}. A seam is a 4-adjacency edge whose cells come
+	 * from different sources (different piece, plaza vs road, seat vs road); the
+	 * writer places a standing sign above the anchor road cell printing the two
+	 * solved coordinates and, when the edge is not legal, the known cause.
+	 * Computed on the FINAL network so the printed Y is what the writer renders.
+	 */
+	public int[][] seamSigns = new int[0][];
 
 	public VpsVillageSolution(RoadNetwork network) {
 		this.network = network;

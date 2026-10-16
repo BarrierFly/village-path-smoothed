@@ -287,6 +287,24 @@ Rules:
   so EVERY door gets its sign; `door signs placed / no road` in `/vps stats`
   documents the skips. No config gate; the water-seat base rules are deliberately
   untouched by it.
+- **Debug seam signs are always on (user request 2026-10-16).** `SeamSigns`
+  (pure) walks every 4-adjacency edge of the solved mask and emits one sign per
+  "seam cell": an edge whose two cells come from different sources - two
+  different `street/terminator` pieces (`pieceIndex` differs), a plaza cell next
+  to a non-plaza cell, or a decor-seat cell next to a non-seat cell. The sign is
+  anchored on the more structural cell (plaza > seat > normal, then the lower
+  packedXZ) and names the differing-kind neighbour with the largest `|dP|`
+  (ties keep the lowest x/z). The writer places one standing oak sign one block
+  ABOVE the anchor's written road block (it does NOT replace the road block, only
+  the air above it): line 1 "anchorX anchorY anchorZ", line 2 "farX farY farZ"
+  with Y = `solvedP / 2` (x.0 / x.5), and - only when `|dP| >= 2` (more than half
+  a block, i.e. the solver's continuity promise broke) - line 3 the known cause
+  and line 4 its magnitude (`d`). The causes, in priority order: `PLAZA PIN`
+  (a pinned flat plaza group), `SEAT PARITY` (a decor seat on an even surface),
+  `WATER FLOOR` (the water-surface floor), `WORLD EDGE` (a seat clamped at the
+  world edge), `NO-CUT FLOOR` (a `baseP` hard floor with `allowCutIntoTerrain=false`),
+  else `POLISH RESID`. `seam signs placed / step violations` in `/vps stats`
+  documents the volume and the illegal seams.
 - **Plan A: a building always wins its column (user decision 2026-10-15).**
   `VpsVillageSolution#buildingBoxes` carries the 3D boxes of every protected
   piece - movable buildings plus the immovable hay piles

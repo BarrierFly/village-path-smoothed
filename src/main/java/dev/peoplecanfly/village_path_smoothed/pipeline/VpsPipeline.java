@@ -148,6 +148,14 @@ public final class VpsPipeline {
 	// village network held no road cell at all (no second line, no sign).
 	public static final AtomicLong DOOR_SIGNS_PLACED = new AtomicLong();
 	public static final AtomicLong DOOR_SIGNS_WITHOUT_ROAD = new AtomicLong();
+	// Debug seam signs (user request 2026-10-16): seam cells of the solved mask
+	// whose |dP| against the different-source neighbour is more than half a block
+	// (a residual with a named cause). SEAM_SIGNS counts every sign emitted.
+	public static final AtomicLong SEAM_SIGNS_COMPUTED = new AtomicLong();
+	public static final AtomicLong SEAM_SIGNS_PLACED = new AtomicLong();
+	/** Seam signs whose target cell did not yield a sign block entity at write time (diagnostic). */
+	public static final AtomicLong SEAM_SIGNS_NO_BE = new AtomicLong();
+	public static final AtomicLong SEAM_STEP_VIOLATIONS = new AtomicLong();
 
 	private VpsPipeline() {
 	}
@@ -251,7 +259,8 @@ public final class VpsPipeline {
 			runBuildingGuard(solution, ctx, config);
 		}
 		RoadWriter.write(solution.network, ctx, chunkBB, config, solution.shiftedComponents,
-				solution.buildingBoxes, solution.doorFronts, solution.doorSigns, String.valueOf(start.getChunkPos()));
+				solution.buildingBoxes, solution.doorFronts, solution.doorSigns, solution.seamSigns,
+				String.valueOf(start.getChunkPos()));
 	}
 
 	/**
@@ -522,6 +531,7 @@ public final class VpsPipeline {
 		solution.doorFronts = BuildingComponents.doorFronts(start.getPieces(), t5DoorsByPiece, network);
 		solution.doorSigns = T15Planner.computeDoorSigns(BuildingComponents.group(start.getPieces()),
 				start.getPieces(), t5DoorsByPiece, network);
+		solution.seamSigns = T15Planner.computeSeamSigns(network, config);
 
 		long nanos = System.nanoTime() - begin;
 		SOLVE_NANOS.addAndGet(nanos);

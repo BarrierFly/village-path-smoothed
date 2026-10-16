@@ -78,6 +78,12 @@ public final class RoadCell {
 	public boolean seat;
 	/** The seat's final_state block id (e.g. "grass_block"); rendered by the writer. */
 	public String seatBlock;
+	/**
+	 * R1-4 / seam reason: set when {@code settleSeats} had to clamp a seat's
+	 * solved level at the world edge, so the decor piece could not reach the pin.
+	 * Diagnostic only; the seam signs name it as a known smoothing blocker.
+	 */
+	public boolean edgeClamped;
 
 	public RoadCell(int x, int z, String style, int baseP, boolean anchor) {
 		this.index = -1;

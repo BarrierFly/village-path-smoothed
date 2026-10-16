@@ -212,9 +212,15 @@ Rules:
 - **No railing on a movable building's door front (user decision 2026-10-15;
   re-anchored on the template's real doors, F-C/R7, 2026-10-15).**
   `BuildingComponents#doorFronts` derives one front cell per lower door half
-  read from the piece's template (`BuildingComponents#templateDoors`), one step
-  outside the wall along the footprint-centre-to-door axis; template facings are
-  deliberately not used (only 30% of vanilla door leaves face outward). A piece
+  read from the piece's template (`BuildingComponents#templateDoors`). **R3-1
+  (user decision 2026-10-16): the front direction is the step from the door
+  toward the NEAREST ROAD CELL** (whole network, horizontal Manhattan distance,
+  dominant axis with x breaking the tie - `DoorSigns#stepTowardRoad`), because
+  the road network is the only ground truth for "the way out"; the old
+  footprint-centre-to-door axis is kept only as the fallback when the network
+  holds no road cell, and every disagreement between the two is counted
+  (`DOOR_FRONT_DIR_MISMATCH`). Template facings are deliberately not used (only
+  30% of vanilla door leaves face outward). A piece
   without template doors (farm/pen, unloaded template) falls back to its
   non-RIGID junctions. EVERY template door gets a front, including doors facing
   RIGID attachments or plazas (the R7 fix). The writer skips railings on that
@@ -266,10 +272,17 @@ Rules:
   building's template door front gets one standing oak sign: line 1 the door X/Z
   with the base walk level the alignment used (baseY + dy + 1, the Y0 layer top),
   line 2 the corresponding road cell's X/Z and its solved walk surface (x.0/x.5,
-  numbers only, locale-free integer formatting). The corresponding road cell is
-  the Chebyshev-nearest cell in the WHOLE network, ties preferring the door-front
-  cell then the lower x/z (`DoorSigns`, pure). Signs are placed after the road
-  cells of their own chunk. Debug visibility beats fidelity (user decision
+  numbers only, locale-free integer formatting), and **line 3 the actual door
+  floor Y** of the template's lower door half after the shift (R4-2, user
+  decision 2026-10-16), so the assumed reference and the real floor can be
+  compared. The corresponding road cell is the cell nearest the door by the
+  **horizontal Manhattan distance** in the WHOLE network, ties keeping the lower
+  x/z (`DoorSigns`, pure). **R4-1 (user decision 2026-10-16): this is the SAME
+  cell the building alignment and the railing exemption use** - the alignment
+  additionally restricts the search to the footprint plus `DOOR_SEARCH_PAD` so a
+  component with no road nearby still stays put (a `no-road` component's sign may
+  name a farther cell; every door still gets a sign). Signs are placed after the
+  road cells of their own chunk. Debug visibility beats fidelity (user decision
   2026-10-16): the sign replaces whatever occupies the target cell and may float,
   so EVERY door gets its sign; `door signs placed / no road` in `/vps stats`
   documents the skips. No config gate; the water-seat base rules are deliberately
@@ -347,6 +360,13 @@ Rules:
     higher (doorY > 1, e.g. the stilt fisher cottage) keeps its door above the
     road on purpose. Aligning `baseY` itself left every door one whole block
     above its road (the measured +1.5 door offsets);
+  - **R2-A (user decision 2026-10-16): `baseY` is the median of the component
+    pieces' bounding-box minY with the 1x1 pieces EXCLUDED** (`BuildingShift#componentBaseY`;
+    all-1x1 components fall back to the whole set). A light or decoration hung on
+    the house's up jigsaw is a 1x1 RIGID piece one or two blocks above the house;
+    with the old upper-median of every piece a "house + decor" 2-piece component
+    took the decor's minY as its base and the whole house aligned one or two
+    blocks too low. `BASEY_DECOR_UPPER` counts the components the exclusion moved;
   - every door road cell presents its **SOLID level** (`BuildingShift#solidTargetP`,
     plan E 2026-10-15): a full block its own top, a bottom slab counts as AIR
     and presents the level below - the house's Y0 layer sits flush with a
@@ -407,6 +427,15 @@ Rules:
   fountain): the vanilla rigid platform IS the solved surface by construction,
   and only the edge details run on the plaza boundary
   (`PLAZA_CELLS_VANILLA` / `PLAZA_GROUPS` / `PLAZAS_SHIFTED` in `/vps stats`).
+  **R1-1 (user decision 2026-10-16): the post-shift phase-2 re-solve is not
+  skipped just because nothing moved.** A plaza group whose dy the overlap or
+  world-height guard pushed back to zero keeps its phase-1 pin (the noise median)
+  while its rigid platform still renders at the vanilla level, so the two
+  disagree - the phase-2 re-pin (which follows the real render level) is exactly
+  what corrects the plaza edge. The guard is "no building moved AND no plaza group
+  moved AND no plaza group's phase-1 pin differs from its real render level"
+  (`T15Planner#plazaPinsMismatch`); `PLAZA_OVERLAP_GUARDS` counts the clamped
+  groups.
 - **The solved village is cached on the anchor chunk, not only on the start
   instance (plan E, 2026-10-15).** A village spans many chunks and later
   placements can meet fresh `StructureStart` instances; the extra instances used
@@ -477,6 +506,19 @@ Rules:
 - New counters are wired into `/vps stats` in the column they belong to
   (integrity / defects / model gap / solve / buildings), and the file's
   hard-constraint list is kept in step with them.
+- **R1-2 (user decision 2026-10-16): a y=0 street block that is non-solid or
+  replaceable is NOT road.** `RoadCollector#isRoadSurfaceCell` (the default
+  `TEMPLATE_Y0_SOLID` rule) still takes "any y=0 non-marker block" as road, but a
+  block that `canBeReplaced()` (a plant such as a dead bush, a torch, a snow
+  layer) is excluded by block semantics - not by a material whitelist, so a
+  legitimate street material is never dropped. `TEMPLATE_Y0_NON_SOLID_SKIPPED`
+  and `/vps debug y0` are the y=0 histogram the decision is measured against.
+- **R1-3 / R1-4 (user decision 2026-10-16, observation only):** a dropped seat
+  probe is counted (`SEAT_PROBE_DROPPED`) and a seat whose normal write threw now
+  falls back to the SEAT block instead of road material
+  (`RoadWriter#writeSeatFallback`, `SEAT_WRITE_FALLBACK`); a seat clamped at the
+  world edge by `settleSeats` is counted (`SEAT_EDGE_CLAMPED`) - the clean
+  pre-solve pin waits for the edge-village frequency.
 - Write blocks with `Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE` (vanilla
   structure flags): no client updates during worldgen and heightmaps stay
   untouched (so our own probes stay consistent).

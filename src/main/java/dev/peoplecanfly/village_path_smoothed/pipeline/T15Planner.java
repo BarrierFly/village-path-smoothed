@@ -66,6 +66,14 @@ public final class T15Planner {
 	 */
 	public static final java.util.concurrent.atomic.AtomicLong SEAT_DECOR_PIECES_MOVED =
 			new java.util.concurrent.atomic.AtomicLong();
+	/**
+	 * R1-4 (four-symptom fix plan 2026-10-16): seat columns whose decor piece
+	 * would leave the world bounds, so {@code settleSeats} clamps the seat's
+	 * solved level to the decor's reachable height. Counted only (the fix is a
+	 * pre-solve pin, deferred until the edge-village frequency is known).
+	 */
+	public static final java.util.concurrent.atomic.AtomicLong SEAT_EDGE_CLAMPED =
+			new java.util.concurrent.atomic.AtomicLong();
 
 	private T15Planner() {
 	}
@@ -183,7 +191,10 @@ public final class T15Planner {
 		// read after the shift: the boxes must describe where the buildings really
 		// are, because the writer uses them to refuse a road column (plan A).
 		solution.buildingBoxes = BuildingComponents.protectedBoxes(pieces);
-		solution.doorFronts = BuildingComponents.doorFronts(pieces, doorsByPiece);
+		// R3-1 (2026-10-16): the front direction reads the road network; the cell
+		// POSITIONS are identical in phase 1 and the phase-2 re-solve, so the
+		// first network is enough and the mismatch is counted exactly once.
+		solution.doorFronts = BuildingComponents.doorFronts(pieces, doorsByPiece, network);
 
 		// Review 4 section 7 (P1): close the probe gap that the move just opened.
 		// The road profile was solved against beard boxes taken BEFORE the shift,
@@ -205,7 +216,12 @@ public final class T15Planner {
 		// from the common path entirely. It is safe rather than merely cheap:
 		// solution.network already holds the first pass's network, and nothing
 		// between the two passes mutates it when dy == 0 for every component.
-		if (shifted.isEmpty() && !plazaMoved(plazaComponents)) {
+		// R1-1 (2026-10-16): "nothing moved" is not enough to skip the phase-2
+		// re-solve. A plaza group whose dy the overlap/world guard pushed back to
+		// zero leaves its phase-1 pin at the noise median, but the rigid platform
+		// still renders at its vanilla level (plazaVanillaP) - the two disagree,
+		// so the second collect+solve is exactly what corrects the plaza edge.
+		if (shifted.isEmpty() && !plazaMoved(plazaComponents) && !plazaPinsMismatch(network)) {
 			settleSeats(solution.network, pieces, minY, maxY, config);
 			solution.doorSigns = computeDoorSigns(components, pieces, doorsByPiece, solution.network);
 			return solution;
@@ -258,14 +274,20 @@ public final class T15Planner {
 				int cx = (box.minX() + box.maxX()) / 2;
 				int cz = (box.minZ() + box.maxZ()) / 2;
 				for (int[] door : pieceDoors) {
-					int[] axis = BuildingComponents.outwardAxis(door[0], door[1], cx, cz);
+					// R3-1/R4-1 (2026-10-16): the sign stands one step toward the
+					// nearest road cell (the same direction the railing exemption
+					// uses), falling back to the footprint-centre axis when the
+					// network holds no road cell; a door at both no-direction
+					// cases keeps the sign in its own column (visibility first)
+					int[] axis = DoorSigns.stepTowardRoad(net, door[0], door[1]);
+					if (axis == null) {
+						axis = BuildingComponents.outwardAxis(door[0], door[1], cx, cz);
+					}
+					int floorY = door.length > 2 ? door[2] + component.dy : component.baseY + component.dy;
 					if (axis != null) {
-						doors.add(new int[]{door[0], door[1], axis[0], axis[1]});
+						doors.add(new int[]{door[0], door[1], axis[0], axis[1], floorY});
 					} else {
-						// a door at the footprint centre: no outward direction to
-						// derive - the sign stands in the door column itself
-						// (debug visibility beats fidelity, user decision 2026-10-16)
-						doors.add(new int[]{door[0], door[1], 0, 0});
+						doors.add(new int[]{door[0], door[1], 0, 0, floorY});
 					}
 				}
 			}
@@ -342,12 +364,17 @@ public final class T15Planner {
 			component.baseY = baseY;
 			// the pin is a walk surface in half units (always even); the platform
 			// block layer that renders it sits at level / 2 - 1
-			int dy = level / 2 - 1 - baseY;
-			dy = clampWorldHeight(pieces, component, dy, minY, maxY);
+			int requested = level / 2 - 1 - baseY;
+			int dy = clampWorldHeight(pieces, component, requested, minY, maxY);
 			if (maxShift > 0) {
 				dy = Math.max(-maxShift, Math.min(maxShift, dy));
 			}
 			dy = resolveOverlap(pieces, component, dy);
+			if (dy != requested) {
+				// R1-1: the guard (overlap or world height) pushed the group off the
+				// level the solver pinned it to - the phase-2 re-pin must run.
+				VpsPipeline.PLAZA_OVERLAP_GUARDS.incrementAndGet();
+			}
 			component.dy = dy;
 			if (dy != 0) {
 				for (int idx : component.pieceIndices) {
@@ -373,6 +400,27 @@ public final class T15Planner {
 	}
 
 	/**
+	 * R1-1 (2026-10-16): true when any plaza group's phase-1 pin - the median of
+	 * the noise-probed terrain set by {@code applyPlazaPins(true)} - differs from
+	 * the level the owning rigid pieces really render at ({@code plazaVanillaP},
+	 * read live off the boxes). A group whose dy the guard pushed back to zero
+	 * keeps its phase-1 noise median but the platform still renders at its vanilla
+	 * level, so the first solve pinned the plaza to the wrong height; only the
+	 * phase-2 re-pin (which follows the moved pieces) corrects it.
+	 */
+	private static boolean plazaPinsMismatch(RoadNetwork network) {
+		for (int[] group : network.plazaGroups) {
+			for (int idx : group) {
+				RoadCell cell = network.cells.get(idx);
+				if (cell.plazaPinned && cell.plazaPinP != cell.plazaVanillaP) {
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+
+	/**
 	 * Road heights the component should align to: the road cells nearest its
 	 * <b>door</b>, i.e. the front where it connects to the street network (user
 	 * decision 2026-10-14).
@@ -387,32 +435,42 @@ public final class T15Planner {
 	 *       junction sits 2-7 blocks from the door on 53 of the 120 vanilla
 	 *       house templates, so anchoring on it left the door-side road
 	 *       unconstrained - the measured "road higher than the door" symptom);</li>
-	 *   <li>the candidates are the road cells closest (Chebyshev) to a door
-	 *       point, searched within a small radius of the footprint;</li>
+	 *   <li>each door contributes exactly <b>one</b> road cell: the cell nearest
+	 *       the door by the <b>horizontal Manhattan distance</b>
+	 *       ({@code |dx| + |dz|}), searched inside the footprint plus
+	 *       {@link #DOOR_SEARCH_PAD}. The old rule took every cell at the minimum
+	 *       Chebyshev distance, which is what let a diagonal cell win and pulled
+	 *       the alignment off the orthogonal doorway (R4-1, user decision
+	 *       2026-10-16);</li>
+	 *   <li>the component's shift is then decided over the one height per door
+	 *       (multiple doors still resolve through the median/interval rule);</li>
 	 *   <li>with no template door (a component that only touches other
 	 *       buildings, or a farm/pen without door blocks) the connection
-	 *       junctions are the fallback, and with no junction at all the nearest
-	 *       ring of the footprint is used instead.</li>
+	 *       junctions are the fallback, and with no junction at all the
+	 *       footprint centre's nearest road cell is used instead.</li>
 	 * </ol>
 	 */
 	private static int[] adjacentRoadHeights(RoadNetwork network, BuildingComponents.Component component,
 			List<StructurePiece> pieces, Map<Integer, int[][]> doorsByPiece) {
+		int[] window = {
+				component.minX - DOOR_SEARCH_PAD, component.maxX + DOOR_SEARCH_PAD,
+				component.minZ - DOOR_SEARCH_PAD, component.maxZ + DOOR_SEARCH_PAD
+		};
 		int[][] doors = doorPoints(component, pieces, doorsByPiece);
-		int searchPad = DOOR_SEARCH_PAD;
-		int best = Integer.MAX_VALUE;
 		List<Integer> values = new ArrayList<>();
-		for (RoadCell cell : network.cells) {
-			if (cell.x < component.minX - searchPad || cell.x > component.maxX + searchPad
-					|| cell.z < component.minZ - searchPad || cell.z > component.maxZ + searchPad) {
-				continue;
+		if (doors != null) {
+			for (int[] door : doors) {
+				RoadCell road = DoorSigns.nearestRoadCell(network, door[0], door[1], window);
+				if (road != null) {
+					values.add(road.solvedP);
+				}
 			}
-			int distance = doorDistance(cell, doors, component);
-			if (distance < best) {
-				best = distance;
-				values.clear();
-			}
-			if (distance == best) {
-				values.add(cell.solvedP);
+		} else {
+			int cx = (component.minX + component.maxX) / 2;
+			int cz = (component.minZ + component.maxZ) / 2;
+			RoadCell road = DoorSigns.nearestRoadCell(network, cx, cz, window);
+			if (road != null) {
+				values.add(road.solvedP);
 			}
 		}
 		if (values.isEmpty()) {
@@ -429,10 +487,10 @@ public final class T15Planner {
 	private static final int DOOR_SEARCH_PAD = 4;
 
 	/**
-	 * Door positions {x, z} of one component: the template's lower door halves
-	 * (F-C), or - when the component carries none - its non-RIGID connection
-	 * junctions (the pre-F-C rule, kept as the fallback for farms, pens and
-	 * unloadable templates).
+	 * Door positions {x, z, floorY} of one component: the template's lower door
+	 * halves (F-C), or - when the component carries none - its non-RIGID
+	 * connection junctions (the pre-F-C rule, kept as the fallback for farms,
+	 * pens and unloadable templates).
 	 */
 	private static int[][] doorPoints(BuildingComponents.Component component, List<StructurePiece> pieces,
 			Map<Integer, int[][]> doorsByPiece) {
@@ -460,20 +518,6 @@ public final class T15Planner {
 			}
 		}
 		return doors.isEmpty() ? null : doors.toArray(new int[0][]);
-	}
-
-	/** Chebyshev distance from a road cell to the nearest door, or to the footprint edge when there is no door. */
-	private static int doorDistance(RoadCell cell, int[][] doors, BuildingComponents.Component component) {
-		if (doors != null) {
-			int best = Integer.MAX_VALUE;
-			for (int[] door : doors) {
-				best = Math.min(best, Math.max(Math.abs(cell.x - door[0]), Math.abs(cell.z - door[1])));
-			}
-			return best;
-		}
-		int dx = Math.max(0, Math.max(component.minX - cell.x, cell.x - component.maxX));
-		int dz = Math.max(0, Math.max(component.minZ - cell.z, cell.z - component.maxZ));
-		return Math.max(dx, dz);
 	}
 
 	/**
@@ -505,6 +549,13 @@ public final class T15Planner {
 					// block, so this can no longer fire; the counter is kept so a
 					// regression to raw-slab targets stays visible.
 					VpsPipeline.DOOR_PARITY_FALLBACK.incrementAndGet();
+				}
+				if (!decision.viaInterval()) {
+					// R2-C (2026-10-16): the door road cells span more than the
+					// half-block tolerance can bridge, so the shift came from the
+					// median fallback. Measured only; the minimax switch waits for
+					// the real-machine frequency.
+					VpsPipeline.ALIGN_INTERVAL_FALLBACK.incrementAndGet();
 				}
 				return shift;
 			}
@@ -723,7 +774,10 @@ public final class T15Planner {
 				if (clamped != dy) {
 					// the world edge wins: pull the seat's solved level to the
 					// decor's reachable height (the phase-2 plaza precedent: the
-					// pieces are the rigid truth), so the two never disagree
+					// pieces are the rigid truth), so the two never disagree.
+					// R1-4 (2026-10-16): counted only - the clean fix (pin the seat
+					// before the solve) waits for the edge-village frequency.
+					SEAT_EDGE_CLAMPED.incrementAndGet();
 					cell.solvedP = (box.minY() + clamped) * 2;
 				}
 				piece.move(0, clamped, 0);

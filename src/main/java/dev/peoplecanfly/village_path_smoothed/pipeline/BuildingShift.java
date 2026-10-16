@@ -160,4 +160,36 @@ public final class BuildingShift {
 		Arrays.sort(copy);
 		return copy[copy.length / 2];
 	}
+
+	/**
+	 * R2-A (four-symptom fix plan 2026-10-16): the baseY of a rigid component,
+	 * with 1x1 pieces excluded from the median. A 1x1 decor piece (a light or a
+	 * decoration hung on the house's up jigsaw) sits one or two blocks above the
+	 * house; with the old upper-median of every piece a "house + decor" 2-piece
+	 * component took the decor's minY as its base, so {@code doorWalk = baseY + 1}
+	 * landed one or two blocks above the real door floor and the house aligned
+	 * too low. Only pieces with a footprint area greater than one count; when
+	 * every piece is 1x1 (vanilla has no such building) the whole set is used as
+	 * the fallback.
+	 *
+	 * @param minYs the component pieces' bounding-box minY
+	 * @param oneByOne true where the piece's footprint is a single column
+	 */
+	public static int componentBaseY(int[] minYs, boolean[] oneByOne) {
+		int[] big = new int[minYs.length];
+		int n = 0;
+		for (int i = 0; i < minYs.length; i++) {
+			if (!oneByOne[i]) {
+				big[n++] = minYs[i];
+			}
+		}
+		if (n == 0) {
+			big = Arrays.copyOf(minYs, minYs.length);
+			n = minYs.length;
+		} else {
+			big = Arrays.copyOf(big, n);
+		}
+		Arrays.sort(big);
+		return big[n / 2];
+	}
 }

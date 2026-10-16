@@ -196,7 +196,10 @@ public final class BuildingComponents {
 						continue; // upper half or not a door at all
 					}
 					BlockPos worldPos = StructureTemplate.calculateRelativePosition(settings, infoPos).offset(pool.getPosition());
-					doors.add(new int[]{worldPos.getX(), worldPos.getZ()});
+					// {x, z, floorY}: the lower door half's world Y is the actual
+					// door floor (R4-2, 2026-10-16) - the sign prints it after the
+					// component shift so assumption and reality can be compared
+					doors.add(new int[]{worldPos.getX(), worldPos.getZ(), worldPos.getY()});
 				}
 				out.put(i, doors.toArray(new int[0][]));
 			} catch (Throwable t) {
@@ -222,11 +225,15 @@ public final class BuildingComponents {
 	 * the same footprint-centre axis rule. Every door of the template gets a
 	 * front, including the ones facing RIGID attachments or plazas (R7 fix).
 	 *
-	 * <p>The writer suppresses the railing on the door front (within one block)
-	 * so a doorway can never be fenced in (user decision 2026-10-15; the 3x3
-	 * box shape is kept per the R8 decision of 2026-10-15).
+	 * <p>R3-1 (user decision 2026-10-16): the front direction is now the step
+	 * from the door toward the nearest road cell (the road network is the only
+	 * ground truth for "the way out"); the old footprint-main-axis direction is
+	 * the fallback when the network holds no road cell. The writer suppresses the
+	 * railing on the door front (within one block) so a doorway can never be
+	 * fenced in (user decision 2026-10-15; the 3x3 box shape is kept per the R8
+	 * decision of 2026-10-15).
 	 */
-	public static int[][] doorFronts(List<StructurePiece> pieces, Map<Integer, int[][]> doorsByPiece) {
+	public static int[][] doorFronts(List<StructurePiece> pieces, Map<Integer, int[][]> doorsByPiece, RoadNetwork net) {
 		List<int[]> out = new ArrayList<>();
 		for (int i = 0; i < pieces.size(); i++) {
 			StructurePiece piece = pieces.get(i);
@@ -239,25 +246,36 @@ public final class BuildingComponents {
 			int[][] pieceDoors = doorsByPiece != null ? doorsByPiece.get(i) : null;
 			if (pieceDoors != null && pieceDoors.length > 0) {
 				for (int[] door : pieceDoors) {
-					addDoorFront(out, door[0], door[1], cx, cz);
+					addDoorFront(out, door[0], door[1], cx, cz, net);
 				}
 			} else {
 				for (JigsawJunction junction : pool.getJunctions()) {
 					if (junction.getDestProjection() == StructureTemplatePool.Projection.RIGID) {
 						continue; // attaches to another building, not a door
 					}
-					addDoorFront(out, junction.getSourceX(), junction.getSourceZ(), cx, cz);
+					addDoorFront(out, junction.getSourceX(), junction.getSourceZ(), cx, cz, net);
 				}
 			}
 		}
 		return out.toArray(new int[0][]);
 	}
 
-	/** One front cell one step outside the wall along the dominant axis from the footprint centre to the anchor. */
-	private static void addDoorFront(List<int[]> out, int ax, int az, int cx, int cz) {
-		int[] axis = outwardAxis(ax, az, cx, cz);
+	/**
+	 * One front cell one step outside the wall along the door-to-road direction
+	 * (R3-1), falling back to the footprint-centre axis when the network holds no
+	 * road cell. Every disagreement between the two is counted
+	 * ({@code DOOR_FRONT_DIR_MISMATCH}).
+	 */
+	private static void addDoorFront(List<int[]> out, int ax, int az, int cx, int cz, RoadNetwork net) {
+		int[] outward = outwardAxis(ax, az, cx, cz);
+		int[] towardRoad = net != null ? DoorSigns.stepTowardRoad(net, ax, az) : null;
+		if (towardRoad != null && outward != null
+				&& (towardRoad[0] != outward[0] || towardRoad[1] != outward[1])) {
+			VpsPipeline.DOOR_FRONT_DIR_MISMATCH.incrementAndGet();
+		}
+		int[] axis = towardRoad != null ? towardRoad : outward;
 		if (axis == null) {
-			return; // anchor at the footprint centre: no direction to derive
+			return; // anchor at the footprint centre and no road cell: no direction
 		}
 		out.add(new int[]{ax + axis[0], az + axis[1], axis[0], axis[1]});
 	}
@@ -322,12 +340,26 @@ public final class BuildingComponents {
 			component.maxZ = Math.max(component.maxZ, box.maxZ());
 		}
 		for (Component component : byRoot.values()) {
-			int[] baseYs = new int[component.pieceIndices.size()];
-			for (int k = 0; k < baseYs.length; k++) {
-				baseYs[k] = pieces.get(component.pieceIndices.get(k)).getBoundingBox().minY();
+			int size = component.pieceIndices.size();
+			int[] baseYs = new int[size];
+			boolean[] oneByOne = new boolean[size];
+			for (int k = 0; k < size; k++) {
+				BoundingBox box = pieces.get(component.pieceIndices.get(k)).getBoundingBox();
+				baseYs[k] = box.minY();
+				oneByOne[k] = box.minX() == box.maxX() && box.minZ() == box.maxZ();
 			}
-			Arrays.sort(baseYs);
-			component.baseY = baseYs[baseYs.length / 2];
+			int[] sorted = Arrays.copyOf(baseYs, size);
+			Arrays.sort(sorted);
+			int naive = sorted[size / 2];
+			// R2-A (2026-10-16): a 1x1 decor piece (a light/decoration on the
+			// house's up jigsaw) must not decide the component's baseY. The old
+			// upper-median of every piece took the decor's minY (one or two
+			// blocks above the house) for a 2-piece component and shifted the
+			// whole house one or two blocks too low.
+			component.baseY = BuildingShift.componentBaseY(baseYs, oneByOne);
+			if (component.baseY != naive) {
+				VpsPipeline.BASEY_DECOR_UPPER.incrementAndGet();
+			}
 		}
 		return new ArrayList<>(byRoot.values());
 	}

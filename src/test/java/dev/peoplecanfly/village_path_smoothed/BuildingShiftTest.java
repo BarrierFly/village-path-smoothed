@@ -176,6 +176,24 @@ public class BuildingShiftTest {
 	}
 
 	@Test
+	public void componentBaseYExcludesTheOneByOneDecorPiece() {
+		// R2-A (2026-10-16): a "house + light" 2-piece component used to take the
+		// upper median, i.e. the light's minY one or two above the house. The
+		// 1x1 piece is excluded: the house's minY is the base.
+		assertEquals("house 10, 1x1 decor 11 -> 10",
+				10, BuildingShift.componentBaseY(new int[]{10, 11}, new boolean[]{false, true}));
+		assertEquals("house 10, 1x1 decor 12 -> 10",
+				10, BuildingShift.componentBaseY(new int[]{10, 12}, new boolean[]{false, true}));
+		// two real pieces and one decor: the median of the two real pieces
+		// ({10, 12}, upper median) - the decor's 13 is ignored
+		assertEquals(12, BuildingShift.componentBaseY(new int[]{10, 12, 13}, new boolean[]{false, false, true}));
+		// no 1x1 piece: plain upper median (unchanged behaviour)
+		assertEquals(12, BuildingShift.componentBaseY(new int[]{10, 12, 13}, new boolean[]{false, false, false}));
+		// every piece 1x1 (vanilla has no such building): the whole set is used
+		assertEquals(11, BuildingShift.componentBaseY(new int[]{10, 11}, new boolean[]{true, true}));
+	}
+
+	@Test
 	public void twoWingLimitClampsAroundTheMedianShift() {
 		// the clamp itself lives in T15Planner; here we pin that medianShift is
 		// the legacy anchor it clamps around, for both interval and fallback

@@ -123,6 +123,26 @@ public final class VpsPipeline {
 	public static final AtomicLong PLAZA_GROUPS = new AtomicLong();
 	public static final AtomicLong PLAZAS_SHIFTED = new AtomicLong();
 	public static final AtomicLong PLAZA_PIECES_SHIFTED = new AtomicLong();
+	// R1-1 (four-symptom fix plan 2026-10-16): a plaza group whose dy was pushed
+	// back toward zero by the overlap or world-height guard. The piece can no
+	// longer render the pinned level, so the phase-2 re-pin must run even when
+	// nothing else moved - this counter is how often that guard fires.
+	public static final AtomicLong PLAZA_OVERLAP_GUARDS = new AtomicLong();
+	// R2-A (2026-10-16): a rigid component whose baseY would have been taken from
+	// a 1x1 decor piece (the light/decoration hanging on the house's up jigsaw)
+	// under the old upper-median rule. The fix excludes 1x1 pieces from the
+	// median; a non-zero count is how many components that actually moved.
+	public static final AtomicLong BASEY_DECOR_UPPER = new AtomicLong();
+	// R2-C (2026-10-16): a SERVED component whose door road cells span more than
+	// the half-block tolerance can bridge, so the shift came from the median
+	// fallback instead of the legal interval. Measurement for the minimax
+	// decision - no geometry change.
+	public static final AtomicLong ALIGN_INTERVAL_FALLBACK = new AtomicLong();
+	// R3-1 (2026-10-16): a door whose "door -> nearest road cell" direction
+	// differs from the old footprint-main-axis outward direction. The railing
+	// exemption now anchors on the road direction; this is the frequency of the
+	// mismatch that made the old front miss the real doorway.
+	public static final AtomicLong DOOR_FRONT_DIR_MISMATCH = new AtomicLong();
 	// Debug door signs (user request 2026-10-16, always on): one standing sign
 	// per template door of a movable building. WITHOUT_ROAD counts doors whose
 	// village network held no road cell at all (no second line, no sign).
@@ -499,7 +519,7 @@ public final class VpsPipeline {
 		solution.buildingBoxes = BuildingComponents.protectedBoxes(start.getPieces());
 		Map<Integer, int[][]> t5DoorsByPiece = BuildingComponents.templateDoors(start.getPieces(),
 				templateManagerOf(start.getPieces()));
-		solution.doorFronts = BuildingComponents.doorFronts(start.getPieces(), t5DoorsByPiece);
+		solution.doorFronts = BuildingComponents.doorFronts(start.getPieces(), t5DoorsByPiece, network);
 		solution.doorSigns = T15Planner.computeDoorSigns(BuildingComponents.group(start.getPieces()),
 				start.getPieces(), t5DoorsByPiece, network);
 

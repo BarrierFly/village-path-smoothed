@@ -125,6 +125,21 @@ public final class RoadCollector {
 	 * (survey section 5.2).
 	 */
 	public static final AtomicLong SEAT_CELLS = new AtomicLong();
+	/**
+	 * R1-3 (four-symptom fix plan 2026-10-16): seat columns whose height probe
+	 * failed and were dropped, so the column keeps whatever claimed it (the road
+	 * cell, or the vanilla block). A non-zero value distinguishes "rare" from
+	 * "systematic".
+	 */
+	public static final AtomicLong SEAT_PROBE_DROPPED = new AtomicLong();
+	/**
+	 * R1-2 (2026-10-16): y=0 blocks of a street template that the old
+	 * "any non-marker block is road" rule would have taken as road, but that are
+	 * non-solid/replaceable (a plant, a torch, a dead bush). They are excluded
+	 * now; the count plus {@link #y0BlockSkipReport} is the y=0 histogram the
+	 * plan asks for.
+	 */
+	public static final AtomicLong TEMPLATE_Y0_NON_SOLID_SKIPPED = new AtomicLong();
 
 	/**
 	 * The base materials a street seat's jigsaw renders ({@code final_state}).
@@ -169,6 +184,26 @@ public final class RoadCollector {
 		String id = net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString();
 		TOWN_CENTER_SKIPPED_BLOCKS.computeIfAbsent(id, k -> new java.util.concurrent.atomic.AtomicLong())
 				.incrementAndGet();
+	}
+
+	/** R1-2: y=0 non-solid/replaceable street blocks skipped, by id (the y=0 histogram). */
+	private static final java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicLong> Y0_NON_SOLID_SKIPPED_BLOCKS =
+			new java.util.concurrent.ConcurrentHashMap<>();
+
+	private static void recordY0NonSolidSkip(BlockState state) {
+		String id = net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString();
+		Y0_NON_SOLID_SKIPPED_BLOCKS.computeIfAbsent(id, k -> new java.util.concurrent.atomic.AtomicLong())
+				.incrementAndGet();
+	}
+
+	/** R1-2: the y=0 non-solid/replaceable street blocks skipped, most frequent first (for /vps debug y0). */
+	public static List<String> y0NonSolidSkipReport() {
+		List<String> out = new ArrayList<>();
+		Y0_NON_SOLID_SKIPPED_BLOCKS.entrySet().stream()
+				.sorted((a, b) -> Long.compare(b.getValue().get(), a.getValue().get()))
+				.limit(24)
+				.forEach(entry -> out.add(entry.getKey() + " x" + entry.getValue()));
+		return out;
 	}
 
 	/** The rejected {@code town_centers} blocks, most frequent first (for /vps debug towncenters). */
@@ -260,7 +295,8 @@ public final class RoadCollector {
 			}
 			ProbedHeight probe = probeCellHeight(ctx, config, seat.x(), seat.z());
 			if (probe == null) {
-				continue; // dropped probe: keep the road cell / the vanilla block
+				SEAT_PROBE_DROPPED.incrementAndGet(); // R1-3: keep the road cell / the vanilla block
+				continue;
 			}
 			RoadCell cell = new RoadCell(seat.x(), seat.z(), seat.style(), 2 * probe.surfaceTopY(), false);
 			cell.seat = true;
@@ -622,7 +658,19 @@ public final class RoadCollector {
 			}
 			default:
 				// y==0 solid: LegacySinglePoolElement never overwrites terrain with
-				// template air, so anything that is not a marker block is road
+				// template air, so anything that is not a marker block is road.
+				// R1-2 (2026-10-16): a non-solid/replaceable y=0 block (a plant
+				// such as a dead bush, a torch, a snow layer) is NOT road - the old
+				// rule took it and the road writer then paved it over. Excluded by
+				// block semantics, not by a material whitelist, so a legitimate
+				// street material is never dropped.
+				if (state.canBeReplaced()) {
+					if (!state.isAir()) {
+						TEMPLATE_Y0_NON_SOLID_SKIPPED.incrementAndGet();
+						recordY0NonSolidSkip(state);
+					}
+					return false;
+				}
 				return !state.isAir()
 						&& !state.is(Blocks.STRUCTURE_VOID)
 						&& !state.is(Blocks.JIGSAW)

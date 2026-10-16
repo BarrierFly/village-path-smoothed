@@ -128,6 +128,13 @@ public final class RoadWriter {
 	 */
 	public static final AtomicLong SEATS_WRITTEN = new AtomicLong();
 	/**
+	 * R1-3 (four-symptom fix plan 2026-10-16): seat columns whose normal write
+	 * threw and fell back. The fallback now renders the SEAT block (the old code
+	 * wrote the road material, silently turning a decor island into road) - a
+	 * non-zero count says the seat write path is failing.
+	 */
+	public static final AtomicLong SEAT_WRITE_FALLBACK = new AtomicLong();
+	/**
 	 * User decision 2026-10-15 (kerb rework): blocks of the ceiling run directly
 	 * above the walk surface that were lined with the kerb material - the whole
 	 * contiguous run, no longer only the single block at the clear cap and no
@@ -244,6 +251,10 @@ public final class RoadWriter {
 	 */
 	private static void writeSurfaceFallback(RoadNetwork net, RoadCell cell, VpsGenContext ctx,
 			VillagePathSmoothedConfig config, RoadMaterialTable table, int[][] shiftedComponents) {
+		if (cell.seat) {
+			writeSeatFallback(cell, ctx);
+			return;
+		}
 		try {
 			int topY = ctx.realSurfaceTopY(cell.x, cell.z);
 			RoadWritePolicy.Column column = RoadWritePolicy.surfaceNudgeColumn(cell.solvedP, topY,
@@ -267,6 +278,32 @@ public final class RoadWriter {
 			NUDGED_WRITES.incrementAndGet();
 		} catch (Throwable t) {
 			VillagePathSmoothed.LOGGER.debug("[VPS] surface fallback failed at {} {}", cell.x, cell.z, t);
+		}
+	}
+
+	/**
+	 * R1-3 (four-symptom fix plan 2026-10-16): last-resort render of a decor seat
+	 * whose normal write threw. The old catch routed a seat through the road
+	 * fallback, which paved the seat island over with road material; the seat
+	 * block wins here instead. Deliberately the simplest column: dirt fill, the
+	 * seat block at the solved height, no clear (the decor stands above it).
+	 */
+	private static void writeSeatFallback(RoadCell cell, VpsGenContext ctx) {
+		try {
+			int seatY = RoadWritePolicy.roadBlockY(cell.solvedP, false);
+			Block seatBlock = VpsCompat.blockById(cell.seatBlock);
+			if (seatBlock == null) {
+				seatBlock = Blocks.GRASS_BLOCK;
+			}
+			int groundTopY = ctx.groundSurfaceTopY(cell.x, cell.z, seatY);
+			for (int y = groundTopY - 1; y < seatY; y++) {
+				setBlock(ctx, cell.x, y, cell.z, Blocks.DIRT.defaultBlockState());
+			}
+			setBlock(ctx, cell.x, seatY, cell.z, seatBlock.defaultBlockState());
+			SEAT_WRITE_FALLBACK.incrementAndGet();
+			VpsPipeline.ROAD_CELLS_WRITTEN.incrementAndGet();
+		} catch (Throwable t) {
+			VillagePathSmoothed.LOGGER.debug("[VPS] seat fallback failed at {} {}", cell.x, cell.z, t);
 		}
 	}
 
@@ -966,19 +1003,26 @@ public final class RoadWriter {
 			if (ctx.level.getBlockEntity(new BlockPos(frontX, signY, frontZ)) instanceof SignBlockEntity signBlock) {
 				// road Y with exactly one decimal digit, no locale float formatting
 				String roadY = (sign[6] & 1) == 0 ? (sign[6] / 2) + ".0" : ((sign[6] - 1) / 2) + ".5";
+				// R4-2 (user decision 2026-10-16): line 3 is the ACTUAL door floor
+				// Y of the template's lower door half after the shift, so the
+				// assumed reference on line 1 and the real floor can be compared
+				String doorFloorY = sign.length > 8 ? Integer.toString(sign[8]) : "?";
 				//#if MC >= 260000
 				//$$ SignText.Mutable text = signBlock.getText(SignTextSlot.FRONT).asMutable();
 				//$$ text.setLine(0, Component.literal(sign[0] + " " + sign[1] + " " + sign[2]));
 				//$$ text.setLine(1, Component.literal(sign[5] + " " + roadY + " " + sign[7]));
+				//$$ text.setLine(2, Component.literal(doorFloorY));
 				//$$ signBlock.setText(text.asImmutable(), SignTextSlot.FRONT);
 				//#elseif MC >= 12001
 				//$$ SignText text = signBlock.getText(true);
 				//$$ text = text.setMessage(0, Component.literal(sign[0] + " " + sign[1] + " " + sign[2]));
 				//$$ text = text.setMessage(1, Component.literal(sign[5] + " " + roadY + " " + sign[7]));
+				//$$ text = text.setMessage(2, Component.literal(doorFloorY));
 				//$$ signBlock.setText(text, true);
 				//#else
 				signBlock.setMessage(0, Component.literal(sign[0] + " " + sign[1] + " " + sign[2]));
 				signBlock.setMessage(1, Component.literal(sign[5] + " " + roadY + " " + sign[7]));
+				signBlock.setMessage(2, Component.literal(doorFloorY));
 				//#endif
 				signBlock.setChanged();
 				VpsPipeline.DOOR_SIGNS_PLACED.incrementAndGet();

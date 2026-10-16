@@ -32,7 +32,6 @@ import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.level.block.state.properties.RotationSegment;
 import net.minecraft.world.level.block.state.properties.SlabType;
 import net.minecraft.world.level.levelgen.structure.BoundingBox;
-import net.minecraft.world.level.Level;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -1004,7 +1003,6 @@ public final class RoadWriter {
 					.setValue(StandingSignBlock.ROTATION, RotationSegment.convertToSegment(facing));
 			setBlock(ctx, frontX, signY, frontZ, state);
 			if (ctx.level.getBlockEntity(new BlockPos(frontX, signY, frontZ)) instanceof SignBlockEntity signBlock) {
-				attachLevel(signBlock, ctx);
 				// R4-2 (user decision 2026-10-16): line 3 is the ACTUAL door floor
 				// Y of the template's lower door half after the shift, so the
 				// assumed reference on line 1 and the real floor can be compared
@@ -1049,7 +1047,6 @@ public final class RoadWriter {
 				VpsPipeline.SEAM_SIGNS_NO_BE.incrementAndGet();
 				continue;
 			}
-			attachLevel(signBlock, ctx);
 			String reason = SeamSigns.reasonName(seam[6]);
 			int diff = Math.abs(seam[1] - seam[4]);
 			String magnitude = reason.isEmpty() ? "" : "d " + walkY(diff);
@@ -1068,52 +1065,48 @@ public final class RoadWriter {
 	}
 
 	/**
-	 * Worldgen block entities are created without a {@code Level}, so the sign
-	 * text API (which calls {@code Level#sendBlockUpdated} from
-	 * {@code SignBlockEntity#markUpdated}) throws a NullPointerException at write
-	 * time. Attaching the owning Level first makes the same write path work during
-	 * worldgen (no players receive the update). A {@code WorldGenRegion} is not a
-	 * {@code Level}, so its ServerLevel is used.
+	 * Writes four sign lines with the version-correct API, swallowing the
+	 * worldgen update failure.
+	 *
+	 * <p>A block entity created during worldgen has no {@code Level} yet (the
+	 * level is only attached when the chunk is loaded into the server). The sign
+	 * text API ends in {@code SignBlockEntity#markUpdated}, which calls
+	 * {@code Level#sendBlockUpdated} and, when a real Level is attached, loads and
+	 * waits on the very chunk being generated - a worldgen deadlock (observed:
+	 * "a single server tick has taken 240000 ms", the village never finishes).
+	 * With no Level the same call throws a NullPointerException instead. In both
+	 * cases the text is assigned to the block entity BEFORE markUpdated runs, so
+	 * swallowing the exception keeps the text: the block entity stays in the
+	 * chunk and is serialised with it on save, exactly like a vanilla structure
+	 * block entity. Do NOT attach a Level here.
 	 */
-	private static void attachLevel(SignBlockEntity signBlock, VpsGenContext ctx) {
-		Level level = null;
-		try {
-			if (ctx.level instanceof net.minecraft.server.level.WorldGenRegion region) {
-				level = region.getLevel();
-			} else if (ctx.level instanceof Level serverLevel) {
-				level = serverLevel;
-			}
-		} catch (Throwable ignored) {
-			return;
-		}
-		if (level != null) {
-			signBlock.setLevel(level);
-		}
-	}
-
-	/** Writes four sign lines with the version-correct API. */
 	private static void setSignLines(SignBlockEntity signBlock, String l0, String l1, String l2, String l3) {
-		//#if MC >= 260000
-		//$$ SignText.Mutable text = signBlock.getText(SignTextSlot.FRONT).asMutable();
-		//$$ text.setLine(0, Component.literal(l0));
-		//$$ text.setLine(1, Component.literal(l1));
-		//$$ text.setLine(2, Component.literal(l2));
-		//$$ text.setLine(3, Component.literal(l3));
-		//$$ signBlock.setText(text.asImmutable(), SignTextSlot.FRONT);
-		//#elseif MC >= 12001
-		//$$ SignText text = signBlock.getText(true);
-		//$$ text = text.setMessage(0, Component.literal(l0));
-		//$$ text = text.setMessage(1, Component.literal(l1));
-		//$$ text = text.setMessage(2, Component.literal(l2));
-		//$$ text = text.setMessage(3, Component.literal(l3));
-		//$$ signBlock.setText(text, true);
-		//#else
-		signBlock.setMessage(0, Component.literal(l0));
-		signBlock.setMessage(1, Component.literal(l1));
-		signBlock.setMessage(2, Component.literal(l2));
-		signBlock.setMessage(3, Component.literal(l3));
-		//#endif
-		signBlock.setChanged();
+		try {
+			//#if MC >= 260000
+			//$$ SignText.Mutable text = signBlock.getText(SignTextSlot.FRONT).asMutable();
+			//$$ text.setLine(0, Component.literal(l0));
+			//$$ text.setLine(1, Component.literal(l1));
+			//$$ text.setLine(2, Component.literal(l2));
+			//$$ text.setLine(3, Component.literal(l3));
+			//$$ signBlock.setText(text.asImmutable(), SignTextSlot.FRONT);
+			//#elseif MC >= 12001
+			//$$ SignText text = signBlock.getText(true);
+			//$$ text = text.setMessage(0, Component.literal(l0));
+			//$$ text = text.setMessage(1, Component.literal(l1));
+			//$$ text = text.setMessage(2, Component.literal(l2));
+			//$$ text = text.setMessage(3, Component.literal(l3));
+			//$$ signBlock.setText(text, true);
+			//#else
+			signBlock.setMessage(0, Component.literal(l0));
+			signBlock.setMessage(1, Component.literal(l1));
+			signBlock.setMessage(2, Component.literal(l2));
+			signBlock.setMessage(3, Component.literal(l3));
+			//#endif
+			signBlock.setChanged();
+		} catch (Throwable worldgenUpdate) {
+			// expected: the block entity has no Level during worldgen; the text
+			// fields are already written and will be saved with the chunk
+		}
 	}
 
 	private static void setBlock(VpsGenContext ctx, int x, int y, int z, BlockState state) {

@@ -112,12 +112,11 @@ public final class RoadWriter {
 	 */
 	public static final AtomicLong PLAZA_CELLS_VANILLA = new AtomicLong();
 	/**
-	 * Fixed base seats rendered by their own street piece (原版多向道路结构调查
-	 * 2026-10-15): the writer writes no road block, no fill and no clear on
-	 * them - clearing would raze the lamp/tree/villager seat standing on the
-	 * seat block, and paving it would lose the vanilla base material.
+	 * Decor seats written at the solved height (user decision 2026-10-16): the
+	 * seat block (grass/sand/...) renders the solved walk surface and the RIGID
+	 * decor piece on top was shifted to match at T1.5.
 	 */
-	public static final AtomicLong FIXED_BASE_CELLS_VANILLA = new AtomicLong();
+	public static final AtomicLong SEATS_WRITTEN = new AtomicLong();
 	/**
 	 * User decision 2026-10-15 (kerb rework): blocks of the ceiling run directly
 	 * above the walk surface that were lined with the kerb material - the whole
@@ -299,12 +298,29 @@ public final class RoadWriter {
 			return;
 		}
 
-		// ---- fixed base seat (原版多向道路结构调查 2026-10-15): the street piece
-		// renders the seat block itself (the jigsaw's final_state - the lamp/tree
-		// base). The cell exists in the mask only so the solver pins the road to
-		// its height; writing here would raze the decor standing on it.
-		if (cell.fixedBase) {
-			FIXED_BASE_CELLS_VANILLA.incrementAndGet();
+		// ---- decor seat (user decision 2026-10-16): the seat RIDES the solved
+		// profile - it is a normal solver cell - and renders its vanilla block
+		// (grass/sand/...) at the solved height. The RIGID decor piece on top
+		// (lamp/tree/hay) was shifted to match at T1.5, so the write must not
+		// clear above the old seat block (the decor stands there) and dresses no
+		// edges: the island stays vanilla-looking.
+		if (cell.seat) {
+			SEATS_WRITTEN.incrementAndGet();
+			int seatY = RoadWritePolicy.roadBlockY(cell.solvedP, false);
+			Block seatBlock = VpsCompat.blockById(cell.seatBlock);
+			if (seatBlock == null) {
+				seatBlock = Blocks.GRASS_BLOCK;
+			}
+			int groundTopY = ctx.groundSurfaceTopY(x, z, seatY);
+			for (int y = groundTopY - 1; y < seatY; y++) {
+				setBlock(ctx, x, y, z, Blocks.DIRT.defaultBlockState());
+			}
+			setBlock(ctx, x, seatY, z, seatBlock.defaultBlockState());
+			int oldSeatY = RoadWritePolicy.roadBlockY(cell.baseP, false);
+			for (int y = seatY + 1; y <= oldSeatY; y++) {
+				setBlock(ctx, x, y, z, Blocks.AIR.defaultBlockState());
+			}
+			VpsPipeline.ROAD_CELLS_WRITTEN.incrementAndGet();
 			return;
 		}
 
@@ -313,7 +329,7 @@ public final class RoadWriter {
 		// skipped entirely - no road block, no support fill, no upward clear - so
 		// smoothing can never overwrite a building body. Counted so the yield is
 		// visible in /vps stats.
-		if (config.roadSmoothing.protectBuildings && insideBuilding(buildingBoxes, x, z, cell.solvedP)) {
+		if (config.roadSmoothing.protectBuildings && !cell.seat && insideBuilding(buildingBoxes, x, z, cell.solvedP)) {
 			BUILDING_CELLS_SKIPPED.incrementAndGet();
 			return;
 		}

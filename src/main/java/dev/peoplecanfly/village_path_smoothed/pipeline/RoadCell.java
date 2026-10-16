@@ -67,14 +67,17 @@ public final class RoadCell {
 	/** The pinned walk surface (half units) for a {@link #plazaPinned} cell. */
 	public int plazaPinP;
 	/**
-	 * Fixed base seat (原版多向道路结构调查 2026-10-15): a street piece's up-facing
-	 * y=0 jigsaw whose final_state is one of the base materials. The cell joins
-	 * the mask only so the SOLVER pins the road to its vanilla height (plaza
-	 * style); the vanilla piece renders the block itself, so the writer never
-	 * writes it and the suppression never claims it - clearing or paving it
-	 * would raze the lamp/tree/villager seat standing on it.
+	 * Decor seat (原版多向道路结构调查 2026-10-15, reworked 2026-10-16): a street
+	 * piece's up-facing y=0 jigsaw whose final_state is one of the base
+	 * materials. The cell is a NORMAL solver cell - it rides the solved profile
+	 * (|dP| <= 1 to its neighbours, whole-block walk surfaces only so the decor
+	 * piece on top can shift by whole blocks) - and the writer renders the seat
+	 * block at the solved height; the RIGID decor piece standing on it (lamp,
+	 * tree, hay pile) is shifted to match at T1.5, shape unchanged.
 	 */
-	public boolean fixedBase;
+	public boolean seat;
+	/** The seat's final_state block id (e.g. "grass_block"); rendered by the writer. */
+	public String seatBlock;
 
 	public RoadCell(int x, int z, String style, int baseP, boolean anchor) {
 		this.index = -1;

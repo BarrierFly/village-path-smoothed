@@ -103,6 +103,39 @@ public class RoadSmootherTest {
 		assertTrue("the crossing stays on the water surface", net.cells.get(2).solvedP >= 30);
 	}
 
+	@Test
+	public void seatCellsSolveToWholeBlockLevelsAndRideTheRoad() {
+		// plan 2026-10-16: a seat is a NORMAL solver cell - it rides the solved
+		// profile (no vanilla pin) - but renders a FULL block, so its walk
+		// surface is always even and the decor piece on top shifts by whole
+		// blocks. A seat whose road was chased 14 half units above its vanilla
+		// height follows the road; a seat on flat vanilla terrain stays put.
+		List<RoadCell> cells = new ArrayList<>();
+		for (int x = 0; x < 5; x++) {
+			boolean seat = x == 2;
+			RoadCell cell = new RoadCell(x, 0, "plains", seat ? 116 : 130, false);
+			cell.seat = seat;
+			cell.seatBlock = "grass_block";
+			cells.add(cell);
+		}
+		RoadNetwork net = RoadNetwork.build(cells, 4);
+		RoadSmoother.solve(net, params(Objective.SMOOTH_FIRST));
+		int seat = net.cells.get(2).solvedP;
+		assertEquals("the seat renders a full block (even walk surface)", 0, seat & 1);
+		assertTrue("the seat rides the road (within half a block of both neighbours)",
+				Math.abs(seat - net.cells.get(1).solvedP) <= 1 && Math.abs(seat - net.cells.get(3).solvedP) <= 1);
+		List<RoadCell> flat = new ArrayList<>();
+		for (int x = 0; x < 3; x++) {
+			RoadCell cell = new RoadCell(x, 0, "plains", 116, false);
+			cell.seat = x == 1;
+			cell.seatBlock = "grass_block";
+			flat.add(cell);
+		}
+		RoadNetwork flatNet = RoadNetwork.build(flat, 4);
+		RoadSmoother.solve(flatNet, params(Objective.SMOOTH_FIRST));
+		assertEquals("a seat on flat terrain does not move", 116, flatNet.cells.get(1).solvedP);
+	}
+
 	private static void assertViolationsAtMost(RoadNetwork net, int allowed) {
 		int violations = 0;
 		for (int i = 0; i < net.cells.size(); i++) {

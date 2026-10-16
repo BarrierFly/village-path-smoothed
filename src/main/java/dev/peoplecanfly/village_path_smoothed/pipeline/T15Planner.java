@@ -17,6 +17,7 @@ import net.minecraft.world.level.levelgen.structure.BoundingBox;
 import net.minecraft.world.level.levelgen.structure.PoolElementStructurePiece;
 import net.minecraft.world.level.levelgen.structure.StructurePiece;
 import net.minecraft.world.level.levelgen.structure.StructureStart;
+import net.minecraft.world.level.levelgen.structure.pools.FeaturePoolElement;
 import net.minecraft.world.level.levelgen.structure.pools.JigsawJunction;
 import net.minecraft.world.level.levelgen.structure.pools.SinglePoolElement;
 import net.minecraft.world.level.levelgen.structure.pools.StructureTemplatePool;
@@ -56,6 +57,14 @@ public final class T15Planner {
 	 * known residual, recorded rather than iterated away.
 	 */
 	public static final java.util.concurrent.atomic.AtomicLong T15_RESOLVE_DELTA_CELLS =
+			new java.util.concurrent.atomic.AtomicLong();
+	/**
+	 * Plan 2026-10-16: RIGID decor pieces (lamp/tree/hay) shifted so they keep
+	 * standing exactly on their seat's solved height. A lamp is a RIGID
+	 * single-pool piece and used to be aligned as a singleton "building"; that
+	 * alignment is replaced by the seat's dy.
+	 */
+	public static final java.util.concurrent.atomic.AtomicLong SEAT_DECOR_PIECES_MOVED =
 			new java.util.concurrent.atomic.AtomicLong();
 
 	private T15Planner() {
@@ -111,10 +120,17 @@ public final class T15Planner {
 		}
 
 		List<StructurePiece> pieces = start.getPieces();
-		List<BuildingComponents.Component> components = BuildingComponents.group(pieces);
-		if (components.isEmpty()) {
-			return solution;
+		// Decor pieces standing on a mask seat (a lamp or a hay pile singleton)
+		// ride the seat's solved level instead of aligning on their own (plan
+		// 2026-10-16)
+		java.util.Set<Long> seatColumns = new java.util.HashSet<>();
+		for (RoadCell cell : network.cells) {
+			if (cell.seat) {
+				seatColumns.add(RoadCell.packedXZ(cell.x, cell.z));
+			}
 		}
+		List<BuildingComponents.Component> components = BuildingComponents.group(pieces);
+		components.removeIf(component -> isSeatRider(component, pieces, seatColumns));
 		// F-C: the template's real door blocks, loaded once per plan and shared by
 		// the alignment, the door fronts and the offset counter below
 		Map<Integer, int[][]> doorsByPiece = BuildingComponents.templateDoors(pieces, templateManager);
@@ -122,6 +138,11 @@ public final class T15Planner {
 
 		int minY = ctx.getMinY();
 		int maxY = ctx.getMaxY();
+		if (components.isEmpty()) {
+			settleSeats(solution.network, pieces, minY, maxY, config);
+			return solution;
+		}
+
 		int maxShift = config.roadSmoothing.maxBuildingShift;
 		List<int[]> shifted = new ArrayList<>();
 
@@ -185,6 +206,7 @@ public final class T15Planner {
 		// solution.network already holds the first pass's network, and nothing
 		// between the two passes mutates it when dy == 0 for every component.
 		if (shifted.isEmpty() && !plazaMoved(plazaComponents)) {
+			settleSeats(solution.network, pieces, minY, maxY, config);
 			return solution;
 		}
 
@@ -198,6 +220,7 @@ public final class T15Planner {
 		T15_RESOLVE_DELTA_CELLS.addAndGet(countProfileDelta(network, resolved));
 		solution.network = resolved;
 		T15_RESOLVED_AFTER_SHIFT.incrementAndGet();
+		settleSeats(resolved, pieces, minY, maxY, config);
 
 		if (config.diagnostics.dumpRoadNetwork) {
 			VillagePathSmoothed.LOGGER.info("[VPS] T1.5 village at {}: {} cells, {} building components, {} shifted, {} cells after the post-shift re-solve",
@@ -583,6 +606,76 @@ public final class T15Planner {
 		return a.getDeltaY() == -b.getDeltaY()
 				&& Math.abs(a.getSourceX() - b.getSourceX()) <= 1
 				&& Math.abs(a.getSourceZ() - b.getSourceZ()) <= 1;
+	}
+
+	/**
+	 * True when the component is a single 1x1-footprint piece standing on a mask
+	 * seat column: it rides the seat's solved level (settleSeats) instead of
+	 * aligning on its own. A lamp is a RIGID single-pool piece and used to be
+	 * treated as a singleton building here; a hay pile on a seat would otherwise
+	 * move twice.
+	 */
+	private static boolean isSeatRider(BuildingComponents.Component component, List<StructurePiece> pieces,
+			java.util.Set<Long> seatColumns) {
+		if (component.pieceIndices.size() != 1) {
+			return false;
+		}
+		BoundingBox box = pieces.get(component.pieceIndices.get(0)).getBoundingBox();
+		if (box.minX() != box.maxX() || box.minZ() != box.maxZ()) {
+			return false;
+		}
+		return seatColumns.contains(RoadCell.packedXZ(box.minX(), box.minZ()));
+	}
+
+	/**
+	 * Moves the RIGID decor piece standing on every solved seat (plan
+	 * 2026-10-16): the seat rides the solved profile, so the lamp/tree/hay on
+	 * it must shift by the same whole blocks to keep its shape intact. The
+	 * decor pieces are the 1x1-footprint non-street pool elements at the seat's
+	 * column; their own alignment is replaced by the seat's dy. The junction a
+	 * lamp carries is deliberately NOT re-synced: it records the STREET side's
+	 * jigsaw ground level, and the street did not move.
+	 */
+	private static void settleSeats(RoadNetwork network, List<StructurePiece> pieces, int minY, int maxY,
+			VillagePathSmoothedConfig config) {
+		for (RoadCell cell : network.cells) {
+			if (!cell.seat) {
+				continue;
+			}
+			// the rendered seat top: a full block at solvedP/2 - 1 (solvedP is
+			// even by the seat's parity constraint; an odd residual value floors)
+			int targetWalk = cell.solvedP / 2;
+			for (StructurePiece piece : pieces) {
+				if (!(piece instanceof PoolElementStructurePiece pool)) {
+					continue;
+				}
+				if (!(pool.getElement() instanceof SinglePoolElement)
+						&& !(pool.getElement() instanceof FeaturePoolElement)) {
+					continue; // villager/cat spawn points place no blocks
+				}
+				if (RoadCollector.isStreetPiece(piece, config)) {
+					continue; // streets/terminators/centres are rewritten per column
+				}
+				BoundingBox box = piece.getBoundingBox();
+				if (box.minX() != cell.x || box.maxX() != cell.x
+						|| box.minZ() != cell.z || box.maxZ() != cell.z) {
+					continue; // not a 1x1 piece on this seat's column
+				}
+				int dy = targetWalk - box.minY();
+				if (dy == 0) {
+					continue;
+				}
+				int clamped = Math.max(minY - box.minY(), Math.min(maxY - box.maxY(), dy));
+				if (clamped != dy) {
+					// the world edge wins: pull the seat's solved level to the
+					// decor's reachable height (the phase-2 plaza precedent: the
+					// pieces are the rigid truth), so the two never disagree
+					cell.solvedP = (box.minY() + clamped) * 2;
+				}
+				piece.move(0, clamped, 0);
+				SEAT_DECOR_PIECES_MOVED.incrementAndGet();
+			}
+		}
 	}
 
 	/**

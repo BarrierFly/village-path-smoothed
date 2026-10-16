@@ -398,8 +398,9 @@ public record SolveParams(
 					// never sit below the terrain, so the cell's own baseP is a hard
 					// floor the polish cannot push through either. plan E: the same
 					// floor holds for water cells at every config - the water surface
-					// is solid ground.
-					int floor = (!allowCut || target.anchor) ? target.baseP : Integer.MIN_VALUE;
+					// is solid ground; a seat is exempt (it rides the solve and is
+					// written there, plan 2026-10-16).
+					int floor = (target.anchor || (!allowCut && !target.seat)) ? target.baseP : Integer.MIN_VALUE;
 					lo = Math.max(lo, floor);
 					int after;
 					if (lo > hi) {
@@ -407,8 +408,19 @@ public record SolveParams(
 						// exists here. Counted, and resolved by the sweep below.
 						conflicts++;
 						after = Math.max(floor, (lo + hi + 1) / 2);
+						if (target.seat) {
+							after &= ~1; // full-block seat: even walk surfaces only
+						}
 					} else {
 						after = Math.max(lo, Math.min(hi, before));
+						if (target.seat && (after & 1) != 0) {
+							// snap to the nearest even walk surface inside the clamp
+							if (after - 1 >= lo) {
+								after -= 1;
+							} else {
+								after += 1; // after == lo: the even above is inside hi
+							}
+						}
 					}
 					target.solvedP = after;
 					if (after != before) {
@@ -422,10 +434,18 @@ public record SolveParams(
 				}
 			}
 		}
-		// conflicts are rare; the sweep is a safety net, not the main mechanism
+		// conflicts are rare; the sweep is a safety net, not the main mechanism.
+		// Seats are immovable here too: the sweep writes arbitrary values and
+		// would break their even-parity constraint (plan 2026-10-16).
 		if (conflicts > 0) {
+			BitSet sweepFixed = (BitSet) pinnedCells.clone();
+			for (int i = 0; i < net.cells.size(); i++) {
+				if (net.cells.get(i).seat) {
+					sweepFixed.set(i);
+				}
+			}
 			for (int sweep = 0; sweep < PROJECTION_SWEEPS; sweep++) {
-				if (!projectViolatedEdges(net, movedDeltas, allowCut, pinnedCells)) {
+				if (!projectViolatedEdges(net, movedDeltas, allowCut, sweepFixed)) {
 					break;
 				}
 			}
@@ -482,11 +502,11 @@ public record SolveParams(
 					low.solvedP += excess;
 				} else if (pinnedLow) {
 					// the pinned low cannot go up: the high gives what its own floor allows
-					int room = (allowCut && !high.anchor) ? excess : Math.max(0, Math.min(excess, high.solvedP - high.baseP));
+					int room = (allowCut && !high.anchor && !high.seat) ? excess : Math.max(0, Math.min(excess, high.solvedP - high.baseP));
 					high.solvedP -= room;
 				} else {
 					int half = (excess + 1) / 2;
-					int room = (allowCut && !high.anchor) ? half : Math.min(half, high.solvedP - high.baseP);
+					int room = (allowCut && !high.anchor && !high.seat) ? half : Math.min(half, high.solvedP - high.baseP);
 					if (room < 0) {
 						room = 0;
 					}
@@ -1209,8 +1229,10 @@ public record SolveParams(
 		// road surface is determined with the water as the ground, so its baseP
 		// (the water surface) is a hard floor regardless of allowCutIntoTerrain.
 		// The writer never hoists a soaked road any more because the solve no
-		// longer produces one.
-		if (!p.allowCut() || cell.anchor) {
+		// longer produces one. A seat is exempt from its own floor: it RIDES the
+		// solved profile and is WRITTEN there (plan 2026-10-16), not cut into
+		// terrain.
+		if ((!p.allowCut() && !cell.seat) || cell.anchor) {
 			lo = Math.max(lo, cell.baseP);
 		}
 		if (hardBounds != null && hardBounds[cell.index] != null) {
@@ -1225,6 +1247,20 @@ public record SolveParams(
 			// P0-A item 1)
 			stats.candidateContradictions++;
 			return new int[]{cell.solvedP};
+		}
+		if (cell.seat) {
+			// a seat renders a FULL block: even walk surfaces only, so the RIGID
+			// decor piece on top can shift by whole blocks (plan 2026-10-16)
+			int first = (lo & 1) == 0 ? lo : lo + 1;
+			if (first > hi) {
+				stats.candidateContradictions++;
+				return new int[]{cell.solvedP};
+			}
+			int[] evens = new int[(hi - first) / 2 + 1];
+			for (int v = first, k = 0; v <= hi; v += 2, k++) {
+				evens[k] = v;
+			}
+			return evens;
 		}
 		int[] out = new int[hi - lo + 1];
 		for (int v = lo; v <= hi; v++) {
@@ -1593,8 +1629,12 @@ public record SolveParams(
 		}
 		int window = Math.max(1, p.windowHalf());
 		int centre = cell.baseP;
-		// plan E: a water cell's baseP (the water surface) is a hard floor - see candidatesFor
-		int lo = (!p.allowCut() || cell.anchor) ? Math.max(centre, cell.baseP) : centre - window;
+		// plan E: a water cell's baseP (the water surface) is a hard floor - see
+		// candidatesFor; a seat is exempt from its own floor (it rides the solve)
+		int lo = ((!p.allowCut() && !cell.seat) || cell.anchor) ? Math.max(centre, cell.baseP) : centre - window;
+		if (cell.seat && (lo & 1) != 0) {
+			lo++; // full-block seat: even walk surfaces only
+		}
 		int hi = centre + window;
 		int perpA = rowsAlongX ? RoadNetwork.DIR_NORTH : RoadNetwork.DIR_WEST;
 		int perpB = rowsAlongX ? RoadNetwork.DIR_SOUTH : RoadNetwork.DIR_EAST;
@@ -1611,6 +1651,19 @@ public record SolveParams(
 			// value, but never silently (review 3 section 3-3)
 			stats.candidateContradictions++;
 			return new int[]{cell.solvedP};
+		}
+		if (cell.seat) {
+			// full-block seat: even walk surfaces only (see candidatesFor)
+			int first = (lo & 1) == 0 ? lo : lo + 1;
+			if (first > hi) {
+				stats.candidateContradictions++;
+				return new int[]{cell.solvedP};
+			}
+			int[] evens = new int[(hi - first) / 2 + 1];
+			for (int v = first, k = 0; v <= hi; v += 2, k++) {
+				evens[k] = v;
+			}
+			return evens;
 		}
 		int[] out = new int[hi - lo + 1];
 		for (int v = lo; v <= hi; v++) {

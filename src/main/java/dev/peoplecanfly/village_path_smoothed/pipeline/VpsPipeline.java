@@ -23,6 +23,8 @@ import net.minecraft.world.level.levelgen.structure.BoundingBox;
 import net.minecraft.world.level.levelgen.structure.PoolElementStructurePiece;
 import net.minecraft.world.level.levelgen.structure.StructurePiece;
 import net.minecraft.world.level.levelgen.structure.StructureStart;
+import net.minecraft.world.level.levelgen.structure.pools.FeaturePoolElement;
+import net.minecraft.world.level.levelgen.structure.pools.SinglePoolElement;
 import net.minecraft.world.level.levelgen.structure.templatesystem.StructureTemplateManager;
 
 import java.util.List;
@@ -353,6 +355,35 @@ public final class VpsPipeline {
 		return null;
 	}
 
+	/**
+	 * T5 path: nothing may move at feature placement, so a seat with a RIGID
+	 * decor piece on top pins at the level that piece actually renders at (the
+	 * phase-2 plaza precedent: the pieces are the rigid truth); a bare seat
+	 * rides the solve freely.
+	 */
+	private static void pinSeatsWithDecor(RoadNetwork network, List<StructurePiece> pieces) {
+		for (RoadCell cell : network.cells) {
+			if (!cell.seat) {
+				continue;
+			}
+			for (StructurePiece piece : pieces) {
+				if (!(piece instanceof PoolElementStructurePiece pool)
+						|| (!(pool.getElement() instanceof SinglePoolElement)
+								&& !(pool.getElement() instanceof FeaturePoolElement))) {
+					continue;
+				}
+				BoundingBox box = piece.getBoundingBox();
+				if (box.minX() != cell.x || box.maxX() != cell.x
+						|| box.minZ() != cell.z || box.maxZ() != cell.z) {
+					continue;
+				}
+				cell.plazaPinned = true;
+				cell.plazaPinP = 2 * box.minY();
+				break;
+			}
+		}
+	}
+
 	private static boolean hasStreetPiece(StructureStart start, VillagePathSmoothedConfig config) {
 		for (StructurePiece piece : start.getPieces()) {
 			if (RoadCollector.isStreetPiece(piece, config)) {
@@ -439,6 +470,11 @@ public final class VpsPipeline {
 		}
 		RoadNetwork network = RoadCollector.collect(start, ctx, config);
 		if (config.roadSmoothing.enabled) {
+			// plan 2026-10-16: nothing may move at feature placement, so a seat
+			// with a RIGID decor piece on top pins at the level that piece
+			// actually renders at (the phase-2 plaza precedent: the pieces are
+			// the rigid truth); a bare seat rides the solve freely
+			pinSeatsWithDecor(network, start.getPieces());
 			// plan C, T5 path: nothing may move at feature placement, so the plaza
 			// groups pin at the level their rigid pieces actually render at - the
 			// solve and the world agree by construction

@@ -119,11 +119,12 @@ public final class RoadCollector {
 	/** Centre-piece cells skipped because their y=0 block is not road material. */
 	public static final AtomicLong TOWN_CENTER_NON_ROAD_SKIPPED = new AtomicLong();
 	/**
-	 * Fixed base seats taken into the mask (原版多向道路结构调查 2026-10-15): a
-	 * street piece's up-facing y=0 jigsaw whose final_state is one of the base
-	 * materials. 167 such seats exist per vanilla version (survey section 5.2).
+	 * Decor seats taken into the mask (原版多向道路结构调查 2026-10-15, reworked
+	 * 2026-10-16): a street piece's up-facing y=0 jigsaw whose final_state is
+	 * one of the base materials. 167 such seats exist per vanilla version
+	 * (survey section 5.2).
 	 */
-	public static final AtomicLong FIXED_BASE_CELLS = new AtomicLong();
+	public static final AtomicLong SEAT_CELLS = new AtomicLong();
 
 	/**
 	 * The base materials a street seat's jigsaw renders ({@code final_state}).
@@ -139,8 +140,8 @@ public final class RoadCollector {
 			"smooth_sandstone"
 	);
 
-	/** One collected fixed base seat: world column, owning piece, road style. */
-	private record Seat(int x, int z, int pieceIndex, String style) {
+	/** One collected decor seat: world column, owning piece, road style, base block id. */
+	private record Seat(int x, int z, int pieceIndex, String style, String block) {
 	}
 
 	/** A collected cell's height probe, shared by road cells and fixed base seats. */
@@ -238,8 +239,11 @@ public final class RoadCollector {
 			collectPiece(poolPiece, singleElement, location, style, townCentre, pieceIndex, templateManager, ctx, config, cellsByPos, seats);
 		}
 
-		// Fixed base seats join the mask AFTER the road cells: a road cell on the
-		// same column keeps its claim, the seat yields (the road wins).
+		// Decor seats join the mask AFTER the road cells: a road cell on the
+		// same column keeps its claim, the seat yields (the road wins). Seats
+		// are NORMAL solver cells - they ride the solved profile; the writer
+		// renders their vanilla block at the solved height and the RIGID decor
+		// piece on top is shifted to match (plan, 2026-10-16).
 		for (Seat seat : seats) {
 			long key = RoadCell.packedXZ(seat.x(), seat.z());
 			if (cellsByPos.containsKey(key)) {
@@ -250,7 +254,8 @@ public final class RoadCollector {
 				continue; // dropped probe: the seat keeps its vanilla block
 			}
 			RoadCell cell = new RoadCell(seat.x(), seat.z(), seat.style(), 2 * probe.surfaceTopY(), false);
-			cell.fixedBase = true;
+			cell.seat = true;
+			cell.seatBlock = seat.block();
 			cell.realHeight = probe.realHeight();
 			cell.pieceIndex = seat.pieceIndex();
 			cellsByPos.put(key, cell);
@@ -264,16 +269,6 @@ public final class RoadCollector {
 		}
 		List<RoadCell> cells = new ArrayList<>(cellsByPos.values());
 		alignProbeBoundaries(cells);
-		for (RoadCell cell : cells) {
-			if (cell.fixedBase) {
-				// the seat pins at its own vanilla height - plaza style, one level
-				// per seat (a crossroad's seats can sit at different heights on a
-				// slope and no street piece may be moved to flatten them). Set
-				// after the probe-boundary alignment so the pin is the final baseP.
-				cell.plazaPinned = true;
-				cell.plazaPinP = cell.baseP;
-			}
-		}
 		RoadNetwork network = RoadNetwork.build(cells, config.roadSmoothing.maxExactSectionWidth);
 		recordIntegrity(network);
 		// Fix plan v4 D1-e used to hand a split mask back to vanilla whole "instead
@@ -455,7 +450,7 @@ public final class RoadCollector {
 				// with its final_state (the lamp/tree/villager base block), so it
 				// must not be paved over. Qualifying seats join the mask as fixed
 				// anchors; other jigsaws stay excluded exactly as before.
-				collectFixedBaseSeat(infoState, info, infoPos, settings, offset, pieceIndex, style, seats);
+				collectSeat(infoState, info, infoPos, settings, offset, pieceIndex, style, seats);
 				continue;
 			} else if (!isRoadSurfaceCell(infoState, style, config)) {
 				continue;
@@ -566,11 +561,11 @@ public final class RoadCollector {
 	 * the base materials is a DECOR SEAT (vanilla multi-way road survey
 	 * 2026-10-15, section 7): placement replaces the jigsaw with that block and
 	 * the decor piece (lamp, tree, flower, villager) stands on it. The cell
-	 * joins the mask as a FIXED anchor - pinned at its vanilla height, never
-	 * written, never suppressed - so the road around it solves within half a
-	 * block of it instead of leaving a step at the grass island.
+	 * joins the mask as a NORMAL solver cell - it rides the solved profile, the
+	 * writer renders the seat block at the solved height and the RIGID decor
+	 * piece on top is shifted to match (plan 2026-10-16).
 	 */
-	private static void collectFixedBaseSeat(BlockState state, StructureTemplate.StructureBlockInfo info, BlockPos infoPos,
+	private static void collectSeat(BlockState state, StructureTemplate.StructureBlockInfo info, BlockPos infoPos,
 			StructurePlaceSettings settings, BlockPos offset, int pieceIndex, String style, List<Seat> seats) {
 		if (!state.hasProperty(BlockStateProperties.ORIENTATION)) {
 			return;
@@ -605,8 +600,8 @@ public final class RoadCollector {
 			return; // villager/decor seats in road material stay out (user decision 2026-10-15)
 		}
 		BlockPos worldPos = StructureTemplate.calculateRelativePosition(settings, infoPos).offset(offset);
-		seats.add(new Seat(worldPos.getX(), worldPos.getZ(), pieceIndex, style));
-		FIXED_BASE_CELLS.incrementAndGet();
+		seats.add(new Seat(worldPos.getX(), worldPos.getZ(), pieceIndex, style, id));
+		SEAT_CELLS.incrementAndGet();
 	}
 
 	private static boolean isRoadSurfaceCell(BlockState state, String style, VillagePathSmoothedConfig config) {

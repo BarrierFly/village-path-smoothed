@@ -204,17 +204,26 @@ Rules:
   (`RAILINGS_SKIPPED_AT_DOOR`); `railing.skipAtBuildingDoors` gates it.
   `door anchor offsets 0/1/2/3/4+` in /vps stats is the junction-to-door
   distance distribution (F-D) that documents why the junction is not a door.
-- **Street decor base seats are fixed anchors, pinned per seat (vanilla multi-way
-  road structure survey 2026-10-15).** A street piece's up-facing y=0 jigsaw whose
-  `final_state` is grass_block/dirt/sand/smooth_sandstone joins the mask as a
-  FIXED cell (167 per vanilla version): the solver pins it at its own vanilla
-  height (plaza style, one level per seat) and the road solves within half a
-  block of it; the writer NEVER writes, fills or clears it and the suppression
-  never claims it (`VpsPlacementContext` excludes `fixedBase` cells) - the
-  vanilla piece renders the seat block and the lamp/tree/villager stands on it
-  (`FIXED_BASE_CELLS` / `FIXED_BASE_CELLS_VANILLA` in /vps stats). The 44
-  dirt_path + 2 cobblestone road-material seats per version stay OUT of the mask
-  (user decision 2026-10-15). Do not "fix" a seat mismatch by writing the cell.
+- **Street decor seats ride the solved profile (原版多向道路结构调查 2026-10-15,
+  reworked by user decision 2026-10-16).** A street piece's up-facing y=0
+  jigsaw whose `final_state` is grass_block/dirt/sand/smooth_sandstone joins
+  the mask as a NORMAL solver cell (167 per vanilla version): it rides the
+  solved profile with `|dP| <= 1` to its neighbours, constrained to EVEN walk
+  surfaces (`candidatesFor`/`runCandidates` filter, the polish snaps, the
+  conflict sweep treats seats as immovable) so the RIGID decor piece on top
+  shifts by whole blocks. The writer renders the seat's vanilla block at the
+  solved height (dirt fill below, clearing only up to the old seat block - the
+  decor stands above it) and dresses no edges. At T1.5 the decor piece
+  (lamp/tree/hay - a 1x1 non-street pool element on the seat's column) is
+  shifted to the seat's solved level by `T15Planner#settleSeats`
+  (`SEAT_DECOR_PIECES_MOVED`), which REPLACES the lamp's old
+  singleton-building alignment; such singletons are removed from the building
+  pass (`isSeatRider`). At T5 nothing may move, so a seat with decor pins at
+  the decor's real render level (the phase-2 plaza precedent) and a bare seat
+  rides the solve. The 44 dirt_path + 2 cobblestone road-material seats per
+  version stay OUT of the mask (user decision 2026-10-15). The old "pin at the
+  probed vanilla height" design is gone - a seat must never drag the road to
+  vanilla height.
 - **The polish conflict sweep never moves a pinned cell (2026-10-15).**
   `RoadSmoother#projectViolatedEdges` treats pinned cells (plaza groups, fixed
   base seats) as immovable: a pinned endpoint stays, the free endpoint takes the

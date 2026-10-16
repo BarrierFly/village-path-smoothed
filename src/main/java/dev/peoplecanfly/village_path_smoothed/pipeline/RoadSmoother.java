@@ -262,15 +262,22 @@ public record SolveParams(
 		PolishStats polish = polish(net, p.allowCut(), pinnedCells);
 
 		// global final verification (review 3 P0-A item 3): walk every 4-adjacency
-		// edge of the finished network so no violation can stay invisible
+		// edge of the finished network so no violation can stay invisible. G2
+		// (four-item confirmation section 6.3, 2026-10-16): a pinned ENDPOINT no
+		// longer suppresses the whole edge - the pin only means that endpoint
+		// cannot move, the edge is still checked, which is what makes seat<->plaza
+		// and seat<->road residues visible regardless of cell index order. Only
+		// edges with BOTH endpoints pinned are skipped: a plaza group is
+		// 4-connected and flat, so such an edge can never be violated and nothing
+		// on either side could ever have moved.
 		for (int i = 0; i < net.cells.size(); i++) {
-			if (pinnedCells.get(i)) {
-				continue; // pinned plaza cells are pre-solved; the polish never moves them
-			}
 			for (int dir = 0; dir < 4; dir++) {
 				int j = net.neighbors[i][dir];
 				if (j <= i) {
 					continue;
+				}
+				if (pinnedCells.get(i) && pinnedCells.get(j)) {
+					continue; // both endpoints pre-solved plaza pins
 				}
 				int d = Math.abs(net.cells.get(i).solvedP - net.cells.get(j).solvedP);
 				if (d > 1) {
@@ -310,7 +317,10 @@ public record SolveParams(
 	 * <p>Construction: fix the seed, then BFS. When a cell is reached, every edge
 	 * to an already-fixed neighbour is satisfied by clamping the cell into that
 	 * neighbour's [v-1, v+1]; each edge therefore has exactly one later endpoint,
-	 * which is legal by construction.
+	 * which is legal by construction. The pinned cells are fixed beforehand AND
+	 * act as wave sources, and the seed is clamped like any other cell when it
+	 * already has fixed neighbours - otherwise a pinned wall could freeze whole
+	 * pockets at their DP values (dead-seed finding, 2026-10-16).
 	 *
 	 * <p>One case escapes that argument: a cell whose two already-fixed neighbours
 	 * disagree by 2 or more has <em>no</em> legal value (lo > hi), because both
@@ -355,25 +365,51 @@ public record SolveParams(
 		}
 		boolean[] fixed = new boolean[n];
 		int[] queue = new int[n];
+		int head = 0;
+		int tail = 0;
 		List<Integer> movedDeltas = new ArrayList<>();
 		int moved = 0;
 		int maxDelta = 0;
 		int conflicts = 0;
 
 		// plan C: pinned plaza cells start FIXED at their pin, so the walk clamps
-		// every road cell into the plaza's [pin - 1, pin + 1] when it reaches it
+		// every road cell into the plaza's [pin - 1, pin + 1] when it reaches it.
+		// They are also WAVE SOURCES: a pinned cell is never enqueued by the walk
+		// itself, so without this a pocket behind a pinned wall (or a component
+		// whose centre cell is pinned) would never be clamped at all - the whole
+		// component stayed at its DP values (dead-seed finding, plaza/seat bench
+		// scenarios, user decision 2026-10-16).
 		for (int i = pinnedCells.nextSetBit(0); i >= 0; i = pinnedCells.nextSetBit(i + 1)) {
 			fixed[i] = true;
+			queue[tail++] = i;
 		}
+		boolean[] conflictFlag = new boolean[1];
 		for (int start = 0; start < n; start++) {
 			if (fixed[start]) {
 				continue;
 			}
-			int seed = componentSeed(net, start);
-			int head = 0;
-			int tail = 0;
-			queue[tail++] = seed;
+			int seed = componentSeed(net, start, fixed);
+			// the seed is clamped like any other cell when it already has fixed
+			// neighbours (a pinned wall beside it): an unclamped seed would fix
+			// its DP value where it is illegal and the wall could never pull it
+			// back. With no fixed neighbour the clamp is a no-op and the DP
+			// value anchors the wave (the v3 centre-seed measurement).
+			conflictFlag[0] = false;
+			RoadCell seedCell = net.cells.get(seed);
+			int seedBefore = seedCell.solvedP;
+			int seedAfter = clampCell(net, seedCell, fixed, allowCut, conflictFlag);
+			if (conflictFlag[0]) {
+				conflicts++;
+			}
+			seedCell.solvedP = seedAfter;
+			if (seedAfter != seedBefore) {
+				moved++;
+				int delta = Math.abs(seedAfter - seedBefore);
+				maxDelta = Math.max(maxDelta, delta);
+				movedDeltas.add(delta);
+			}
 			fixed[seed] = true;
+			queue[tail++] = seed;
 			while (head < tail) {
 				int current = queue[head++];
 				for (int dir = 0; dir < 4; dir++) {
@@ -381,46 +417,12 @@ public record SolveParams(
 					if (j < 0 || fixed[j]) {
 						continue;
 					}
-					// clamp into the interval of this cell's already-fixed neighbours
-					int lo = Integer.MIN_VALUE;
-					int hi = Integer.MAX_VALUE;
-					for (int other = 0; other < 4; other++) {
-						int k = net.neighbors[j][other];
-						if (k >= 0 && fixed[k]) {
-							int value = net.cells.get(k).solvedP;
-							lo = Math.max(lo, value - 1);
-							hi = Math.min(hi, value + 1);
-						}
-					}
 					RoadCell target = net.cells.get(j);
 					int before = target.solvedP;
-					// fix plan v4 D7: with allowCutIntoTerrain = false the road may
-					// never sit below the terrain, so the cell's own baseP is a hard
-					// floor the polish cannot push through either. plan E: the same
-					// floor holds for water cells at every config - the water surface
-					// is solid ground; a seat is exempt (it rides the solve and is
-					// written there, plan 2026-10-16).
-					int floor = (target.anchor || (!allowCut && !target.seat)) ? target.baseP : Integer.MIN_VALUE;
-					lo = Math.max(lo, floor);
-					int after;
-					if (lo > hi) {
-						// two fixed neighbours genuinely disagree: no legal value
-						// exists here. Counted, and resolved by the sweep below.
+					conflictFlag[0] = false;
+					int after = clampCell(net, target, fixed, allowCut, conflictFlag);
+					if (conflictFlag[0]) {
 						conflicts++;
-						after = Math.max(floor, (lo + hi + 1) / 2);
-						if (target.seat) {
-							after &= ~1; // full-block seat: even walk surfaces only
-						}
-					} else {
-						after = Math.max(lo, Math.min(hi, before));
-						if (target.seat && (after & 1) != 0) {
-							// snap to the nearest even walk surface inside the clamp
-							if (after - 1 >= lo) {
-								after -= 1;
-							} else {
-								after += 1; // after == lo: the even above is inside hi
-							}
-						}
 					}
 					target.solvedP = after;
 					if (after != before) {
@@ -451,6 +453,67 @@ public record SolveParams(
 			}
 		}
 		return new PolishStats(moved, maxDelta, percentile90(movedDeltas), conflicts);
+	}
+
+	/**
+	 * The one polish step: clamp {@code target} into the interval of its
+	 * already-fixed neighbours' {@code [v - 1, v + 1]} bands and return the new
+	 * value. fix plan v4 D7: with {@code allowCutIntoTerrain = false} the road
+	 * may never sit below the terrain, so the cell's own {@code baseP} is a hard
+	 * floor the polish cannot push through either. plan E: the same floor holds
+	 * for water cells at every config - the water surface is solid ground; a
+	 * seat is exempt (it rides the solve and is written there, plan 2026-10-16).
+	 * Two fixed neighbours that genuinely disagree leave no legal value: the
+	 * midpoint is kept, counted via {@code conflictOut[0]} and resolved by the
+	 * sweep. A seat squeezed into a one-odd-value-wide interval keeps the even
+	 * value above the clamp and sets {@code conflictOut[0]} as well (G1,
+	 * four-item confirmation section 6.3, 2026-10-16).
+	 */
+	private static int clampCell(RoadNetwork net, RoadCell target, boolean[] fixed, boolean allowCut,
+			boolean[] conflictOut) {
+		int lo = Integer.MIN_VALUE;
+		int hi = Integer.MAX_VALUE;
+		for (int other = 0; other < 4; other++) {
+			int k = net.neighbors[target.index][other];
+			if (k >= 0 && fixed[k]) {
+				int value = net.cells.get(k).solvedP;
+				lo = Math.max(lo, value - 1);
+				hi = Math.min(hi, value + 1);
+			}
+		}
+		int floor = (target.anchor || (!allowCut && !target.seat)) ? target.baseP : Integer.MIN_VALUE;
+		lo = Math.max(lo, floor);
+		int after;
+		if (lo > hi) {
+			after = Math.max(floor, (lo + hi + 1) / 2);
+			if (target.seat) {
+				after &= ~1; // full-block seat: even walk surfaces only
+			}
+			conflictOut[0] = true;
+		} else {
+			after = Math.max(lo, Math.min(hi, target.solvedP));
+			if (target.seat && (after & 1) != 0) {
+				// snap to the nearest even walk surface inside the clamp
+				if (after - 1 >= lo) {
+					after -= 1;
+				} else {
+					// after == lo: take the even above. When the clamp interval is
+					// one odd value wide (two fixed neighbours exactly one whole
+					// block apart) that value leaves [lo, hi]: the seat keeps it
+					// anyway - an odd seat would break the whole-block render
+					// parity, and "only land even when it fits" would leave the
+					// odd value - and the conflict is counted so the projection
+					// sweep below engages and repairs the free side. Whatever
+					// residual remains stays visible through the final
+					// verification.
+					after += 1;
+					if (after > hi) {
+						conflictOut[0] = true;
+					}
+				}
+			}
+		}
+		return after;
 	}
 
 	/**
@@ -523,8 +586,14 @@ public record SolveParams(
 		return changed;
 	}
 
-	/** Seed of the component containing {@code start}: its cell closest to its own box centre. */
-	private static int componentSeed(RoadNetwork net, int start) {
+	/**
+	 * Seed of the component containing {@code start}: its cell closest to its
+	 * own box centre, skipping pre-fixed (pinned) cells. A pinned centre used
+	 * to be returned as the seed and its all-pinned neighbourhood killed the
+	 * wave before it started, leaving whole plaza-centred components unpolished
+	 * (found by the plaza/seat bench scenarios; user decision 2026-10-16).
+	 */
+	private static int componentSeed(RoadNetwork net, int start, boolean[] fixed) {
 		Deque<Integer> stack = new ArrayDeque<>();
 		List<Integer> component = new ArrayList<>();
 		stack.push(start);
@@ -552,9 +621,12 @@ public record SolveParams(
 		}
 		int centreX = minX + (maxX - minX) / 2;
 		int centreZ = minZ + (maxZ - minZ) / 2;
-		int best = component.get(0);
+		int best = -1;
 		int bestDistance = Integer.MAX_VALUE;
 		for (int i : component) {
+			if (fixed[i]) {
+				continue; // a pinned seed's all-pinned neighbourhood kills the wave
+			}
 			RoadCell c = net.cells.get(i);
 			int distance = Math.max(Math.abs(c.x - centreX), Math.abs(c.z - centreZ));
 			if (distance < bestDistance || (distance == bestDistance && i < best)) {
@@ -562,7 +634,9 @@ public record SolveParams(
 				best = i;
 			}
 		}
-		return best;
+		// the caller's start is unfixed, so the component always has at least
+		// one unfixed cell; the fallback keeps a fully-pinned scan safe anyway
+		return best < 0 ? start : best;
 	}
 
 	private static int percentile90(List<Integer> values) {

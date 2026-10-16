@@ -12,14 +12,24 @@ import dev.peoplecanfly.village_path_smoothed.terrain.VpsGenContext;
 import dev.peoplecanfly.village_path_smoothed.terrain.WaterCrossings;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.network.chat.Component;
 import net.minecraft.tags.BlockTags;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.LeavesBlock;
 import net.minecraft.world.level.block.ScaffoldingBlock;
 import net.minecraft.world.level.block.SlabBlock;
+import net.minecraft.world.level.block.StandingSignBlock;
+import net.minecraft.world.level.block.entity.SignBlockEntity;
+//#if MC >= 12001
+//$$ import net.minecraft.world.level.block.entity.SignText;
+//#endif
+//#if MC >= 260000
+//$$ import net.minecraft.world.level.block.entity.SignTextSlot;
+//#endif
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
+import net.minecraft.world.level.block.state.properties.RotationSegment;
 import net.minecraft.world.level.block.state.properties.SlabType;
 import net.minecraft.world.level.levelgen.structure.BoundingBox;
 
@@ -145,7 +155,7 @@ public final class RoadWriter {
 	 *        cell may take the single-cell surface nudge (never at a building door)
 	 */
 	public static void write(RoadNetwork net, VpsGenContext ctx, BoundingBox chunkBB, VillagePathSmoothedConfig config,
-			int[][] shiftedComponents, int[][] buildingBoxes, int[][] doorFronts, String village) {
+			int[][] shiftedComponents, int[][] buildingBoxes, int[][] doorFronts, int[][] doorSigns, String village) {
 		RoadMaterialTable table = RoadMaterialTable.create(config);
 		List<Block> kerbExtras = resolveKerbExtras(config);
 		// User decision 2026-10-15: every road cell applies its own edge details
@@ -174,6 +184,9 @@ public final class RoadWriter {
 				writeSurfaceFallback(net, cell, ctx, config, table, shiftedComponents);
 			}
 		}
+		// debug door signs run LAST: a road write or a clear in this pass can
+		// never take a sign back down
+		writeDoorSigns(ctx, chunkBB, doorSigns, net);
 	}
 
 	/**
@@ -898,6 +911,79 @@ public final class RoadWriter {
 			return true;
 		}
 		return ctx.level.getFluidState(new BlockPos(x, y, z)).is(net.minecraft.tags.FluidTags.WATER);
+	}
+
+	/**
+	 * Debug door signs (user request 2026-10-16, always on): one standing oak
+	 * sign at every movable building's template door front, documenting the
+	 * door-to-road alignment on foot. Line 1: the door X/Z with the base walk
+	 * level the alignment used (the component's Y0 layer top); line 2: the
+	 * corresponding road cell's X/Z and its solved walk surface (x.0 / x.5,
+	 * locale-free integer formatting). Numbers only, space separated. Signs are
+	 * placed after every road cell of this chunk, and a sign whose column
+	 * belongs to another chunk is placed when that chunk generates - the same
+	 * incremental rule the road cells follow. Debug visibility beats fidelity
+	 * (user decision 2026-10-16): the sign REPLACES whatever occupies the
+	 * target cell and may float; only the world bounds are clamped so the
+	 * write cannot be silently dropped. The water-seat base rules are
+	 * deliberately untouched here.
+	 */
+	private static void writeDoorSigns(VpsGenContext ctx, BoundingBox chunkBB, int[][] doorSigns, RoadNetwork net) {
+		if (doorSigns == null || doorSigns.length == 0) {
+			return;
+		}
+		Map<Long, RoadCell> cellsByXZ = new HashMap<>();
+		for (RoadCell cell : net.cells) {
+			cellsByXZ.put(RoadCell.packedXZ(cell.x, cell.z), cell);
+		}
+		for (int[] sign : doorSigns) {
+			int frontX = sign[0] + sign[3];
+			int frontZ = sign[2] + sign[4];
+			if (frontX < chunkBB.minX() || frontX > chunkBB.maxX() || frontZ < chunkBB.minZ() || frontZ > chunkBB.maxZ()) {
+				continue; // the sign's own chunk places it
+			}
+			int signY;
+			RoadCell front = cellsByXZ.get(RoadCell.packedXZ(frontX, frontZ));
+			if (front != null) {
+				// stand on the road surface just rendered (a slab surface leaves
+				// the sign half a block up, like a vanilla sign on a slab)
+				signY = RoadWritePolicy.roadBlockY(front.solvedP, (front.solvedP & 1) != 0) + 1;
+			} else {
+				signY = ctx.groundSurfaceTopY(frontX, frontZ, sign[1]);
+				if (signY <= ctx.getMinY()) {
+					signY = sign[1]; // no standable ground: float at the base walk level
+				}
+			}
+			// debug visibility beats fidelity (user decision 2026-10-16): replace
+			// whatever occupies the cell, may float; clamp into the world so the
+			// write cannot be silently dropped
+			signY = Math.max(ctx.getMinY(), Math.min(ctx.getMaxY(), signY));
+			Direction facing = sign[3] > 0 ? Direction.EAST : sign[3] < 0 ? Direction.WEST
+					: sign[4] > 0 ? Direction.SOUTH : Direction.NORTH;
+			BlockState state = Blocks.OAK_SIGN.defaultBlockState()
+					.setValue(StandingSignBlock.ROTATION, RotationSegment.convertToSegment(facing));
+			setBlock(ctx, frontX, signY, frontZ, state);
+			if (ctx.level.getBlockEntity(new BlockPos(frontX, signY, frontZ)) instanceof SignBlockEntity signBlock) {
+				// road Y with exactly one decimal digit, no locale float formatting
+				String roadY = (sign[6] & 1) == 0 ? (sign[6] / 2) + ".0" : ((sign[6] - 1) / 2) + ".5";
+				//#if MC >= 260000
+				//$$ SignText.Mutable text = signBlock.getText(SignTextSlot.FRONT).asMutable();
+				//$$ text.setLine(0, Component.literal(sign[0] + " " + sign[1] + " " + sign[2]));
+				//$$ text.setLine(1, Component.literal(sign[5] + " " + roadY + " " + sign[7]));
+				//$$ signBlock.setText(text.asImmutable(), SignTextSlot.FRONT);
+				//#elseif MC >= 12001
+				//$$ SignText text = signBlock.getText(true);
+				//$$ text = text.setMessage(0, Component.literal(sign[0] + " " + sign[1] + " " + sign[2]));
+				//$$ text = text.setMessage(1, Component.literal(sign[5] + " " + roadY + " " + sign[7]));
+				//$$ signBlock.setText(text, true);
+				//#else
+				signBlock.setMessage(0, Component.literal(sign[0] + " " + sign[1] + " " + sign[2]));
+				signBlock.setMessage(1, Component.literal(sign[5] + " " + roadY + " " + sign[7]));
+				//#endif
+				signBlock.setChanged();
+				VpsPipeline.DOOR_SIGNS_PLACED.incrementAndGet();
+			}
+		}
 	}
 
 	private static void setBlock(VpsGenContext ctx, int x, int y, int z, BlockState state) {

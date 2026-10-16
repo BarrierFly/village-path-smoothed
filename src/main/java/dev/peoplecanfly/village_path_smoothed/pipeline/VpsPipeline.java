@@ -28,6 +28,7 @@ import net.minecraft.world.level.levelgen.structure.pools.SinglePoolElement;
 import net.minecraft.world.level.levelgen.structure.templatesystem.StructureTemplateManager;
 
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -122,6 +123,11 @@ public final class VpsPipeline {
 	public static final AtomicLong PLAZA_GROUPS = new AtomicLong();
 	public static final AtomicLong PLAZAS_SHIFTED = new AtomicLong();
 	public static final AtomicLong PLAZA_PIECES_SHIFTED = new AtomicLong();
+	// Debug door signs (user request 2026-10-16, always on): one standing sign
+	// per template door of a movable building. WITHOUT_ROAD counts doors whose
+	// village network held no road cell at all (no second line, no sign).
+	public static final AtomicLong DOOR_SIGNS_PLACED = new AtomicLong();
+	public static final AtomicLong DOOR_SIGNS_WITHOUT_ROAD = new AtomicLong();
 
 	private VpsPipeline() {
 	}
@@ -225,7 +231,7 @@ public final class VpsPipeline {
 			runBuildingGuard(solution, ctx, config);
 		}
 		RoadWriter.write(solution.network, ctx, chunkBB, config, solution.shiftedComponents,
-				solution.buildingBoxes, solution.doorFronts, String.valueOf(start.getChunkPos()));
+				solution.buildingBoxes, solution.doorFronts, solution.doorSigns, String.valueOf(start.getChunkPos()));
 	}
 
 	/**
@@ -491,8 +497,11 @@ public final class VpsPipeline {
 		solution.solved = true;
 		// T5 never moves buildings, so the boxes are already final here
 		solution.buildingBoxes = BuildingComponents.protectedBoxes(start.getPieces());
-		solution.doorFronts = BuildingComponents.doorFronts(start.getPieces(),
-				BuildingComponents.templateDoors(start.getPieces(), templateManagerOf(start.getPieces())));
+		Map<Integer, int[][]> t5DoorsByPiece = BuildingComponents.templateDoors(start.getPieces(),
+				templateManagerOf(start.getPieces()));
+		solution.doorFronts = BuildingComponents.doorFronts(start.getPieces(), t5DoorsByPiece);
+		solution.doorSigns = T15Planner.computeDoorSigns(BuildingComponents.group(start.getPieces()),
+				start.getPieces(), t5DoorsByPiece, network);
 
 		long nanos = System.nanoTime() - begin;
 		SOLVE_NANOS.addAndGet(nanos);

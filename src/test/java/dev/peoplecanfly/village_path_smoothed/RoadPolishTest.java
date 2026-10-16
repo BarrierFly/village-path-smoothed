@@ -156,6 +156,74 @@ public class RoadPolishTest {
 		assertEquals("both components are legal on their own", 0, violations(net));
 	}
 
+	/**
+	 * G1 + G2 (four-item confirmation section 6.3, 2026-10-16): a seat clamped
+	 * into a one-odd-value-wide interval keeps its even value one half unit
+	 * above the clamp and counts the conflict so the sweep engages. The sweep
+	 * cannot repair the seat<->pin edge (both ends immovable), so the residual
+	 * must stay VISIBLE: the final verification counts edges against pinned
+	 * cells since G2 - the old code skipped every edge of a pinned cell, so
+	 * this residual only showed up when the pin happened to sort after the
+	 * seat (packedXZ order here puts the pin first, which used to hide it).
+	 */
+	@Test
+	public void aSeatSqueezedByTwoPinsKeepsItsEvenValueAndTheResidualStaysVisible() {
+		// pins 130 and 132 differ by exactly one whole block: the seat between
+		// them has the single clamp value 131, odd, so no even value fits. F(1,-1)
+		// sits at the component's box centre, so IT is the BFS seed - the seat is
+		// visited afterwards and clamped against BOTH pins (a seed is never
+		// clamped, and without F the seat would be the seed and the squeeze
+		// would never fire).
+		RoadCell p1 = new RoadCell(0, 0, "plains", 130, false);
+		p1.plazaPinned = true;
+		p1.plazaPinP = 130;
+		RoadCell p2 = new RoadCell(2, 0, "plains", 132, false);
+		p2.plazaPinned = true;
+		p2.plazaPinP = 132;
+		RoadCell seat = new RoadCell(1, 0, "plains", 131, false);
+		seat.seat = true;
+		seat.seatBlock = "grass_block";
+		RoadCell free = new RoadCell(1, -1, "plains", 130, false);
+		RoadNetwork net = RoadNetwork.build(new ArrayList<>(List.of(p1, free, seat, p2)), 4);
+		RoadSmoother.SolveStats stats = RoadSmoother.solve(net, params());
+		assertEquals("the width-0 even snap counts its conflict", 1, stats.polishConflicts());
+		assertEquals("the seat keeps the even walk surface above the clamp", 132, seat.solvedP);
+		// the sweep repairs the free side (free -> 131) but cannot move the
+		// pinned pin or the seat, so the seat<->pin residual stays and - since
+		// G2 - is COUNTED regardless of the pin's index order
+		assertEquals("the seat<->plaza residual is visible", 1, stats.residualViolations());
+		assertEquals("the residual is exactly one whole block", 2, stats.worstStep());
+		assertEquals("the independent edge walk sees the same edge", 1, violations(net));
+	}
+
+	/**
+	 * G1 corner from the other side: when the even above still fits the clamp
+	 * (interval wider than one value) the snap is legal and must NOT count a
+	 * conflict - the counter is reserved for genuine width-0 squeezes.
+	 */
+	@Test
+	public void anEvenSnapInsideTheClampCountsNoConflict() {
+		// pins 130 and 131 leave the seat the clamp [130, 131]; its DP value
+		// (even, near baseP 133) clamps to the odd 131 and snaps down to 130 -
+		// INSIDE the clamp, so no conflict may be counted. F keeps the seat from
+		// being the BFS seed (a seed is never clamped).
+		RoadCell p1 = new RoadCell(0, 0, "plains", 130, false);
+		p1.plazaPinned = true;
+		p1.plazaPinP = 130;
+		RoadCell p2 = new RoadCell(2, 0, "plains", 131, false);
+		p2.plazaPinned = true;
+		p2.plazaPinP = 131;
+		RoadCell seat = new RoadCell(1, 0, "plains", 133, false);
+		seat.seat = true;
+		seat.seatBlock = "grass_block";
+		RoadCell free = new RoadCell(1, -1, "plains", 130, false);
+		RoadNetwork net = RoadNetwork.build(new ArrayList<>(List.of(p1, free, seat, p2)), 4);
+		RoadSmoother.SolveStats stats = RoadSmoother.solve(net, params());
+		assertEquals("the even snap fits the clamp - no conflict", 0, stats.polishConflicts());
+		assertEquals("the seat sits on the even value inside the clamp", 130, seat.solvedP);
+		assertEquals("the profile is legal", 0, stats.residualViolations());
+	}
+
 	private static void assertArrayEqualsMsg(String message, int[] expected, int[] actual) {
 		org.junit.Assert.assertArrayEquals(message, expected, actual);
 	}

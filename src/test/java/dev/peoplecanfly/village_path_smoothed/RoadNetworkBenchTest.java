@@ -249,6 +249,36 @@ public class RoadNetworkBenchTest {
 			}
 		}
 
+		/** A street-decor seat: full-block walk surface, immovable in the sweep (plan 2026-10-16). */
+		void seat(int x, int z, int topY) {
+			RoadCell cell = cellAt(x, z, topY);
+			cell.seat = true;
+			cell.seatBlock = "grass_block";
+		}
+
+		/** A pinned plaza cell: a hard seam boundary at {@code pinP} half units (plan C). */
+		void plazaPin(int x, int z, int pinP) {
+			RoadCell cell = cellAt(x, z, pinP / 2);
+			cell.plaza = true;
+			cell.plazaVanillaP = pinP;
+			cell.plazaPinned = true;
+			cell.plazaPinP = pinP;
+		}
+
+		private RoadCell cellAt(int x, int z, int topY) {
+			long key = RoadCell.packedXZ(x, z);
+			RoadCell cell = cells.get(key);
+			if (cell == null) {
+				minX = Math.min(minX, x);
+				maxX = Math.max(maxX, x);
+				minZ = Math.min(minZ, z);
+				maxZ = Math.max(maxZ, z);
+				cell = new RoadCell(x, z, "plains", 2 * topY, false);
+				cells.put(key, cell);
+			}
+			return cell;
+		}
+
 		List<RoadCell> build() {
 			return new ArrayList<>(cells.values());
 		}
@@ -486,11 +516,20 @@ public class RoadNetworkBenchTest {
 		int[] solvedByIndex = new int[0];
 		int[] basePByIndex = new int[0];
 		long solveNanos;
+		/** The solver's own final-verification counts (the G2 visibility cross-check). */
+		int solveResidualViolations;
+		int solveWorstStep;
+		RoadNetwork network;
 	}
 
 	/** Runs the production pipeline over one mask and measures every column of section 2.2. */
 	private static Metrics measure(MaskBuilder mask, TerrainShape terrainShape, SolverPath path) {
 		Height model = terrain(terrainShape);
+		return measure(mask, model, path);
+	}
+
+	/** Same pipeline over an explicit height field (the plaza/seat scenarios). */
+	private static Metrics measure(MaskBuilder mask, Height model, SolverPath path) {
 		Height real = realTerrain(model);
 		List<RoadCell> cells = new ArrayList<>();
 		for (RoadCell cell : mask.cells.values()) {
@@ -519,6 +558,9 @@ public class RoadNetworkBenchTest {
 		measureWriter(net, real, mask, m);
 		measureEdges(net, real, m);
 		measureArms(net, m);
+		m.solveResidualViolations = stats.residualViolations();
+		m.solveWorstStep = stats.worstStep();
+		m.network = net;
 		m.solvedByIndex = solvedSnapshot(net);
 		return m;
 	}
@@ -1036,6 +1078,206 @@ public class RoadNetworkBenchTest {
 	}
 
 	/** Every seventh cell of the mask, in a deterministic order. */
+	/**
+	 * Plaza/seat scenarios (four-item confirmation section 6.3-4, 2026-10-16):
+	 * the matrix above has no plaza or seat cells, so the two residues the new
+	 * acceptance names - the seat squeeze gap (G1) and the seat<->plaza double
+	 * anchor - never occurred in the rig. Each scenario adds a flat-pinned 3x3
+	 * plaza core and shoulder seats to a street and asserts the NEW acceptance
+	 * instead of "step violations = 0": every residue is visible (the final
+	 * verification counts exactly what an independent edge walk counts - the
+	 * G2 property), bounded (worst <= 2), and attributable (each violating edge
+	 * touches a seat, a pinned plaza cell, or an anchor sitting on its floor).
+	 * The two frequencies the seats-first upgrade decision needs are recorded
+	 * and printed; plan B (even-level plaza flattening) stays rejected.
+	 *
+	 * <p>Scoping: each scenario keeps the plaza on ground the road can legally
+	 * serve (the VALLEY street runs along the dry bank, the CLIFF/MESA streets
+	 * stop before their vertical steps, and the STEP case is exactly one whole
+	 * block). A pin facing a vertical terrain step is infeasible by construction
+	 * and leaves large free<->free residuals that PRE-DATE this change -
+	 * verified identical with the G1/G2 edit stashed on the 3d22785 baseline
+	 * (CLIFF worst 13, MESA worst 20, polish conflicts 0; the multi-seed polish
+	 * walk around a pinned wall). That phenomenon is visible and counted (also
+	 * by the old verification, both endpoints being free) but out of scope here;
+	 * it is reported to the user as a follow-up candidate.
+	 */
+	@Test
+	public void plazaSeatScenariosKeepResiduesVisibleBoundedAndAttributable() {
+		int scenarios = 0;
+		int gapScenarios = 0;
+		int residueScenarios = 0;
+		for (TerrainShape terrain : TerrainShape.values()) {
+			Metrics m = measure(plazaSeatMask(terrain), terrain, SolverPath.NOISE);
+			assertPlazaSeatInvariants(terrain.name(), m);
+			scenarios++;
+			if (m.polishConflicts > 0) {
+				gapScenarios++;
+			}
+			if (m.solveResidualViolations > 0) {
+				residueScenarios++;
+			}
+		}
+		// the tight case: a 1-whole-block step under the street with the plaza
+		// pinned flat on the seam - this is what squeezes a seat into a width-0
+		// clamp (G1) and what the seats-first decision needs measured
+		Height step = (x, z) -> x < 0 ? 64 : 65;
+		Metrics stepMetrics = measure(stepPlazaMask(step), step, SolverPath.NOISE);
+		assertPlazaSeatInvariants("STEP", stepMetrics);
+		scenarios++;
+		if (stepMetrics.polishConflicts > 0) {
+			gapScenarios++;
+		}
+		if (stepMetrics.solveResidualViolations > 0) {
+			residueScenarios++;
+		}
+		System.out.println("[bench] four-item confirmation 6.3-4, plaza/seat scenarios: "
+				+ gapScenarios + "/" + scenarios + " with a polish conflict (free-side gap), "
+				+ residueScenarios + "/" + scenarios + " with a counted residual (double anchors)");
+	}
+
+	/** visibility (G2) + bounded (worst <= 2) + attributable (the documented classes). */
+	private static void assertPlazaSeatInvariants(String name, Metrics m) {
+		assertEquals(name + ": the final verification counts every mask edge",
+				m.intViolEdg, m.solveResidualViolations);
+		assertEquals(name + ": the worst step agrees", m.intWorstP, m.solveWorstStep);
+		assertTrue(name + ": worst step " + m.intWorstP + " exceeds 2" + residualEdgeDump(m.network),
+				m.intWorstP <= 2);
+		for (int i = 0; i < m.network.cells.size(); i++) {
+			for (int dir = 0; dir < 4; dir++) {
+				int j = m.network.neighbors[i][dir];
+				if (j > i && Math.abs(m.network.cells.get(i).solvedP - m.network.cells.get(j).solvedP) > 1) {
+					assertTrue(name + ": residual edge " + i + "->" + j + " is not attributable",
+							attributableResidual(m.network, i, j));
+				}
+			}
+		}
+	}
+
+	/**
+	 * A street with a flat-pinned 3x3 plaza core and seats on both shoulders,
+	 * on ground the pin can legally serve (see the test's scoping note).
+	 */
+	private static MaskBuilder plazaSeatMask(TerrainShape shape) {
+		Height model = terrain(shape);
+		Height real = realTerrain(model);
+		MaskBuilder mask = new MaskBuilder();
+		// the valley runs north-south and holds water near |x| <= 10: its street
+		// runs along z on the dry bank at x = 14..16
+		boolean alongX = shape != TerrainShape.VALLEY;
+		int x0 = -10;
+		int x1 = 10;
+		if (shape == TerrainShape.CLIFF) {
+			x1 = 5; // the +8 step at x = 6 cannot be bridged from a pin
+		} else if (shape == TerrainShape.MESA) {
+			x0 = -5; // the mesa walls at |x| = 6/7 cannot be bridged from a pin
+			x1 = 5;
+		}
+		int centre = alongX ? 0 : 15;
+		for (int a = x0; a <= x1; a++) {
+			for (int w = -1; w <= 1; w++) {
+				if (alongX) {
+					add(mask, a, w, model, real);
+				} else {
+					add(mask, centre + w, a, model, real);
+				}
+			}
+		}
+		// ONE flat pin for the whole group: the median of its cells' terrain
+		// levels, exactly what RoadNetwork#applyPlazaPins computes
+		List<Integer> levels = new ArrayList<>();
+		for (int dx = -1; dx <= 1; dx++) {
+			for (int dz = -1; dz <= 1; dz++) {
+				levels.add(2 * (alongX ? model.topY(dx, dz) : model.topY(centre + dx, dz)));
+			}
+		}
+		levels.sort(null);
+		int pinP = levels.get(levels.size() / 2);
+		for (int dx = -1; dx <= 1; dx++) {
+			for (int dz = -1; dz <= 1; dz++) {
+				if (alongX) {
+					mask.plazaPin(dx, dz, pinP);
+				} else {
+					mask.plazaPin(centre + dx, dz, pinP);
+				}
+			}
+		}
+		for (int a = x0 + 2; a <= x1 - 2; a += 4) {
+			if (alongX) {
+				mask.seat(a, 2, model.topY(a, 2));
+				mask.seat(a, -2, model.topY(a, -2));
+			} else {
+				mask.seat(centre - 2, a, model.topY(centre - 2, a));
+				mask.seat(centre + 2, a, model.topY(centre + 2, a));
+			}
+		}
+		return mask;
+	}
+
+	/** A 1-whole-block step under the street, plaza pinned flat on the seam. */
+	private static MaskBuilder stepPlazaMask(Height step) {
+		MaskBuilder mask = new MaskBuilder();
+		for (int x = -8; x <= 8; x++) {
+			for (int z = -1; z <= 1; z++) {
+				mask.cell(x, z, step.topY(x, z), false);
+			}
+		}
+		List<Integer> levels = new ArrayList<>();
+		for (int dx = -1; dx <= 1; dx++) {
+			for (int dz = -1; dz <= 1; dz++) {
+				levels.add(2 * step.topY(dx, dz));
+			}
+		}
+		levels.sort(null);
+		int pinP = levels.get(levels.size() / 2);
+		for (int dx = -1; dx <= 1; dx++) {
+			for (int dz = -1; dz <= 1; dz++) {
+				mask.plazaPin(dx, dz, pinP);
+			}
+		}
+		for (int x : new int[]{-6, -2, 2, 6}) {
+			mask.seat(x, 2, step.topY(x, 2));
+			mask.seat(x, -2, step.topY(x, -2));
+		}
+		mask.seat(-2, 0, step.topY(-2, 0)); // squeezed against the pin seam
+		mask.seat(2, 0, step.topY(2, 0));
+		return mask;
+	}
+
+	/** Failure-message dump of every violating edge with endpoint flags. */
+	private static String residualEdgeDump(RoadNetwork net) {
+		StringBuilder out = new StringBuilder();
+		for (int i = 0; i < net.cells.size(); i++) {
+			for (int dir = 0; dir < 4; dir++) {
+				int j = net.neighbors[i][dir];
+				if (j > i && Math.abs(net.cells.get(i).solvedP - net.cells.get(j).solvedP) > 1) {
+					RoadCell a = net.cells.get(i);
+					RoadCell b = net.cells.get(j);
+					out.append("  [").append(a.x).append(',').append(a.z).append("]p").append(a.solvedP)
+							.append(a.seat ? "/seat" : "").append(a.plazaPinned ? "/pin" : "")
+							.append(a.anchor ? "/anch" : "")
+							.append("-[" ).append(b.x).append(',').append(b.z).append("]p").append(b.solvedP)
+							.append(b.seat ? "/seat" : "").append(b.plazaPinned ? "/pin" : "")
+							.append(b.anchor ? "/anch" : "")
+							.append(" d=").append(Math.abs(a.solvedP - b.solvedP));
+				}
+			}
+		}
+		return out.toString();
+	}
+
+	/**
+	 * True when a residual edge is one of the documented, counted classes
+	 * (four-item confirmation section 6.1): a seat squeeze (G1), a seat<->plaza
+	 * double anchor (both sweep-immovable), or a floor-limited anchor end.
+	 */
+	private static boolean attributableResidual(RoadNetwork net, int i, int j) {
+		RoadCell a = net.cells.get(i);
+		RoadCell b = net.cells.get(j);
+		return a.seat || b.seat || a.plazaPinned || b.plazaPinned
+				|| (a.anchor && a.solvedP == a.baseP) || (b.anchor && b.solvedP == b.baseP);
+	}
+
 	private static void injectWriteFailures(MaskBuilder mask) {
 		List<Long> keys = new ArrayList<>(mask.cells.keySet());
 		java.util.Collections.sort(keys);

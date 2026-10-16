@@ -255,6 +255,20 @@ public final class BuildingComponents {
 
 	/** One front cell one step outside the wall along the dominant axis from the footprint centre to the anchor. */
 	private static void addDoorFront(List<int[]> out, int ax, int az, int cx, int cz) {
+		int[] axis = outwardAxis(ax, az, cx, cz);
+		if (axis == null) {
+			return; // anchor at the footprint centre: no direction to derive
+		}
+		out.add(new int[]{ax + axis[0], az + axis[1], axis[0], axis[1]});
+	}
+
+	/**
+	 * The outward step {dx, dz} from the footprint centre to an anchor: one
+	 * step along the dominant axis, ties picking x. Shared by the door fronts
+	 * and the debug door signs (user request 2026-10-16) so both describe the
+	 * same direction. Null when the anchor sits at the footprint centre.
+	 */
+	public static int[] outwardAxis(int ax, int az, int cx, int cz) {
 		int dx = Integer.compare(ax, cx);
 		int dz = Integer.compare(az, cz);
 		if (Math.abs(ax - cx) < Math.abs(az - cz)) {
@@ -262,10 +276,7 @@ public final class BuildingComponents {
 		} else {
 			dz = 0; // x is the dominant axis (ties pick x)
 		}
-		if (dx == 0 && dz == 0) {
-			return; // anchor at the footprint centre: no direction to derive
-		}
-		out.add(new int[]{ax + dx, az + dz, dx, dz});
+		return dx == 0 && dz == 0 ? null : new int[]{dx, dz};
 	}
 
 	public static List<Component> group(List<StructurePiece> pieces) {

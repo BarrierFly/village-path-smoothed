@@ -235,7 +235,7 @@ public final class VpsCommands {
 						+ "  defects    : writer overrides %d, nudged to the surface %d, refused %d (out of world %d), surface fallbacks %d, over-budget %d, edge drops > 1 block %d (worst %d half units)%n"
 						+ "  solve      : contradictions %d, step violations %d (worst %d), seam re-solves refused %d, polish moved %d (max delta %d half units, p90 %d, midpoint conflicts %d), water anchor deviations %d, villages without arms %d, solution cache hits %d%n"
 						+ "  suppression: vanilla road blocks dropped %d (passed through %d)%n"
-						+ "  buildings  : T1.5 applied %d (no-server %d), components %d, shifted %d, no-road %d, overlap guards %d, floating %d, buried %d, re-solved after shift %d (%d cells changed), road cells yielded %d, door anchor offsets 0/1/2/3/4+ %d/%d/%d/%d/%d%n"
+						+ "  buildings  : T1.5 applied %d (no-server %d), components %d, shifted %d, no-road %d, overlap guards %d, floating %d, buried %d, re-solved after shift %d (%d cells changed), road cells yielded %d, door anchor offsets 0/1/2/3/4+ %d/%d/%d/%d/%d, door signs placed %d (no road %d)%n"
 						+ "  centres    : town-centre plaza cells %d (non-road cells skipped %d), vanilla-rendered %d, groups %d (shifted %d, pieces %d), decor seats %d (written %d, decor pieces moved %d)%n"
 						+ "  model gap  : written surface vs real terrain: mean %s half units, worst %d, over threshold %d, cut below terrain %d, fill above %d%n"
 						+ "  misc       : floor-garbage probes %d, probe boundary switches %d, probe mismatch columns %d, villager freeze: %s (brain ticks skipped: %d)",
@@ -296,6 +296,8 @@ public final class VpsCommands {
 				VpsPipeline.DOOR_ANCHOR_OFFSET_2.get(),
 				VpsPipeline.DOOR_ANCHOR_OFFSET_3.get(),
 				VpsPipeline.DOOR_ANCHOR_OFFSET_4_PLUS.get(),
+				VpsPipeline.DOOR_SIGNS_PLACED.get(),
+				VpsPipeline.DOOR_SIGNS_WITHOUT_ROAD.get(),
 				RoadCollector.TOWN_CENTER_CELLS.get(),
 				RoadCollector.TOWN_CENTER_NON_ROAD_SKIPPED.get(),
 				RoadWriter.PLAZA_CELLS_VANILLA.get(),

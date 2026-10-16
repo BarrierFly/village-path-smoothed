@@ -131,7 +131,18 @@ Rules:
   invalidates the metric the pass exists to make zero. With
   `allowCutIntoTerrain = false` the polish treats `baseP` as a hard floor too, so
   a terrain step no legal no-cut profile can bridge keeps its residual - which is
-  what that flag promises.
+  what that flag promises. G1 (four-item confirmation §6.3, 2026-10-16): when the
+  clamp interval at a seat is one odd value wide, the seat keeps the even value
+  above the clamp (an odd seat would break the whole-block render parity) and the
+  conflict is counted, which engages the sweep to repair the free side - do not
+  change this to "only land even when it fits", that would leave the odd value.
+  G2 (same date): the final verification walks every edge; a pinned ENDPOINT no
+  longer suppresses the edge (only edges with BOTH endpoints pinned are skipped,
+  and a plaza group is flat), so seat<->plaza residues are visible regardless of
+  cell index order. The polish seed skips pre-fixed (pinned) cells, and pinned
+  cells are enqueued as wave sources: a pinned component centre used to kill the
+  wave before it started and left whole plaza-centred components unpolished at
+  their DP values (found by the plaza/seat scenarios, user decision 2026-10-16).
 - **The seam band extends TOWARD the seam, never narrows against it.** Phase 3
   merges the seam cells' own hard bound into their band outright and grows
   interior cells' bands toward the seam interval along the legal-slope cone
@@ -241,6 +252,28 @@ Rules:
   base seats) as immovable: a pinned endpoint stays, the free endpoint takes the
   whole excess, two pinned endpoints keep their counted residual. The old sweep
   walked the pins themselves whenever a polish conflict reached the safety net.
+- **Acceptance after G2 (four-item confirmation §6.3, 2026-10-16).** With pin
+  edges counted, a plaza/seat village's `/vps stats` `step violations` may rise
+  from 0 to non-0 - that is information recovery, not a regression. The gate is:
+  every residue visible (the solver's count equals an independent edge walk),
+  worst <= 2, each attributable (seat squeeze / seat<->plaza double anchor /
+  floor-limited anchor). The bench's plaza/seat scenarios assert exactly this and
+  print the two frequencies (scenarios with a polish conflict, scenarios with a
+  counted residual) that decide whether seats-first (plan A structural version)
+  is ever needed; plan B (even-level plaza flattening) stays rejected as a
+  default.
+- **Debug door signs are always on (user request 2026-10-16).** Every movable
+  building's template door front gets one standing oak sign: line 1 the door X/Z
+  with the base walk level the alignment used (baseY + dy + 1, the Y0 layer top),
+  line 2 the corresponding road cell's X/Z and its solved walk surface (x.0/x.5,
+  numbers only, locale-free integer formatting). The corresponding road cell is
+  the Chebyshev-nearest cell in the WHOLE network, ties preferring the door-front
+  cell then the lower x/z (`DoorSigns`, pure). Signs are placed after the road
+  cells of their own chunk. Debug visibility beats fidelity (user decision
+  2026-10-16): the sign replaces whatever occupies the target cell and may float,
+  so EVERY door gets its sign; `door signs placed / no road` in `/vps stats`
+  documents the skips. No config gate; the water-seat base rules are deliberately
+  untouched by it.
 - **Plan A: a building always wins its column (user decision 2026-10-15).**
   `VpsVillageSolution#buildingBoxes` carries the 3D boxes of every protected
   piece - movable buildings plus the immovable hay piles
@@ -534,6 +567,9 @@ with the integrity / defect columns as hard assertions and the style column
 recorded and printed. It is pure Java and drives the production decomposition,
 solver and writer policy, so a fix moves the numbers rather than a mirror. Its
 terrain parameters are hard-coded; do not widen an assertion to make it green.
+The plaza/seat scenarios (2026-10-16) run separately: they assert the new
+acceptance (residues visible, worst <= 2, each attributable) instead of the
+zero gate, and print the two upgrade-decision frequencies.
 
 `RoadPolishTest` and `RoadMaskIntegrityTest` pin the two invariants the bench
 cannot state on its own: the profile is legal by construction, and a failed probe

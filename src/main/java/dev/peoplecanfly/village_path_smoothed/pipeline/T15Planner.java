@@ -207,6 +207,7 @@ public final class T15Planner {
 		// between the two passes mutates it when dy == 0 for every component.
 		if (shifted.isEmpty() && !plazaMoved(plazaComponents)) {
 			settleSeats(solution.network, pieces, minY, maxY, config);
+			solution.doorSigns = computeDoorSigns(components, pieces, doorsByPiece, solution.network);
 			return solution;
 		}
 
@@ -221,12 +222,63 @@ public final class T15Planner {
 		solution.network = resolved;
 		T15_RESOLVED_AFTER_SHIFT.incrementAndGet();
 		settleSeats(resolved, pieces, minY, maxY, config);
+		solution.doorSigns = computeDoorSigns(components, pieces, doorsByPiece, resolved);
 
 		if (config.diagnostics.dumpRoadNetwork) {
 			VillagePathSmoothed.LOGGER.info("[VPS] T1.5 village at {}: {} cells, {} building components, {} shifted, {} cells after the post-shift re-solve",
 					chunkPos, network.cells.size(), components.size(), shifted.size(), resolved.cells.size());
 		}
 		return solution;
+	}
+
+	/**
+	 * Debug door signs (user request 2026-10-16, always on): one standing sign
+	 * per template door of every movable component, documenting the door-to-road
+	 * alignment on foot - line 1 the door X/Z with the base walk level the
+	 * alignment used (baseY + dy + 1, the Y0 layer top), line 2 the
+	 * corresponding road cell X/Z with its solved walk surface. Pure data; the
+	 * writer places the blocks. Must run on the FINAL network so line 2 prints
+	 * the surface the writer will actually render. Doors without a road cell in
+	 * the alignment window get no sign; the skip is counted.
+	 */
+	static int[][] computeDoorSigns(List<BuildingComponents.Component> components, List<StructurePiece> pieces,
+			Map<Integer, int[][]> doorsByPiece, RoadNetwork net) {
+		List<int[][]> doorsPerComponent = new ArrayList<>(components.size());
+		int[] baseWalkY = new int[components.size()];
+		for (int c = 0; c < components.size(); c++) {
+			BuildingComponents.Component component = components.get(c);
+			List<int[]> doors = new ArrayList<>();
+			for (int idx : component.pieceIndices) {
+				int[][] pieceDoors = doorsByPiece.get(idx);
+				if (pieceDoors == null) {
+					continue;
+				}
+				StructurePiece piece = pieces.get(idx);
+				var box = piece.getBoundingBox();
+				int cx = (box.minX() + box.maxX()) / 2;
+				int cz = (box.minZ() + box.maxZ()) / 2;
+				for (int[] door : pieceDoors) {
+					int[] axis = BuildingComponents.outwardAxis(door[0], door[1], cx, cz);
+					if (axis != null) {
+						doors.add(new int[]{door[0], door[1], axis[0], axis[1]});
+					} else {
+						// a door at the footprint centre: no outward direction to
+						// derive - the sign stands in the door column itself
+						// (debug visibility beats fidelity, user decision 2026-10-16)
+						doors.add(new int[]{door[0], door[1], 0, 0});
+					}
+				}
+			}
+			doorsPerComponent.add(doors.toArray(new int[0][]));
+			baseWalkY[c] = component.baseY + component.dy + BuildingShift.DOOR_WALK_OFFSET;
+		}
+		int[][] signs = DoorSigns.compute(doorsPerComponent, baseWalkY, net);
+		int doorCount = 0;
+		for (int[][] doors : doorsPerComponent) {
+			doorCount += doors.length;
+		}
+		VpsPipeline.DOOR_SIGNS_WITHOUT_ROAD.addAndGet(doorCount - signs.length);
+		return signs;
 	}
 
 	/**

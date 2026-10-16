@@ -60,16 +60,18 @@ public final class BuildingComponents {
 	private static final java.util.regex.Pattern TOWN_CENTERS = java.util.regex.Pattern.compile("/town_centers/");
 
 	/**
-	 * A piece T1.5 is allowed to move vertically.
+	 * A piece T1.5 is allowed to move vertically: a RIGID {@code SinglePoolElement}
+	 * building, and nothing else (user decision 2026-10-16, report §3.3-2).
 	 *
-	 * <p>RIGID {@code SinglePoolElement} pieces are the buildings. RIGID
-	 * {@code FeaturePoolElement} pieces are the village {@code decor} pool's
-	 * placed features, and only the hay pile ({@code minecraft:pile_hay}) is
-	 * taken: its origin is the road surface and it is 1x1x1, so it is a real
-	 * road-side object that otherwise stays at the vanilla terrain height while
-	 * the road around it moves (user decision 2026-10-14). The decorative trees
-	 * and flowers are deliberately left alone - a moved tree would fight the
-	 * vanilla terrain adaptation, which raises the ground it stands on.
+	 * <p>The hay pile ({@code minecraft:pile_hay}) is deliberately NOT moved any
+	 * more: moving it was an unrequested 5c82bf5 behaviour ("非预期，干草堆不应搬动").
+	 * The only hay that still moves is one standing ON a mask seat, and only
+	 * because it rides the seat's own solved level ({@code T15Planner#settleSeats})
+	 * - the 2026-10-16 seat decision keeps the decor on a seat following the
+	 * base. A standalone hay pile stays where vanilla put it and keeps its
+	 * protected box ({@link #protectedBoxes}), so the road still yields to it.
+	 * The decorative trees and flowers are still left alone - a moved tree would
+	 * fight the vanilla terrain adaptation, which raises the ground it stands on.
 	 *
 	 * <p>Plan C (user decision 2026-10-15): a {@code town_centers} piece is NOT
 	 * a movable building any more. The plaza is solved flat at a pinned level
@@ -82,9 +84,6 @@ public final class BuildingComponents {
 		if (piece instanceof PoolElementStructurePiece pool) {
 			if (pool.getElement() instanceof SinglePoolElement element && isTownCentre(element)) {
 				return false;
-			}
-			if (pool.getElement() instanceof FeaturePoolElement feature) {
-				return feature.getProjection() == StructureTemplatePool.Projection.RIGID && isHayPile(feature);
 			}
 		}
 		return isRigid(piece);
@@ -114,16 +113,30 @@ public final class BuildingComponents {
 	}
 
 	/**
-	 * 3D bounding boxes {minX, maxX, minY, maxY, minZ, maxZ} of every movable
-	 * piece (buildings + the hay pile). The writer refuses to write a road column
-	 * whose road block would land inside one of these: the building always wins
-	 * (plan A, user decision 2026-10-15). The boxes are read live off the pieces,
-	 * so on the T1.5 path they already reflect any vertical shift.
+	 * The hay pile feature piece. It is NOT movable (user decision 2026-10-16),
+	 * but it still wins its column: {@link #protectedBoxes} keeps its box so the
+	 * writer's plan-A skip keeps the road off the pile.
 	 */
-	public static int[][] movableBoxes(List<StructurePiece> pieces) {
+	public static boolean isHayPile(StructurePiece piece) {
+		return piece instanceof PoolElementStructurePiece pool
+				&& pool.getElement() instanceof FeaturePoolElement feature
+				&& isHayPile(feature);
+	}
+
+	/**
+	 * 3D bounding boxes {minX, maxX, minY, maxY, minZ, maxZ} of every PROTECTED
+	 * piece: the movable buildings plus the immovable hay piles (user decision
+	 * 2026-10-16 - the pile itself no longer moves, but it still wins its
+	 * column). The writer refuses to write a road column whose road block would
+	 * land inside one of these: the piece always wins (plan A, user decision
+	 * 2026-10-15). The boxes are read live off the pieces, so on the T1.5 path
+	 * they already reflect any vertical shift (a hay pile on a seat rides the
+	 * seat via {@code T15Planner#settleSeats}).
+	 */
+	public static int[][] protectedBoxes(List<StructurePiece> pieces) {
 		List<int[]> out = new ArrayList<>();
 		for (StructurePiece piece : pieces) {
-			if (isMovable(piece)) {
+			if (isMovable(piece) || isHayPile(piece)) {
 				BoundingBox box = piece.getBoundingBox();
 				out.add(new int[]{box.minX(), box.maxX(), box.minY(), box.maxY(), box.minZ(), box.maxZ()});
 			}

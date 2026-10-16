@@ -182,7 +182,7 @@ public final class T15Planner {
 		solution.shiftedComponents = shifted.toArray(new int[0][]);
 		// read after the shift: the boxes must describe where the buildings really
 		// are, because the writer uses them to refuse a road column (plan A).
-		solution.buildingBoxes = BuildingComponents.movableBoxes(pieces);
+		solution.buildingBoxes = BuildingComponents.protectedBoxes(pieces);
 		solution.doorFronts = BuildingComponents.doorFronts(pieces, doorsByPiece);
 
 		// Review 4 section 7 (P1): close the probe gap that the move just opened.
@@ -612,8 +612,10 @@ public final class T15Planner {
 	 * True when the component is a single 1x1-footprint piece standing on a mask
 	 * seat column: it rides the seat's solved level (settleSeats) instead of
 	 * aligning on its own. A lamp is a RIGID single-pool piece and used to be
-	 * treated as a singleton building here; a hay pile on a seat would otherwise
-	 * move twice.
+	 * treated as a singleton building here. Since 2026-10-16 hay piles are not
+	 * building candidates at all (a standalone pile never moves), so the 1x1
+	 * RIGID lamp-like piece is the remaining case; a hay pile on a seat still
+	 * moves exactly once - with its seat (user decision 2026-10-16).
 	 */
 	private static boolean isSeatRider(BuildingComponents.Component component, List<StructurePiece> pieces,
 			java.util.Set<Long> seatColumns) {

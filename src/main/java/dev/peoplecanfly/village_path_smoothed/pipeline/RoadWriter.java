@@ -467,11 +467,12 @@ public final class RoadWriter {
 				// Pure scaffold deck (user decision 2026-10-15): the scaffold IS
 				// the crossing's walk surface (user decision 2026-10-14) and the
 				// water stays under it - the old support fill from the waterbed
-				// (the underwater dirt causeway) is gone. The placed distance
-				// mirrors vanilla's own getDistance, so a span further than 7
-				// blocks from any sturdy support decays on the first tick exactly
-				// like a player-built scaffold bridge would.
-				placeScaffolding(ctx, x, z, roadTopBlockY, isWater(ctx, x, roadTopBlockY, z));
+				// (the underwater dirt causeway) is gone. The placed distance is
+				// the configured two-value scheme again (user decision
+				// 2026-10-16: no support reads ONE distance everywhere, 1 by
+				// default); unsupported spans still decay via the vanilla tick,
+				// which is the knowingly accepted Q04 behaviour.
+				placeScaffolding(ctx, x, z, roadTopBlockY, isWater(ctx, x, roadTopBlockY, z), config);
 				VpsPipeline.SCAFFOLDS_PLACED.incrementAndGet();
 			} else {
 				// Support below the walk surface, down to the ground the downward
@@ -858,36 +859,28 @@ public final class RoadWriter {
 	 * <p>waterlogged = water at the scaffold block itself; the caller passes that
 	 * exact read, not the wider crossing predicate (review 3 F8-1).
 	 *
-	 * <p>The placed DISTANCE mirrors vanilla {@code ScaffoldingBlock#getDistance}
-	 * exactly (AGENTS.md: the first tick must recompute the same distance we
-	 * placed): a sturdy block below anchors the column at 0, a scaffolding block
-	 * below inherits its distance, horizontal scaffolding neighbours propagate at
-	 * +1, anything else reads 7. The old two config distances are superseded by
-	 * this honest computation; a span further than 7 blocks from any support
-	 * decays on the first tick - the accepted price of the pure scaffold deck
-	 * (user decision 2026-10-15).
+	 * <p>The DISTANCE is the configured two-value scheme again (user decision
+	 * 2026-10-16, restoring the 634cec6/f7ff0d2 behaviour): a sturdy block below
+	 * anchors the column at {@code waterCrossing.distanceWhenSupported} (default
+	 * 0), anything else reads {@code waterCrossing.distanceWhenUnsupported}
+	 * (default 1) - no support, one distance, everywhere. The vanilla-mirror
+	 * computation that propagated distance across scaffolding neighbours is
+	 * reverted; a span with no support decays via the vanilla tick, which is the
+	 * knowingly accepted Q04 behaviour, not a defect to fix silently.
 	 */
-	private static void placeScaffolding(VpsGenContext ctx, int x, int z, int scaffoldY, boolean waterlogged) {
+	private static void placeScaffolding(VpsGenContext ctx, int x, int z, int scaffoldY, boolean waterlogged,
+			VillagePathSmoothedConfig config) {
 		BlockPos belowPos = new BlockPos(x, scaffoldY - 1, z);
 		BlockState below = ctx.blockState(x, scaffoldY - 1, z);
-		int distance;
-		if (below.is(Blocks.SCAFFOLDING)) {
-			distance = below.getValue(ScaffoldingBlock.DISTANCE);
-		} else if (below.isFaceSturdy(ctx.level, belowPos, Direction.UP)) {
-			distance = 0;
-		} else {
-			distance = 7;
-			for (int side = 0; side < SIDE_DX.length; side++) {
-				BlockState neighbour = ctx.blockState(x + SIDE_DX[side], scaffoldY, z + SIDE_DZ[side]);
-				if (neighbour.is(Blocks.SCAFFOLDING)) {
-					distance = Math.min(distance, neighbour.getValue(ScaffoldingBlock.DISTANCE) + 1);
-					if (distance == 1) {
-						break;
-					}
-				}
-			}
-		}
-		distance = Math.max(0, Math.min(7, distance));
+		// vanilla ScaffoldingBlock#getDistance counts a column as supported when
+		// the block below has a sturdy UP face - NOT when it is a full collision
+		// cube, so slabs or snow-covered grass count as support too; our writer
+		// must use the identical criterion or the first tick will recompute a
+		// different support verdict than we placed (the f7ff0d2 alignment, kept)
+		boolean supported = below.isFaceSturdy(ctx.level, belowPos, Direction.UP);
+		int distance = supported
+				? Math.max(0, Math.min(7, config.waterCrossing.distanceWhenSupported))
+				: Math.max(0, Math.min(7, config.waterCrossing.distanceWhenUnsupported));
 		// vanilla isBottom: distance > 0 && the block below is NOT scaffolding,
 		// i.e. a hanging scaffold reads bottom=true (the old check here was
 		// inverted: it flagged scaffolds resting on another scaffold)

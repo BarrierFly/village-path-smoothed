@@ -29,10 +29,11 @@ public final class VpsVillageSolution {
 	/** Moved RIGID component footprints {minX,maxX,minZ,maxZ,baseY(shifted)}; empty when nothing moved. */
 	public int[][] shiftedComponents = new int[0][];
 	/**
-	 * 3D bounding boxes {minX,maxX,minY,maxY,minZ,maxZ} of every movable piece
-	 * (buildings + hay pile). The writer skips a claimed road column whose road
-	 * block lands inside one, so a smoothed road can never overwrite a building
-	 * (plan A, user decision 2026-10-15).
+	 * 3D bounding boxes {minX,maxX,minY,maxY,minZ,maxZ} of every PROTECTED piece
+	 * (movable buildings + the immovable hay piles, user decision 2026-10-16).
+	 * The writer skips a claimed road column whose road block lands inside one,
+	 * so a smoothed road can never overwrite a building or a hay pile (plan A,
+	 * user decision 2026-10-15).
 	 */
 	public int[][] buildingBoxes = new int[0][];
 	/** Door-front cells {frontX,frontZ,outwardDX,outwardDZ}; the writer suppresses the railing there. */

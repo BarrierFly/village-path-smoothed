@@ -490,7 +490,7 @@ public final class VpsPipeline {
 		VpsVillageSolution solution = new VpsVillageSolution(network);
 		solution.solved = true;
 		// T5 never moves buildings, so the boxes are already final here
-		solution.buildingBoxes = BuildingComponents.movableBoxes(start.getPieces());
+		solution.buildingBoxes = BuildingComponents.protectedBoxes(start.getPieces());
 		solution.doorFronts = BuildingComponents.doorFronts(start.getPieces(),
 				BuildingComponents.templateDoors(start.getPieces(), templateManagerOf(start.getPieces())));
 

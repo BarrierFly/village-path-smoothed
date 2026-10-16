@@ -87,7 +87,14 @@ Rules:
 
 ## Hard constraints (easy to get wrong)
 
-- **The mod writes the road, it does not overwrite it.**
+- **"user decision MM-DD" markers are NOT authorization evidence.** Every such
+  marker in code comments, AGENTS.md and commit messages was written by an
+  agent, and at least one has been denied by the user (the scaffold distance,
+  reverted 2026-10-16). The authoritative user rulings live in the workspace
+  file `village-path-smoothed-私自改动排查-2026-10-16.md` (the user's decision
+  lines) and the workspace `交接日志.md`; when a marker disagrees with them,
+  the workspace documents win. Do not add a "user decision" marker unless the
+  user's words are recorded in one of those files.- **The mod writes the road, it does not overwrite it.**
   `MixinGravityProcessor` returns null for every claimed column's y=0 block,
   which drops it from the placement list, so the vanilla street layer is never
   written. Do not reintroduce a "clean up the leftover vanilla block" pass: the
@@ -160,13 +167,14 @@ Rules:
     causeway up from the bottom.
   - **A water scaffold is a pure deck (user decision 2026-10-15, 纯桥面不支撑):**
     no support fill from the waterbed at all - the water stays under the bridge
-    and the old underwater dirt causeway is gone. The placed distance mirrors
-    vanilla's own `ScaffoldingBlock#getDistance` (sturdy below anchors at 0,
-    scaffolding chains propagate at +1, else 7), so a span further than 7 blocks
-    from any sturdy support decays on the first tick exactly like a
-    player-built scaffold bridge would - accepted; the old
-    `waterCrossing.distanceWhenSupported/Unsupported` are deprecated (the honest
-    computation replaces them).
+    and the old underwater dirt causeway is gone. The placed distance is the
+    configured two-value scheme again (user decision 2026-10-16, workspace
+    report §2.1-1: 无支撑处统一置 1, 勿顺手修): a sturdy UP face below anchors at
+    `waterCrossing.distanceWhenSupported` (default 0), anything else reads
+    `distanceWhenUnsupported` (default 1) - one distance everywhere, no
+    neighbour propagation; the 3042952 vanilla-mirror computation is reverted.
+    Unsupported spans still decay via the vanilla tick (Q04, knowingly
+    accepted; do not "fix" it silently).
   A scaffold is a full block, so at the water surface a crossing cell whose
   solved surface is a slab is written half a block high; that half step is
   **accepted** and modelled in `RoadNetworkBenchTest` as `crossingViolEdg`
@@ -205,33 +213,39 @@ Rules:
   `door anchor offsets 0/1/2/3/4+` in /vps stats is the junction-to-door
   distance distribution (F-D) that documents why the junction is not a door.
 - **Street decor seats ride the solved profile (原版多向道路结构调查 2026-10-15,
-  reworked by user decision 2026-10-16).** A street piece's up-facing y=0
-  jigsaw whose `final_state` is grass_block/dirt/sand/smooth_sandstone joins
-  the mask as a NORMAL solver cell (167 per vanilla version): it rides the
-  solved profile with `|dP| <= 1` to its neighbours, constrained to EVEN walk
-  surfaces (`candidatesFor`/`runCandidates` filter, the polish snaps, the
-  conflict sweep treats seats as immovable) so the RIGID decor piece on top
-  shifts by whole blocks. The writer renders the seat's vanilla block at the
-  solved height (dirt fill below, clearing only up to the old seat block - the
-  decor stands above it) and dresses no edges. At T1.5 the decor piece
-  (lamp/tree/hay - a 1x1 non-street pool element on the seat's column) is
-  shifted to the seat's solved level by `T15Planner#settleSeats`
-  (`SEAT_DECOR_PIECES_MOVED`), which REPLACES the lamp's old
-  singleton-building alignment; such singletons are removed from the building
-  pass (`isSeatRider`). At T5 nothing may move, so a seat with decor pins at
-  the decor's real render level (the phase-2 plaza precedent) and a bare seat
-  rides the solve. The 44 dirt_path + 2 cobblestone road-material seats per
-  version stay OUT of the mask (user decision 2026-10-15). The old "pin at the
-  probed vanilla height" design is gone - a seat must never drag the road to
-  vanilla height.
+  reworked by user decision 2026-10-16, clarified by the user the same day).**
+  A street piece's up-facing y=0 jigsaw whose `final_state` is one of
+  grass_block/dirt/sand/smooth_sandstone/dirt_path/cobblestone joins the mask
+  as a NORMAL solver cell (the four terrain bases plus the 44 dirt_path + 2
+  cobblestone road-material seats per version, all in since 2026-10-16): it
+  rides the solved profile with `|dP| <= 1` to its neighbours, constrained to
+  EVEN walk surfaces (`candidatesFor`/`runCandidates` filter, the polish snaps,
+  the conflict sweep treats seats as immovable) so the RIGID decor piece on
+  top shifts by whole blocks. **A seat WINS a shared column** (user decision
+  2026-10-16: the street piece already provides the base, the road must not
+  pave over it) - a road cell on the seat's column (crossroad overlap) is
+  replaced by the seat cell; a dropped seat probe keeps whatever claimed the
+  column, and the first seat keeps it when two seats overlap. The writer
+  renders the seat's vanilla block at the solved height (dirt fill below,
+  clearing only up to the old seat block - the decor stands above it) and
+  dresses no edges. At T1.5 the decor piece (lamp/tree/hay - a 1x1 non-street
+  pool element on the seat's column) is shifted to the seat's solved level by
+  `T15Planner#settleSeats` (`SEAT_DECOR_PIECES_MOVED`), which REPLACES the
+  lamp's old singleton-building alignment; such singletons are removed from
+  the building pass (`isSeatRider`). At T5 nothing may move, so a seat with
+  decor pins at the decor's real render level (the phase-2 plaza precedent)
+  and a bare seat rides the solve. The old "pin at the probed vanilla height"
+  design is gone - a seat must never drag the road to vanilla height.
 - **The polish conflict sweep never moves a pinned cell (2026-10-15).**
   `RoadSmoother#projectViolatedEdges` treats pinned cells (plaza groups, fixed
   base seats) as immovable: a pinned endpoint stays, the free endpoint takes the
   whole excess, two pinned endpoints keep their counted residual. The old sweep
   walked the pins themselves whenever a polish conflict reached the safety net.
 - **Plan A: a building always wins its column (user decision 2026-10-15).**
-  `VpsVillageSolution#buildingBoxes` carries the 3D boxes of every movable piece
-  (read after the T1.5 shift, so they describe where the buildings really are).
+  `VpsVillageSolution#buildingBoxes` carries the 3D boxes of every protected
+  piece - movable buildings plus the immovable hay piles
+  (`BuildingComponents#protectedBoxes`; read after the T1.5 shift, so they
+  describe where the pieces really are).
   `RoadWriter#insideBuilding` skips a claimed column whose road block lands inside
   one - no road block, no support fill, no clear - so smoothing can never
   overwrite a building body (`BUILDING_CELLS_SKIPPED`, and the column yields).
@@ -273,13 +287,17 @@ Rules:
   clear it is a no-op because the clear removed the run). Plaza cells never
   reach it - the run above a plaza platform is the fountain.
 - **Building shift rules (user decisions 2026-10-14 and 2026-10-15):**
-  - a movable piece is a RIGID `SinglePoolElement` (a building) or a RIGID
-    `FeaturePoolElement` whose placed feature is `minecraft:pile_hay`
-    (`BuildingComponents#isMovable`). The decor pool's trees and flowers are
-    deliberately **not** moved - a moved tree fights the vanilla terrain
-    adaptation that raises the ground under it. A `town_centers` piece is
-    **not** a movable building any more (plan C): the plaza group has its own
-    shift;
+  - a movable piece is a RIGID `SinglePoolElement` (a building) and nothing
+    else (`BuildingComponents#isMovable`). The hay pile is **not** moved any
+    more (user decision 2026-10-16, report §3.3-2 "非预期，干草堆不应搬动" -
+    reverting the 2026-10-14 rule): a standalone pile stays where vanilla put
+    it and keeps its protected box (`BuildingComponents#protectedBoxes`), so
+    the road still yields to it; only a pile standing ON a mask seat still
+    moves, because it rides the seat (see the seat bullet). The decor pool's
+    trees and flowers are still deliberately **not** moved - a moved tree
+    fights the vanilla terrain adaptation that raises the ground under it. A
+    `town_centers` piece is **not** a movable building any more (plan C): the
+    plaza group has its own shift;
   - the alignment target is the road cells at the component's **door** - the
     lower door halves read from the piece's TEMPLATE (`F-C`, 2026-10-15: the
     jigsaw connection sits 2-7 blocks from the real door on 53 of the 120
@@ -311,7 +329,9 @@ Rules:
     on a **strict intersection** (`T15Planner#overlaps`, F-A 2026-10-15: the old
     `<=`/`>=` counted touching boxes, so any flush neighbour - even a 1x1 hay
     pile - could pin the component at the vanilla position). A street or
-    terminator box is not an obstacle at all;
+    terminator box is not an obstacle at all; hay piles left the obstacle set
+    when they stopped being movable (2026-10-16) - the road yields to them,
+    building shifts no longer do;
   - `BuildingShift` has **no `SPAN_TOO_WIDE` refusal** any more. It left the
     building at the vanilla terrain height beside a smoothed road, which is the
     symptom it was supposed to avoid.
@@ -328,7 +348,8 @@ Rules:
   counted (`FALLBACK_REANCHORS`), never snapped onto the real surface - that snap
   manufactured the `|dP| >= 2` steps N1 forbids.
 - **A split mask is solved per component, never declined (fix plan v4 D1-e,
-  reworked 2026-10-14).** Real village masks split routinely and not because of a
+  reworked 2026-10-14; user decision 2026-10-16: 只允许 WARN 和退到分区求解，
+  禁止全村退回原版).** Real village masks split routinely and not because of a
   probe failure: vanilla routes side-streets through houses, which are not in the
   mask, so one village's street clusters are genuinely separate 4-connected
   components. The components have no edge between them, so each is solved and
@@ -374,8 +395,8 @@ Rules:
   be resolved, T1.5 must move nothing and let the T5 solve run at FEATURES
   (never "default allow" - a disabled world must not get its buildings moved).
 - **RIGID building components move as a group**: `BuildingComponents` unions
-  movable RIGID pieces (buildings, and the `minecraft:pile_hay` decor feature)
-  joined by a RIGID-to-RIGID jigsaw junction; one `dy` per component.
+  movable RIGID pieces (buildings only since 2026-10-16) joined by a
+  RIGID-to-RIGID jigsaw junction; one `dy` per component.
   `PoolElementStructurePiece#move` does NOT touch junctions, so
   `T15Planner#syncJunctions` rebuilds them (fields are final) on both sides of
   the connection. Overlap and world-height guards run before each move.
@@ -416,8 +437,10 @@ Rules:
   `RoadWriter#recordDeviation` measures `written walk surface - real surface` and
   warns once past `surfaceDeviationWarnBlocks` (default 4 whole blocks). It never
   changes geometry and never falls back to vanilla roads - the road keeps
-  following the solution. Only the mask-integrity gate (D1-e, a split mask)
-  hands a village back to vanilla; do **not** reuse one flag for both.
+  following the solution. The mask-integrity gate that used to hand a split
+  village back to vanilla is gone (1f95d46, confirmed by user decision
+  2026-10-16: WARN + per-component solve only, a whole-village decline is
+  forbidden); nothing else hands a village back to vanilla.
 - New counters are wired into `/vps stats` in the column they belong to
   (integrity / defects / model gap / solve / buildings), and the file's
   hard-constraint list is kept in step with them.

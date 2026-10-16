@@ -128,16 +128,19 @@ public final class RoadCollector {
 
 	/**
 	 * The base materials a street seat's jigsaw renders ({@code final_state}).
-	 * Deliberately the survey's list and nothing more: the 44 dirt_path + 2
-	 * cobblestone y=0 up-facing jigsaws per version are villager/decor seats in
-	 * road material and stay OUT of the mask per the user decision of
-	 * 2026-10-15 (their height mismatch is a separate, unscoped problem).
+	 * The four terrain bases plus the two road-material bases: the 44 dirt_path
+	 * + 2 cobblestone y=0 up-facing jigsaws per version used to stay OUT of the
+	 * mask (agent-recorded "user decision 2026-10-15"), and join it since the
+	 * user decision of 2026-10-16 (report §2.3): a base connected to the road
+	 * belongs to the solve, whatever block it renders.
 	 */
-	private static final java.util.Set<String> FIXED_BASE_MATERIALS = java.util.Set.of(
+	private static final java.util.Set<String> SEAT_BASE_MATERIALS = java.util.Set.of(
 			"grass_block",
 			"dirt",
 			"sand",
-			"smooth_sandstone"
+			"smooth_sandstone",
+			"dirt_path",
+			"cobblestone"
 	);
 
 	/** One collected decor seat: world column, owning piece, road style, base block id. */
@@ -239,19 +242,25 @@ public final class RoadCollector {
 			collectPiece(poolPiece, singleElement, location, style, townCentre, pieceIndex, templateManager, ctx, config, cellsByPos, seats);
 		}
 
-		// Decor seats join the mask AFTER the road cells: a road cell on the
-		// same column keeps its claim, the seat yields (the road wins). Seats
-		// are NORMAL solver cells - they ride the solved profile; the writer
-		// renders their vanilla block at the solved height and the RIGID decor
-		// piece on top is shifted to match (plan, 2026-10-16).
+		// Decor seats join the mask AFTER the road cells and WIN a shared column
+		// (user decision 2026-10-16, report §2.3): the street piece already
+		// provides the base, so the road must not pave over it - a road cell on
+		// the seat's column (a crossroad overlap) is REPLACED by the seat cell.
+		// A dropped seat probe keeps whatever claimed the column (never an
+		// unwritten hole), and the first seat keeps the column when two seats
+		// overlap. Seats are NORMAL solver cells - they ride the solved profile
+		// under the even-face constraint; the writer renders their vanilla block
+		// at the solved height and the RIGID decor piece on top is shifted to
+		// match (plan, 2026-10-16).
 		for (Seat seat : seats) {
 			long key = RoadCell.packedXZ(seat.x(), seat.z());
-			if (cellsByPos.containsKey(key)) {
-				continue;
+			RoadCell existing = cellsByPos.get(key);
+			if (existing != null && existing.seat) {
+				continue; // two overlapping seats: the first claim keeps the column
 			}
 			ProbedHeight probe = probeCellHeight(ctx, config, seat.x(), seat.z());
 			if (probe == null) {
-				continue; // dropped probe: the seat keeps its vanilla block
+				continue; // dropped probe: keep the road cell / the vanilla block
 			}
 			RoadCell cell = new RoadCell(seat.x(), seat.z(), seat.style(), 2 * probe.surfaceTopY(), false);
 			cell.seat = true;
@@ -448,8 +457,9 @@ public final class RoadCollector {
 			} else if (infoState.is(Blocks.JIGSAW)) {
 				// A street piece's y=0 jigsaw is a DECOR SEAT: placement replaces it
 				// with its final_state (the lamp/tree/villager base block), so it
-				// must not be paved over. Qualifying seats join the mask as fixed
-				// anchors; other jigsaws stay excluded exactly as before.
+				// must not be paved over. Qualifying seats join the mask as NORMAL
+				// solver cells that ride the solved profile (2026-10-16); other
+				// jigsaws stay excluded exactly as before.
 				collectSeat(infoState, info, infoPos, settings, offset, pieceIndex, style, seats);
 				continue;
 			} else if (!isRoadSurfaceCell(infoState, style, config)) {
@@ -596,8 +606,8 @@ public final class RoadCollector {
 			return;
 		}
 		String id = finalState.startsWith("minecraft:") ? finalState.substring("minecraft:".length()) : finalState;
-		if (!FIXED_BASE_MATERIALS.contains(id)) {
-			return; // villager/decor seats in road material stay out (user decision 2026-10-15)
+		if (!SEAT_BASE_MATERIALS.contains(id)) {
+			return; // an unknown final_state is not a surveyed seat base
 		}
 		BlockPos worldPos = StructureTemplate.calculateRelativePosition(settings, infoPos).offset(offset);
 		seats.add(new Seat(worldPos.getX(), worldPos.getZ(), pieceIndex, style, id));

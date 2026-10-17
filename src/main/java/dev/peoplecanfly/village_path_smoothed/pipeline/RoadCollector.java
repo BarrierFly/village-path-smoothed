@@ -227,6 +227,7 @@ public final class RoadCollector {
 		StructureTemplateManager templateManager = null;
 		Map<Long, RoadCell> cellsByPos = new HashMap<>();
 		List<Seat> seats = new ArrayList<>();
+		java.util.Set<Long> plazaFootprint = new java.util.HashSet<>();
 		int pieceCount = 0;
 
 		// RIGID piece boxes are the beard sources: vanilla adapts the noise
@@ -274,7 +275,7 @@ public final class RoadCollector {
 				continue;
 			}
 			pieceCount++;
-			collectPiece(poolPiece, singleElement, location, style, townCentre, pieceIndex, templateManager, ctx, config, cellsByPos, seats);
+			collectPiece(poolPiece, singleElement, location, style, townCentre, pieceIndex, templateManager, ctx, config, cellsByPos, seats, plazaFootprint);
 		}
 
 		// Decor seats join the mask AFTER the road cells and WIN a shared column
@@ -315,6 +316,7 @@ public final class RoadCollector {
 		List<RoadCell> cells = new ArrayList<>(cellsByPos.values());
 		alignProbeBoundaries(cells);
 		RoadNetwork network = RoadNetwork.build(cells, config.roadSmoothing.maxExactSectionWidth);
+		network.plazaFootprint.addAll(plazaFootprint);
 		recordIntegrity(network);
 		// Fix plan v4 D1-e used to hand a split mask back to vanilla whole "instead
 		// of smoothing half of it". Real village masks split routinely, though, and
@@ -454,7 +456,8 @@ public final class RoadCollector {
 			VpsProbe ctx,
 			VillagePathSmoothedConfig config,
 			Map<Long, RoadCell> cellsByPos,
-			List<Seat> seats
+			List<Seat> seats,
+			java.util.Set<Long> plazaFootprint
 	) {
 		StructureTemplate template;
 		try {
@@ -484,6 +487,12 @@ public final class RoadCollector {
 				continue;
 			}
 			if (townCentre) {
+				// The plaza's y=0 footprint is recorded BEFORE the road-material
+				// whitelist: the well/fountain water and jigsaw cells are not road
+				// cells, but they are the plaza's own interior. The writer must
+				// never wrap a kerb into them (it used to plug the central well).
+				BlockPos footprintPos = StructureTemplate.calculateRelativePosition(settings, infoPos).offset(offset);
+				plazaFootprint.add(RoadCell.packedXZ(footprintPos.getX(), footprintPos.getZ()));
 				// fix plan v4 D5-c: only the plaza joins the mask
 				if (!config.roadSmoothing.includeTownCentersRoadMaterials || !TownCenterMaterials.ROAD.contains(infoState.getBlock())) {
 					TOWN_CENTER_NON_ROAD_SKIPPED.incrementAndGet();

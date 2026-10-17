@@ -34,16 +34,62 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  * single source, and the two residue windows are gone as a mechanism rather
  * than as a tuning question.
  *
- * <p>The hook point and its shape are stable across every supported version
- * (checked on the workspace's vanilla sources): the parameter list is
+ * <p>The hook point is stable across every supported version (checked on the
+ * workspace's vanilla sources), but its parameter list is not: 1.19.4, 1.20.1,
+ * 1.21.1, 1.21.10 and 1.21.11 pass
  * {@code (LevelReader, BlockPos, BlockPos, StructureBlockInfo,
- * StructureBlockInfo, StructurePlaceSettings)} in 1.19.4, 1.20.1, 1.21.1,
- * 1.21.10, 1.21.11 and 26.3 alike. Only the accessor spelling of
- * {@code StructureBlockInfo} drifts, and that is the {@code //#if} branch
- * below - never the descriptor.
+ * StructureBlockInfo, StructurePlaceSettings)}, while 26.3 replaced the
+ * template-relative {@code StructureBlockInfo} with a plain
+ * {@code BlockPos templateRelativePos}:
+ * {@code (LevelReader, BlockPos, BlockPos, BlockPos, StructureBlockInfo,
+ * StructurePlaceSettings)}. Mixin compares the handler descriptor to the
+ * target at APPLY time, so each shape gets its own preprocessor branch and
+ * every branch declares the full parameter list. Only the accessor spelling of
+ * {@code StructureBlockInfo} additionally drifts at 1.19.4.
  */
 @Mixin(GravityProcessor.class)
 public abstract class MixinGravityProcessor {
+	//#if MC >= 260000
+	//$$ @Inject(method = "processBlock", at = @At("RETURN"), cancellable = true)
+	//$$ private static void village_path_smoothed$suppressClaimedRoadLayer(
+	//$$ 		LevelReader level,
+	//$$ 		BlockPos targetPosition,
+	//$$ 		BlockPos referencePosition,
+	//$$ 		BlockPos templateRelativePos,
+	//$$ 		StructureTemplate.StructureBlockInfo processedBlockInfo,
+	//$$ 		StructurePlaceSettings settings,
+	//$$ 		CallbackInfoReturnable<StructureTemplate.StructureBlockInfo> cir
+	//$$ ) {
+	//$$ 	if (VpsPlacementContext.current() == null) {
+	//$$ 		return;
+	//$$ 	}
+	//$$ 	int templateY = templateRelativePos.getY();
+	//$$ 	BlockPos worldPos = processedBlockInfo.pos();
+	//$$ 	if (VpsPlacementContext.decide(templateY, worldPos.getX(), worldPos.getZ()) == PlacementPolicy.Decision.SUPPRESS) {
+	//$$ 		cir.setReturnValue(null);
+	//$$ 	}
+	//$$ }
+	//#elseif MC >= 12001
+	//$$ @Inject(method = "processBlock", at = @At("RETURN"), cancellable = true)
+	//$$ private static void village_path_smoothed$suppressClaimedRoadLayer(
+	//$$ 		LevelReader level,
+	//$$ 		BlockPos targetPosition,
+	//$$ 		BlockPos referencePosition,
+	//$$ 		StructureTemplate.StructureBlockInfo originalBlockInfo,
+	//$$ 		StructureTemplate.StructureBlockInfo processedBlockInfo,
+	//$$ 		StructurePlaceSettings settings,
+	//$$ 		CallbackInfoReturnable<StructureTemplate.StructureBlockInfo> cir
+	//$$ ) {
+	//$$ 	if (VpsPlacementContext.current() == null) {
+	//$$ 		return;
+	//$$ 	}
+	//$$ 	int templateY = originalBlockInfo.pos().getY();
+	//$$ 	BlockPos worldPos = processedBlockInfo.pos();
+	//$$ 	if (VpsPlacementContext.decide(templateY, worldPos.getX(), worldPos.getZ()) == PlacementPolicy.Decision.SUPPRESS) {
+	//$$ 		cir.setReturnValue(null);
+	//$$ 	}
+	//$$ }
+	//#else
 	@Inject(method = "processBlock", at = @At("RETURN"), cancellable = true)
 	private static void village_path_smoothed$suppressClaimedRoadLayer(
 			LevelReader level,
@@ -57,15 +103,11 @@ public abstract class MixinGravityProcessor {
 		if (VpsPlacementContext.current() == null) {
 			return;
 		}
-		//#if MC >= 12001
-		//$$ int templateY = originalBlockInfo.pos().getY();
-		//$$ BlockPos worldPos = processedBlockInfo.pos();
-		//#else
 		int templateY = originalBlockInfo.pos.getY();
 		BlockPos worldPos = processedBlockInfo.pos;
-		//#endif
 		if (VpsPlacementContext.decide(templateY, worldPos.getX(), worldPos.getZ()) == PlacementPolicy.Decision.SUPPRESS) {
 			cir.setReturnValue(null);
 		}
 	}
+	//#endif
 }

@@ -48,6 +48,14 @@ public final class RoadNetwork {
 	 */
 	public final List<int[]> plazaGroups = new ArrayList<>();
 	/**
+	 * World XZ columns ({@link RoadCell#packedXZ}) of every y=0 block of a
+	 * {@code town_centers} piece - the plaza piece's own footprint, including the
+	 * well/fountain water and jigsaw cells that are not road cells. The writer
+	 * never dresses a side toward one of these columns: a kerb there would wrap
+	 * the plaza's own well/fountain mouth and seal it (2026-10-17).
+	 */
+	public final java.util.Set<Long> plazaFootprint = new java.util.HashSet<>();
+	/**
 	 * Cells that belong to a region core. The region solver owns the seed of
 	 * exactly these cells; arm cells - including arms that fall back to the
 	 * region solver because their band blew the state budget - keep the phase-1

@@ -863,6 +863,14 @@ public final class RoadWriter {
 			if (net.cellAt(outX, outZ) >= 0) {
 				continue; // road continues this way: no side edge
 			}
+			// 2026-10-17: never dress a side toward the town-centre piece's own
+			// y=0 footprint. The well/fountain water and jigsaw cells are not road
+			// cells, so they look like an edge; wrapping a kerb into them plugged
+			// the central well shut. The plaza's OUTER boundary is untouched (its
+			// side cell is outside the piece footprint).
+			if (net.plazaFootprint.contains(RoadCell.packedXZ(outX, outZ))) {
+				continue;
+			}
 			// User decision 2026-10-17 ("探2包1"): probe the first and the second
 			// cell outward, but still wrap only the first cell. The second cell can
 			// be the one that carries the terrain (a one-block gap between road and
@@ -902,8 +910,14 @@ public final class RoadWriter {
 			}
 
 			if (config.kerb.enabled && RoadWritePolicy.kerbApplies(sSide2, sRoad2, config.kerb.minDropHeight)) {
-				placeKerbWall(ctx, outX, outZ, farX, farZ, roadTopBlockY, probeTopY, ceilingBottomY,
+				int wallTop = placeKerbWall(ctx, outX, outZ, farX, farZ, roadTopBlockY, probeTopY, ceilingBottomY,
 						buildingBoxes, materials);
+				if (wallTop != Integer.MIN_VALUE) {
+					// 2026-10-17: close the wall's along-road end where the next
+					// cell already sees open sky, so the top does not stop raw.
+					capKerbRunEnds(net, ctx, cell.x, cell.z, outX, outZ, roadTopBlockY, wallTop,
+							ceilingBottomY, buildingBoxes, materials, sideFacts);
+				}
 			}
 
 			if (!config.railing.enabled) {
@@ -977,11 +991,12 @@ public final class RoadWriter {
 	 * artificially cut off at the ceiling gets no leaf layer, so nothing is
 	 * planted at the ceiling level outside the road column.
 	 */
-	private static void placeKerbWall(VpsGenContext ctx, int x, int z, int farX, int farZ, int roadTopBlockY,
+	private static int placeKerbWall(VpsGenContext ctx, int x, int z, int farX, int farZ, int roadTopBlockY,
 			int topmostY, int ceilingBottomY, int[][] buildingBoxes, RoadMaterialTable.StyleMaterials materials) {
 		boolean placed = false;
 		boolean runWrapped = false;
 		int runTopY = Integer.MIN_VALUE;
+		int topWrittenY = Integer.MIN_VALUE;
 		int limit = Math.min(ctx.getMaxY(), RoadWritePolicy.kerbTopY(topmostY, ceilingBottomY));
 		for (int y = roadTopBlockY + 1; y <= limit; y++) {
 			// User decision 2026-10-17: a non-terrain decoration breaks the kerb
@@ -1006,6 +1021,7 @@ public final class RoadWriter {
 					setBlock(ctx, x, y, z, materials.kerbBlock.defaultBlockState());
 					placed = true;
 					runWrapped = true;
+					topWrittenY = y;
 				}
 				continue;
 			}
@@ -1020,6 +1036,87 @@ public final class RoadWriter {
 		}
 		if (placed) {
 			VpsPipeline.KERBS_PLACED.incrementAndGet();
+		}
+		return topWrittenY;
+	}
+
+	/**
+	 * Closes a wrapped kerb run's along-road end (user request 2026-10-17).
+	 *
+	 * <p>The wall runs along the road on side {@code S}; {@code (cellX,cellZ)}
+	 * plus {@code S} is the wrapped column {@code (outX,outZ)}. At each of the
+	 * two along-road directions {@code T} (perpendicular to {@code S}) the
+	 * neighbouring column {@code out + T} is the wall column of the next road
+	 * cell. When that column already sees open sky above the road, the next road
+	 * cell places no kerb there and the wall would end in a raw face. This
+	 * mirrors the current column into it up to the wall top and continues the
+	 * leaf railing on top, so the top always turns a closed corner.
+	 *
+	 * <p>Nothing is written into a road cell, the town-centre footprint or a
+	 * column that still has terrain/fluid above the road (a continuing wall).
+	 * Only air/replaceable targets are filled; a protected decoration stops the
+	 * cap.
+	 */
+	private static void capKerbRunEnds(RoadNetwork net, VpsGenContext ctx, int cellX, int cellZ,
+			int outX, int outZ, int roadTopBlockY, int wallTop, int ceilingBottomY,
+			int[][] buildingBoxes, RoadMaterialTable.StyleMaterials materials,
+			Map<SideKey, SideFacts> sideFacts) {
+		try {
+			capKerbRunEnds0(net, ctx, cellX, cellZ, outX, outZ, roadTopBlockY, wallTop, ceilingBottomY,
+					buildingBoxes, materials, sideFacts);
+		} catch (Throwable t) {
+			// the cap is cosmetic: an unreadable column must not fail the cell write
+		}
+	}
+
+	private static void capKerbRunEnds0(RoadNetwork net, VpsGenContext ctx, int cellX, int cellZ,
+			int outX, int outZ, int roadTopBlockY, int wallTop, int ceilingBottomY,
+			int[][] buildingBoxes, RoadMaterialTable.StyleMaterials materials,
+			Map<SideKey, SideFacts> sideFacts) {
+		int sideX = outX - cellX;
+		int sideZ = outZ - cellZ;
+		// the two along-road directions are perpendicular to the side direction
+		int alongX = sideZ;
+		int alongZ = sideX;
+		for (int sign = -1; sign <= 1; sign += 2) {
+			int capX = outX + sign * alongX;
+			int capZ = outZ + sign * alongZ;
+			if (net.cellAt(capX, capZ) >= 0) {
+				continue; // a road cell there: never write a kerb into it
+			}
+			if (net.plazaFootprint.contains(RoadCell.packedXZ(capX, capZ))) {
+				continue; // town-centre interior
+			}
+			SideFacts capFacts = sideFacts.computeIfAbsent(new SideKey(capX, capZ, roadTopBlockY),
+					k -> probeSideFacts(ctx, k.x(), k.z(), k.roadTopBlockY()));
+			if (capFacts == null || capFacts.topmostY() > roadTopBlockY) {
+				continue; // the wall continues there, or the column is unreadable
+			}
+			int capTopY = Integer.MIN_VALUE;
+			for (int y = roadTopBlockY + 1; y <= wallTop; y++) {
+				if (y < ctx.getMinY() || y > ctx.getMaxY()) {
+					break;
+				}
+				if (ctx.isProtectedDecoration(capX, y, capZ)) {
+					break;
+				}
+				BlockState existing = ctx.blockState(capX, y, capZ);
+				if (!existing.isAir() && !existing.canBeReplaced()) {
+					break; // never fill into a block (water, terrain, furniture)
+				}
+				if (RoadWritePolicy.insideBuildingAt(buildingBoxes, capX, y, capZ)) {
+					continue;
+				}
+				setBlock(ctx, capX, y, capZ, materials.kerbBlock.defaultBlockState());
+				capTopY = y;
+			}
+			if (capTopY == Integer.MIN_VALUE) {
+				continue;
+			}
+			VpsPipeline.KERBS_PLACED.incrementAndGet();
+			if (ceilingBottomY == RoadWritePolicy.NO_CEILING || capTopY + 1 < ceilingBottomY) {
+				placeKerbRailing(ctx, capX, capZ, capTopY + 1, buildingBoxes, materials);
+			}
 		}
 	}
 

@@ -68,9 +68,13 @@ Rules:
   - `ResourceKey#location()` vs `#identifier()`;
   - `RegistryAccess#registryOrThrow` (1.19.4) vs `#lookupOrThrow`;
   - `StructureBlockInfo.pos` field (<= 1.19.4) vs `.pos()` accessor
-    (>= 1.20.1): `MixinGravityProcessor`. The **parameter list** of
-    `GravityProcessor#processBlock` itself is identical in all six versions,
-    so no branch is needed for the descriptor - only for the accessor.
+    (>= 1.20.1): `MixinGravityProcessor`;
+  - `GravityProcessor#processBlock` gained a `BlockPos templateRelativePos` and
+    dropped the template-relative `StructureBlockInfo` in **26.3**: 26.3 and the
+    older nodes each get their own full handler descriptor
+    (`//#if MC >= 260000` / `//#elseif MC >= 12001` / `//#else`). The old
+    "parameter list identical in all six versions" note was wrong and crashed
+    the 26.3 launch at APPLY time.
 - `CompoundTag#getString` returns `Optional<String>` from **1.21.10** (was
   `String`) - see `RoadCollector`'s jigsaw `final_state` read for the branch
   shape (`//#if MC >= 12110`).
@@ -403,6 +407,18 @@ Rules:
   railing** is placed at the top of every contiguous wrapped run (terrain top
   and mid-column air-gap tops); a run artificially cut off at the ceiling or
   the world edge gets no cutoff-top leaves.
+- **A plaza piece's own interior is never dressed, and a kerb run's along-road
+  end is capped (user request 2026-10-17).** `RoadCollector` records every y=0
+  column of a `town_centers` piece - ALL blocks, including the well/fountain
+  water and jigsaw holes that are not road cells - in
+  `RoadNetwork#plazaFootprint`. The writer skips a side whose outward cell is
+  in that footprint, so the central well/fountain mouth is never wrapped and
+  plugged; the plaza's outer boundary (outside the piece footprint) still gets
+  its kerb. Separately, when a placed kerb column's along-road neighbour
+  already sees open sky above the road (the next road cell places no kerb
+  there), the writer mirrors one kerb column into that neighbour-side cell up
+  to the wall top and puts the leaf railing on it, so the wall top closes
+  instead of ending in a raw face.
 - **Only the lowest block of the ceiling is lined, and only above the road
   (user decision 2026-10-15, restricted 2026-10-17).**
   `RoadWriter#lineCeiling` probes only the road's own column with the

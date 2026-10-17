@@ -11,6 +11,7 @@ import static org.junit.Assert.assertTrue;
 import org.junit.Test;
 
 import dev.peoplecanfly.village_path_smoothed.pipeline.RoadWritePolicy;
+import dev.peoplecanfly.village_path_smoothed.terrain.FeatureProtection;
 
 /**
  * Door/basis fix plan 2026-10-17 section 3.3: the writer's building test is
@@ -40,5 +41,18 @@ public class RoadWritePolicyTest {
 		assertTrue(RoadWritePolicy.insideFootprint(BOXES, 2, 0));
 		assertFalse(RoadWritePolicy.insideFootprint(BOXES, 3, 2));
 		assertFalse(RoadWritePolicy.insideFootprint(null, 1, 1));
+	}
+
+	@Test
+	public void nonTerrainDecorationsWinTheirBlock() {
+		// User decision 2026-10-17: road/fill/clear/kerb/ceiling/railing skip a
+		// protected decoration and leave it in place.
+		assertFalse(RoadWritePolicy.mayOverwrite(true));
+		assertTrue(RoadWritePolicy.mayOverwrite(false));
+
+		assertTrue(FeatureProtection.isProtectedDecoration(false, false, false));
+		assertFalse(FeatureProtection.isProtectedDecoration(false, false, true));
+		assertFalse(FeatureProtection.isProtectedDecoration(true, false, false));
+		assertFalse(FeatureProtection.isProtectedDecoration(false, true, false));
 	}
 }

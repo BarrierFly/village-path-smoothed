@@ -19,6 +19,18 @@ public final class RoadWritePolicy {
 	}
 
 	/**
+	 * User decision 2026-10-17: a non-terrain decoration always wins its block.
+	 * The road block, the support fill, the clear, the kerb, the ceiling lining
+	 * and every railing skip it instead of replacing it. Natural terrain is
+	 * still written normally (the classifier lives in
+	 * {@code terrain.FeatureProtection}, this method keeps the decision pure
+	 * and unit-testable).
+	 */
+	public static boolean mayOverwrite(boolean protectedDecoration) {
+		return !protectedDecoration;
+	}
+
+	/**
 	 * What the writer actually puts in one column, in the same half-block walk
 	 * surface units the solver uses ({@code S = 2 * walkSurface}).
 	 *
@@ -190,7 +202,9 @@ public final class RoadWritePolicy {
 	 * True when the exact block lies inside one of the protected building boxes
 	 * {minX, maxX, minY, maxY, minZ, maxZ}. The kerb, the clear above the road and
 	 * the ceiling lining use this exact test so no building block is replaced or
-	 * removed, while road-generated decorations outside the boxes stay fair game.
+	 * removed. Outside those boxes the writer additionally protects every
+	 * non-terrain decoration through {@code terrain.FeatureProtection} (user
+	 * decision 2026-10-17), so a block must pass both tests to be written.
 	 */
 	public static boolean insideBuildingAt(int[][] buildingBoxes, int x, int y, int z) {
 		if (buildingBoxes == null) {

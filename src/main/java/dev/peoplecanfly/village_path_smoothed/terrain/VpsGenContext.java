@@ -366,16 +366,23 @@ public final class VpsGenContext implements VpsProbe {
 	/**
 	 * The kerb/ceiling criterion (user decision 2026-10-17): a block counts when
 	 * it has a non-empty collision shape or carries a fluid, regardless of its
-	 * material. This is deliberately not a dirt/terrain whitelist: a leaf canopy,
-	 * a slab or water all decide the wrap.
+	 * material. Non-terrain decorations are filtered by the callers since the
+	 * feature-protection decision (user decision 2026-10-17).
 	 */
 	public boolean hasCollisionOrFluid(int x, int y, int z) {
-		BlockPos pos = new BlockPos(x, y, z);
-		BlockState state = this.level.getBlockState(pos);
+		return hasCollisionOrFluid(blockState(x, y, z), new BlockPos(x, y, z));
+	}
+
+	private boolean hasCollisionOrFluid(BlockState state, BlockPos pos) {
 		if (!state.getFluidState().isEmpty()) {
 			return true;
 		}
 		return !state.getCollisionShape(this.level, pos).isEmpty();
+	}
+
+	/** True when the writer must leave this block alone (see {@link FeatureProtection}). */
+	public boolean isProtectedDecoration(int x, int y, int z) {
+		return FeatureProtection.isProtectedDecoration(blockState(x, y, z));
 	}
 
 	/**
@@ -386,6 +393,26 @@ public final class VpsGenContext implements VpsProbe {
 	public int highestCollisionOrFluidY(int x, int z, int fromY) {
 		for (int y = getMaxY(); y >= fromY; y--) {
 			if (hasCollisionOrFluid(x, y, z)) {
+				return y;
+			}
+		}
+		return fromY - 1;
+	}
+
+	/**
+	 * Highest <b>terrain</b> collision/fluid block at/above {@code fromY},
+	 * ignoring non-terrain decorations (user decision 2026-10-17). The kerb uses
+	 * this so a tree canopy on the second probed column can no longer pull a
+	 * retaining wall up to the canopy: the tree itself is skipped, not wrapped.
+	 */
+	public int highestTerrainCollisionOrFluidY(int x, int z, int fromY) {
+		for (int y = getMaxY(); y >= fromY; y--) {
+			BlockPos pos = new BlockPos(x, y, z);
+			BlockState state = this.level.getBlockState(pos);
+			if (FeatureProtection.isProtectedDecoration(state)) {
+				continue;
+			}
+			if (hasCollisionOrFluid(state, pos)) {
 				return y;
 			}
 		}

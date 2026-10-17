@@ -8,6 +8,7 @@ package dev.peoplecanfly.village_path_smoothed.pipeline;
 import dev.peoplecanfly.village_path_smoothed.VillagePathSmoothed;
 import dev.peoplecanfly.village_path_smoothed.VillagePathSmoothedConfig;
 import dev.peoplecanfly.village_path_smoothed.compat.VpsCompat;
+import dev.peoplecanfly.village_path_smoothed.terrain.FeatureProtection;
 import dev.peoplecanfly.village_path_smoothed.terrain.VpsGenContext;
 import dev.peoplecanfly.village_path_smoothed.terrain.WaterCrossings;
 import net.minecraft.core.BlockPos;
@@ -106,6 +107,19 @@ public final class RoadWriter {
 	 * road yields to a building.
 	 */
 	public static final AtomicLong BUILDING_CELLS_SKIPPED = new AtomicLong();
+	/**
+	 * User decision 2026-10-17: every non-terrain decoration wins its block.
+	 * The road block and the support fill yield per block, and the clear, kerb,
+	 * ceiling lining, lantern/chain and railings skip the decoration instead of
+	 * replacing it. Natural terrain is still cleared/filled normally. A non-zero
+	 * count is expected in any village with trees; it is not a defect.
+	 */
+	public static final AtomicLong FEATURE_ROAD_BLOCKS_SKIPPED = new AtomicLong();
+	public static final AtomicLong FEATURE_FILL_BLOCKS_SKIPPED = new AtomicLong();
+	public static final AtomicLong FEATURE_CLEAR_BLOCKS_SKIPPED = new AtomicLong();
+	public static final AtomicLong FEATURE_KERB_BLOCKS_SKIPPED = new AtomicLong();
+	public static final AtomicLong FEATURE_CEILING_BLOCKS_SKIPPED = new AtomicLong();
+	public static final AtomicLong FEATURE_RAILING_BLOCKS_SKIPPED = new AtomicLong();
 	/**
 	 * User decision 2026-10-15: water-crossing cells whose solved surface is
 	 * above the water surface. They are rendered as a bridge deck with no support
@@ -226,11 +240,11 @@ public final class RoadWriter {
 	 * block's own level:
 	 *
 	 * <ul>
-	 *   <li>{@code topmostY} - the highest block at or above the road block's
-	 *       level, scanning UP through air gaps to the column's height-spectrum
-	 *       top ({@link Integer#MIN_VALUE} when the column is empty up there);
-	 *       this is the wall the kerb wraps and the threshold it is measured
-	 *       against;</li>
+	 *   <li>{@code topmostY} - the highest <b>terrain</b> block at or above the
+	 *       road block's level, scanning UP through air gaps to the column's
+	 *       height-spectrum top ({@link Integer#MIN_VALUE} when the column is
+	 *       empty up there); non-terrain decorations are skipped, so a tree
+	 *       canopy is not treated as a wall to wrap;</li>
 	 *   <li>{@code groundTopY} - first air above the ground found scanning DOWN
 	 *       from the road block's level; the surface a railing guards against
 	 *       (an overhang above an open edge must not hide the drop).</li>
@@ -245,7 +259,10 @@ public final class RoadWriter {
 			// User decision 2026-10-17: the kerb criterion is "collision shape
 			// non-empty or fluid", re-read at write time. It is no longer a
 			// dirt-material test, and the height spectrum is not a stale probe.
-			int topmost = ctx.highestCollisionOrFluidY(x, z, roadTopBlockY);
+			// A later decision the same day excludes non-terrain decorations
+			// from the probe, so a tree canopy can no longer pull a retaining
+			// wall up to its top.
+			int topmost = ctx.highestTerrainCollisionOrFluidY(x, z, roadTopBlockY);
 			int ground = ctx.groundSurfaceTopY(x, z, roadTopBlockY);
 			return new SideFacts(topmost, ground);
 		} catch (Throwable t) {
@@ -281,8 +298,11 @@ public final class RoadWriter {
 				return;
 			}
 			Block road = table.forStyle(cell.style).roadBlock;
-			setBlock(ctx, cell.x, RoadWritePolicy.roadBlockY(column.walkSurface2(), column.slab()), cell.z,
-					road.defaultBlockState());
+			if (!setBlockUnlessProtected(ctx, cell.x,
+					RoadWritePolicy.roadBlockY(column.walkSurface2(), column.slab()), cell.z,
+					road.defaultBlockState(), FEATURE_ROAD_BLOCKS_SKIPPED)) {
+				return;
+			}
 			VpsPipeline.SURFACE_FALLBACK_WRITES.incrementAndGet();
 			NUDGED_WRITES.incrementAndGet();
 		} catch (Throwable t) {
@@ -306,9 +326,13 @@ public final class RoadWriter {
 			}
 			int groundTopY = ctx.groundSurfaceTopY(cell.x, cell.z, seatY);
 			for (int y = groundTopY - 1; y < seatY; y++) {
-				setBlock(ctx, cell.x, y, cell.z, Blocks.DIRT.defaultBlockState());
+				setBlockUnlessProtected(ctx, cell.x, y, cell.z, Blocks.DIRT.defaultBlockState(),
+						FEATURE_FILL_BLOCKS_SKIPPED);
 			}
-			setBlock(ctx, cell.x, seatY, cell.z, seatBlock.defaultBlockState());
+			if (!setBlockUnlessProtected(ctx, cell.x, seatY, cell.z, seatBlock.defaultBlockState(),
+					FEATURE_ROAD_BLOCKS_SKIPPED)) {
+				return;
+			}
 			SEAT_WRITE_FALLBACK.incrementAndGet();
 			VpsPipeline.ROAD_CELLS_WRITTEN.incrementAndGet();
 		} catch (Throwable t) {
@@ -373,12 +397,15 @@ public final class RoadWriter {
 			}
 			int groundTopY = ctx.groundSurfaceTopY(x, z, seatY);
 			for (int y = groundTopY - 1; y < seatY; y++) {
-				setBlock(ctx, x, y, z, Blocks.DIRT.defaultBlockState());
+				setBlockUnlessProtected(ctx, x, y, z, Blocks.DIRT.defaultBlockState(),
+						FEATURE_FILL_BLOCKS_SKIPPED);
 			}
-			setBlock(ctx, x, seatY, z, seatBlock.defaultBlockState());
+			setBlockUnlessProtected(ctx, x, seatY, z, seatBlock.defaultBlockState(),
+					FEATURE_ROAD_BLOCKS_SKIPPED);
 			int oldSeatY = RoadWritePolicy.roadBlockY(cell.baseP, false);
 			for (int y = seatY + 1; y <= oldSeatY; y++) {
-				setBlock(ctx, x, y, z, Blocks.AIR.defaultBlockState());
+				setBlockUnlessProtected(ctx, x, y, z, Blocks.AIR.defaultBlockState(),
+						FEATURE_CLEAR_BLOCKS_SKIPPED);
 			}
 			VpsPipeline.ROAD_CELLS_WRITTEN.incrementAndGet();
 			return;
@@ -511,14 +538,15 @@ public final class RoadWriter {
 				// and no support fill from the waterbed, however close the bottom is
 				// (user decision 2026-10-15). The deck stays at the solved height.
 				if (slab) {
-					setWaterloggableBlock(ctx, x, roadTopBlockY - 1, z, materials.slabBlock
+					setWaterloggableBlockUnlessProtected(ctx, x, roadTopBlockY - 1, z, materials.slabBlock
 							.defaultBlockState()
-							.setValue(SlabBlock.TYPE, SlabType.TOP));
+							.setValue(SlabBlock.TYPE, SlabType.TOP), FEATURE_ROAD_BLOCKS_SKIPPED);
 				}
 				BlockState roadState = slab
 						? materials.slabBlock.defaultBlockState()
 						: roadBlock.defaultBlockState();
-				setWaterloggableBlock(ctx, x, roadTopBlockY, z, roadState);
+				setWaterloggableBlockUnlessProtected(ctx, x, roadTopBlockY, z, roadState,
+						FEATURE_ROAD_BLOCKS_SKIPPED);
 			} else if (scaffold) {
 				// Pure scaffold deck (user decision 2026-10-15): the scaffold IS
 				// the crossing's walk surface (user decision 2026-10-14) and the
@@ -528,8 +556,9 @@ public final class RoadWriter {
 				// 2026-10-16: no support reads ONE distance everywhere, 1 by
 				// default); unsupported spans still decay via the vanilla tick,
 				// which is the knowingly accepted Q04 behaviour.
-				placeScaffolding(ctx, x, z, roadTopBlockY, isWater(ctx, x, roadTopBlockY, z), config);
-				VpsPipeline.SCAFFOLDS_PLACED.incrementAndGet();
+				if (placeScaffolding(ctx, x, z, roadTopBlockY, isWater(ctx, x, roadTopBlockY, z), config)) {
+					VpsPipeline.SCAFFOLDS_PLACED.incrementAndGet();
+				}
 			} else {
 				// Support below the walk surface, down to the ground the downward
 				// probe found (never above it); when the fill exceeds maxFillLayers
@@ -545,14 +574,15 @@ public final class RoadWriter {
 				}
 
 				if (bridge && slab) {
-					setWaterloggableBlock(ctx, x, roadTopBlockY - 1, z, materials.slabBlock
+					setWaterloggableBlockUnlessProtected(ctx, x, roadTopBlockY - 1, z, materials.slabBlock
 							.defaultBlockState()
-							.setValue(SlabBlock.TYPE, SlabType.TOP));
+							.setValue(SlabBlock.TYPE, SlabType.TOP), FEATURE_ROAD_BLOCKS_SKIPPED);
 				}
 				BlockState roadState = slab
 						? materials.slabBlock.defaultBlockState()
 						: roadBlock.defaultBlockState();
-				setWaterloggableBlock(ctx, x, roadTopBlockY, z, roadState);
+				setWaterloggableBlockUnlessProtected(ctx, x, roadTopBlockY, z, roadState,
+						FEATURE_ROAD_BLOCKS_SKIPPED);
 			}
 			// User decision 2026-10-17: the clear end is re-read from the real
 			// column at write time ("highest block with a collision or a fluid"),
@@ -620,6 +650,12 @@ public final class RoadWriter {
 		if (ceilingBottomY == RoadWritePolicy.NO_CEILING || ceilingBottomY > ctx.getMaxY()) {
 			return; // open sky
 		}
+		// User decision 2026-10-17: a non-terrain decoration as the lowest ceiling
+		// block is left untouched - no glowstone, no kerb lining, no lantern/chain.
+		if (ctx.isProtectedDecoration(x, ceilingBottomY, z)) {
+			FEATURE_CEILING_BLOCKS_SKIPPED.incrementAndGet();
+			return;
+		}
 		boolean capFormed = RoadWritePolicy.capFormedCeiling(clearTop, highestBlockY, maxClearLayers, ceilingBottomY);
 		boolean protectedBlock = RoadWritePolicy.insideBuildingAt(buildingBoxes, x, ceilingBottomY, z);
 		if (capFormed && middle) {
@@ -648,7 +684,9 @@ public final class RoadWriter {
 			if (lantern.hasProperty(LanternBlock.HANGING)) {
 				lantern = lantern.setValue(LanternBlock.HANGING, true);
 			}
-			setBlock(ctx, x, lanternY, z, lantern);
+			if (!setBlockUnlessProtected(ctx, x, lanternY, z, lantern, FEATURE_CEILING_BLOCKS_SKIPPED)) {
+				return; // no lantern: do not hang a chain into nothing
+			}
 			CEILING_LANTERNS_PLACED.incrementAndGet();
 		}
 		for (int y = lanternY + 1; y < roofY; y++) {
@@ -660,8 +698,9 @@ public final class RoadWriter {
 			if (chain.hasProperty(ChainBlock.AXIS)) {
 				chain = chain.setValue(ChainBlock.AXIS, Direction.Axis.Y);
 			}
-			setBlock(ctx, x, y, z, chain);
-			CEILING_CHAINS_PLACED.incrementAndGet();
+			if (setBlockUnlessProtected(ctx, x, y, z, chain, FEATURE_CEILING_BLOCKS_SKIPPED)) {
+				CEILING_CHAINS_PLACED.incrementAndGet();
+			}
 		}
 	}
 
@@ -679,7 +718,8 @@ public final class RoadWriter {
 			}
 		}
 		for (int y = groundTopY - 1; y < roadTopBlockY; y++) {
-			setBlock(ctx, x, y, z, fillBlock.defaultBlockState());
+			setBlockUnlessProtected(ctx, x, y, z, fillBlock.defaultBlockState(),
+					FEATURE_FILL_BLOCKS_SKIPPED);
 		}
 	}
 
@@ -695,7 +735,8 @@ public final class RoadWriter {
 			if (RoadWritePolicy.insideBuildingAt(buildingBoxes, x, y, z)) {
 				continue;
 			}
-			setBlock(ctx, x, y, z, Blocks.AIR.defaultBlockState());
+			setBlockUnlessProtected(ctx, x, y, z, Blocks.AIR.defaultBlockState(),
+					FEATURE_CLEAR_BLOCKS_SKIPPED);
 		}
 	}
 
@@ -943,8 +984,22 @@ public final class RoadWriter {
 		int runTopY = Integer.MIN_VALUE;
 		int limit = Math.min(ctx.getMaxY(), RoadWritePolicy.kerbTopY(topmostY, ceilingBottomY));
 		for (int y = roadTopBlockY + 1; y <= limit; y++) {
+			// User decision 2026-10-17: a non-terrain decoration breaks the kerb
+			// run. Skip the decoration block itself (never wrap through it) and
+			// close the current run before the skip, so the wall neither replaces
+			// the tree nor floats over it.
+			if (ctx.isProtectedDecoration(x, y, z)) {
+				if (runWrapped) {
+					placeKerbRailing(ctx, x, z, runTopY + 1, buildingBoxes, materials);
+				}
+				runWrapped = false;
+				runTopY = Integer.MIN_VALUE;
+				FEATURE_KERB_BLOCKS_SKIPPED.incrementAndGet();
+				continue;
+			}
 			boolean nearTerrain = ctx.hasCollisionOrFluid(x, y, z);
-			boolean farTerrain = ctx.hasCollisionOrFluid(farX, y, farZ);
+			boolean farTerrain = !ctx.isProtectedDecoration(farX, y, farZ)
+					&& ctx.hasCollisionOrFluid(farX, y, farZ);
 			if (nearTerrain || farTerrain) {
 				runTopY = y;
 				if (!RoadWritePolicy.insideBuildingAt(buildingBoxes, x, y, z)) {
@@ -979,12 +1034,17 @@ public final class RoadWriter {
 		if (leaves.hasProperty(LeavesBlock.PERSISTENT)) {
 			leaves = leaves.setValue(LeavesBlock.PERSISTENT, true);
 		}
-		setWaterloggableBlock(ctx, x, y, z, leaves);
-		KERB_RAILINGS_PLACED.incrementAndGet();
+		if (setWaterloggableBlockUnlessProtected(ctx, x, y, z, leaves, FEATURE_RAILING_BLOCKS_SKIPPED)) {
+			KERB_RAILINGS_PLACED.incrementAndGet();
+		}
 	}
 
 	private static void placeRailing(VpsGenContext ctx, int x, int z, int walkSurfaceY, RoadMaterialTable.StyleMaterials materials) {
 		BlockState existing = ctx.blockState(x, walkSurfaceY, z);
+		if (!RoadWritePolicy.mayOverwrite(FeatureProtection.isProtectedDecoration(existing))) {
+			FEATURE_RAILING_BLOCKS_SKIPPED.incrementAndGet();
+			return;
+		}
 		if (!existing.isAir() && !existing.canBeReplaced()) {
 			return;
 		}
@@ -1027,8 +1087,12 @@ public final class RoadWriter {
 	 * reverted; a span with no support decays via the vanilla tick, which is the
 	 * knowingly accepted Q04 behaviour, not a defect to fix silently.
 	 */
-	private static void placeScaffolding(VpsGenContext ctx, int x, int z, int scaffoldY, boolean waterlogged,
+	private static boolean placeScaffolding(VpsGenContext ctx, int x, int z, int scaffoldY, boolean waterlogged,
 			VillagePathSmoothedConfig config) {
+		if (!RoadWritePolicy.mayOverwrite(ctx.isProtectedDecoration(x, scaffoldY, z))) {
+			FEATURE_ROAD_BLOCKS_SKIPPED.incrementAndGet();
+			return false;
+		}
 		BlockPos belowPos = new BlockPos(x, scaffoldY - 1, z);
 		BlockState below = ctx.blockState(x, scaffoldY - 1, z);
 		// vanilla ScaffoldingBlock#getDistance counts a column as supported when
@@ -1049,6 +1113,7 @@ public final class RoadWriter {
 				.setValue(ScaffoldingBlock.BOTTOM, bottom)
 				.setValue(ScaffoldingBlock.WATERLOGGED, waterlogged);
 		setBlock(ctx, x, scaffoldY, z, state);
+		return true;
 	}
 
 	/** True when the column has water at this exact Y (block or fluid state). */
@@ -1219,6 +1284,34 @@ public final class RoadWriter {
 			// expected: the block entity has no Level during worldgen; the text
 			// fields are already written and will be saved with the chunk
 		}
+	}
+
+	/**
+	 * User decision 2026-10-17: writes only when the current block is not a
+	 * protected non-terrain decoration. Returns false (and counts) when the
+	 * decoration wins; callers decide whether the rest of the operation should
+	 * continue. Use the block-reading overload only on the writer path - debug
+	 * signs deliberately bypass it.
+	 */
+	private static boolean setBlockUnlessProtected(VpsGenContext ctx, int x, int y, int z, BlockState state,
+			AtomicLong skipped) {
+		if (!RoadWritePolicy.mayOverwrite(ctx.isProtectedDecoration(x, y, z))) {
+			skipped.incrementAndGet();
+			return false;
+		}
+		setBlock(ctx, x, y, z, state);
+		return true;
+	}
+
+	/** {@link #setBlockUnlessProtected} for waterloggable road slabs. */
+	private static boolean setWaterloggableBlockUnlessProtected(VpsGenContext ctx, int x, int y, int z,
+			BlockState state, AtomicLong skipped) {
+		if (!RoadWritePolicy.mayOverwrite(ctx.isProtectedDecoration(x, y, z))) {
+			skipped.incrementAndGet();
+			return false;
+		}
+		setWaterloggableBlock(ctx, x, y, z, state);
+		return true;
 	}
 
 	private static void setBlock(VpsGenContext ctx, int x, int y, int z, BlockState state) {

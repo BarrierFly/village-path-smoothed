@@ -44,6 +44,7 @@ src/main/java/dev/peoplecanfly/village_path_smoothed/
 │   ├── VpsProbe             # height-source interface (real + noise)
 │   ├── VpsGenContext        # feature placement: real heightmap +/-1 chunks, noise elsewhere
 │   ├── VpsNoiseContext      # T1.5: pure noise, no world access
+│   ├── FeatureProtection    # write-time non-terrain decoration classifier
 │   └── WaterCrossings       # pure water-crossing predicate (unit tested)
 ├── compat/      # VpsCompat: version shims; modmenu/: optional client screen
 └── command/     # /vps brigadier tree
@@ -159,7 +160,10 @@ Rules:
   be reproduced from the solver side. Now: the written walk surface is always the
   cell's **solved** surface; a solved height outside the world is refused, not
   clamped. What is left of the old "snap onto the real surface" behaviour is the
-  guarded single-cell nudge below.
+  guarded single-cell nudge below. The one deliberate exception is a protected
+  non-terrain decoration (see the feature-protection bullet): the writer skips
+  that block, so one column can intentionally keep a tree/gap where a road,
+  fill or clear block would otherwise be.
 - **A water crossing is never below the water surface (user decision
   2026-10-15; enforced in the SOLVE since plan E, 2026-10-15).** The water
   counts as SOLID when the road height is determined: an anchor cell's `baseP`
@@ -207,10 +211,33 @@ Rules:
   `< 0` means unlimited. The lowest collision/fluid block above the cleared
   space is the road's **ceiling** (cap-formed or natural roof); it bounds both
   the single ceiling layer and the kerb wall below it (2026-10-17). A block
-  inside a protected building box is never cleared; road-generated
-  kerbs/railings/leaves outside those boxes are fair game. The
-  contiguous-ceiling probe `ceilingSurfaceTopY` stays only for the over-budget
-  observation.
+  inside a protected building box or classified as a non-terrain decoration is
+  never cleared; the clear skips that block (see the feature-protection bullet
+  below). The contiguous-ceiling probe `ceilingSurfaceTopY` stays only for the
+  over-budget observation.
+- **Non-terrain decorations always win their block (user decision 2026-10-17,
+  all non-terrain decoration; skip only).** `terrain.FeatureProtection`
+  classifies at write time against vanilla's natural-terrain tags (dirt, base
+  stone, sand, snow/ice, terracotta, ores, sculk replaceables) plus the common
+  terrain blocks (sandstone, gravel, clay, calcite, dripstone, ...). Air and the
+  water/lava blocks are not decorations. **Everything else is protected** -
+  logs, leaves, plants, crops, vines, furniture, lamps and unknown/modded
+  blocks default to protected, so a missing tag protects too much rather than
+  destroying a feature. The mod's own road structural materials (mud bricks,
+  smooth sandstone, the default cobblestone kerb, scaffolding and the dirt-path
+  fill) stay replaceable so the shared-column "low kerb AND high railing" rule
+  still works. The road block, support fill, upward clear, kerb,
+  ceiling lining, lantern/chain and both railing kinds use
+  `RoadWritePolicy#mayOverwrite` and skip the protected block, counting it in
+  the `/vps stats` `feature` line (`FEATURE_*_BLOCK_SKIPPED`). This is a
+  block-by-block skip, not a whole-column yield: a tree in a road column keeps
+  its block and the road/fill/clear simply have a gap there. The kerb probe
+  (`VpsGenContext#highestTerrainCollisionOrFluidY`) ignores protected
+  decorations, so a canopy cannot pull a retaining wall up to its top, and a
+  protected block in the first kerb column breaks the run instead of being
+  wrapped. A protected lowest ceiling block suppresses the lining and the
+  lantern/chain entirely. Debug door/seam signs deliberately bypass the guard
+  (their visibility is the point).
 - **Railing at water (user decision 2026-10-15).** Beside a water side column the
   drop threshold is overridden: no railing while the road walk surface is **not
   above** the water surface, and a railing as soon as it is above it - even half
@@ -359,13 +386,14 @@ Rules:
 - **The kerb probes two cells outward but wraps only the first (user decision
   2026-10-17, reworking 2026-10-15).** The wrap still starts at
   `roadTopBlockY + 1` and skips air gaps. The trigger is now: at every layer
-  from one above the road to the highest collision/fluid block in either of the
-  two outward columns, if **either** cell has a non-empty collision shape or a
-  fluid, the first cell gets the kerb material. An air first cell is filled up
+  from one above the road to the highest **terrain** collision/fluid block in
+  either of the two outward columns, if **either** cell has a non-empty
+  collision shape or a fluid, the first cell gets the kerb material. Protected
+  non-terrain decorations are ignored by the probe and skipped in the first
+  cell (a decoration there breaks the run); building boxes are never replaced.
+  An air first cell is filled up
   to the probe top, so a one-block setback becomes a retaining wall. The
-  material is no longer restricted to `#minecraft:dirt`; only a protected
-  building box is never replaced (road-generated kerbs/railings/leaves may be
-  overwritten). `kerb.minDropHeight` is **kept**: the two-column probe top must
+  material is no longer restricted to `#minecraft:dirt`. `kerb.minDropHeight` is **kept**: the two-column probe top must
   still rise more than the threshold above the road. The bottom course level
   with the road block stays vanilla - that is the chosen start level, not a bug.
   **The wall stops one block below the road's ceiling** (2026-10-17,
@@ -386,7 +414,9 @@ Rules:
   clear cap stops in air and a natural cave roof lies above, only the roof's
   lowest block is lined with the kerb material and the clear-cap cell gets a
   hanging **lantern** plus an **iron chain** up to the roof (no glowstone).
-  Building blocks are never replaced. `RoadNetwork#threeWideMiddleCells`
+  Building blocks and non-terrain decorations are never replaced; if the lowest
+  ceiling block is a protected decoration, the whole ceiling treatment (lining,
+  glowstone, lantern, chain) is skipped. `RoadNetwork#threeWideMiddleCells`
   implements the straight-3-wide test on the arm slices. Plaza cells never
   reach the ceiling code - the run above a plaza platform is the fountain.
 - **Building shift rules (user decisions 2026-10-14 and 2026-10-15):**
@@ -601,10 +631,11 @@ Rules:
 - `ScaffoldingBlock` re-computes `distance` on its first tick; unsupported
   spans decay. That is a documented known issue - do **not** "fix" it silently.
 - Kerbs and the ceiling use the collision/fluid rule, not a material whitelist:
-  any block with a non-empty collision shape or a fluid counts, and the kerb
-  replaces any non-building block in its first column (including air). Do not
-  reintroduce the dirt-tag-only restriction. `kerb.replaceableBlocks` is kept
-  only for config compatibility and is no longer read.
+  any **terrain** block with a non-empty collision shape or a fluid counts, and
+  the kerb replaces any non-building, non-decoration block in its first column
+  (including air). Do not reintroduce the dirt-tag-only restriction.
+  `kerb.replaceableBlocks` is kept only for config compatibility and is no
+  longer read.
 - **The written road surface is mud bricks for the non-desert styles (user
   decision 2026-10-17).** The half-step slabs stay `mud_brick_slab`, the support
   fill below the road stays the vanilla `dirt_path`, and the desert

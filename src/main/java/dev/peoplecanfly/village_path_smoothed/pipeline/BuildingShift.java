@@ -14,44 +14,32 @@ import java.util.Arrays;
  * <p>Heights are half-block walk-surface units (P = 2 * walkSurfaceY), the
  * shift is in whole blocks.
  *
- * <p>Fix plan analysis 2026-10-15 (section 3.1/3.2, plan D): the alignment
- * target is the component's <b>door</b> road cells and the alignment reference
- * is the top of the structure's <b>Y0 template layer</b> ({@code baseY + 1} -
- * the y=0 layer is the floor/基座 block; 75% of vanilla door blocks sit at y=1,
- * right on that surface). Aligning {@code baseY} itself left every door one
- * whole block above its road (the structural part of the measured +1.5 door
- * offsets). And the "single median" is replaced by the <b>legal interval</b>:
- * a shift is legal when the shifted Y0 top stays within half a block (1 half
- * unit) of EVERY door road cell's solved surface, and inside the interval the
- * shift closest to zero wins (the building moves as little as vanilla
- * placement allows). The median is only the fallback for a door whose road
- * cells span more than the tolerance can bridge.
+ * <p>Door/basis fix plan 2026-10-17 (D1/D2): the alignment target is the
+ * component's <b>main-door</b> road cell and the reference is
+ * {@code baseWalkY = mainPiece.bbox.minY + getGroundLevelDelta()} - the exact
+ * level vanilla's terrain adaptation aligns the piece to. The old
+ * {@code median minY + 1} approximation (and the {@code DOOR_WALK_OFFSET=1}
+ * constant it needed) is gone. The "single median" is still replaced by the
+ * <b>legal interval</b>: a shift is legal when the shifted base walk level
+ * stays within half a block (1 half unit) of EVERY selected door road cell's
+ * solid surface, and inside the interval the shift closest to zero wins. The
+ * median is only the fallback when the targets span more than the tolerance can
+ * bridge.
  *
  * <p>Plan E (user decision 2026-10-15, after the door two-symptom recheck):
  * the anchor is the template's <b>real door block</b>, not the connection
  * junction (the junction sits 2-7 blocks from the door on 53 of the 120
- * vanilla house templates), and the reference is the <b>Y0 layer</b>, not the
- * door layer - vanilla designs the foundation to face the road, so a template
- * whose door sits higher (doorY &gt; 1, e.g. the stilt fisher cottage) keeps
- * its door above the road on purpose. Every door road cell presents its
- * <b>solid level</b> to the house ({@link #solidTargetP}): a full block its
- * own top, a bottom slab counts as air and presents the level below it, so
- * the house's Y0 layer sits flush with a full-block road and half a block
- * below a slab road. All targets are therefore whole-block levels: the
- * interval is either a single exact value or empty (median fallback), and the
- * odd-parity fallback flag can no longer fire.
+ * vanilla house templates). Every door road cell presents its <b>solid
+ * level</b> to the house ({@link #solidTargetP}): a full block its own top, a
+ * bottom slab counts as air and presents the level below it, so the house's
+ * base walk level sits flush with a full-block road and half a block below a
+ * slab road. All targets are therefore whole-block levels: the interval is
+ * either a single exact value or empty (median fallback), and the odd-parity
+ * fallback flag can no longer fire.
  */
 public final class BuildingShift {
 	/** Sentinel shift: the component must not be moved. */
 	public static final int DO_NOT_MOVE = Integer.MIN_VALUE;
-
-	/**
-	 * The y=0 template layer is the foundation; its top walk surface (the
-	 * interior floor) is one block above it. Plan E (2026-10-15): the alignment
-	 * follows the Y0 LAYER, not the door - vanilla houses are designed with
-	 * their bottom layer facing the road.
-	 */
-	public static final int DOOR_WALK_OFFSET = 1;
 
 	/** Why a component is or is not served by the adjacent road profile. */
 	public enum Reason {
@@ -99,16 +87,20 @@ public final class BuildingShift {
 	 * of each of them when possible.
 	 *
 	 * @param adjacentRoadP solved walk surfaces (half units) of the road cells
-	 *        at the component's door, selected by the caller; each is converted
-	 *        with {@link #solidTargetP} before use (slab cells count as air)
-	 * @param baseY the component's base layer Y (the median of its pieces'
-	 *        bounding-box minY; the template's y=0 floor layer)
+	 *        at the component's main door, selected by the caller; each is
+	 *        converted with {@link #solidTargetP} before use (slab cells count
+	 *        as air)
+	 * @param baseWalkY the component's base walk level - the main building
+	 *        piece's {@code bbox.minY + getGroundLevelDelta()}, the exact level
+	 *        vanilla's terrain adaptation aligns the piece to (door/basis fix
+	 *        plan 2026-10-17, D1). It replaces the old {@code baseY + 1}
+	 *        approximation; no offset is added here.
 	 */
-	public static ShiftDecision desiredShift(int[] adjacentRoadP, int baseY) {
+	public static ShiftDecision desiredShift(int[] adjacentRoadP, int baseWalkY) {
 		if (adjacentRoadP == null || adjacentRoadP.length == 0) {
 			return ShiftDecision.doNotMove();
 		}
-		int doorWalk = baseY + DOOR_WALK_OFFSET;
+		int doorWalk = baseWalkY;
 		int[] targets = new int[adjacentRoadP.length];
 		for (int i = 0; i < targets.length; i++) {
 			targets[i] = solidTargetP(adjacentRoadP[i]);
@@ -143,6 +135,18 @@ public final class BuildingShift {
 		// cannot fire any more (plan E).
 		boolean oddParity = (medianHalf & 1) != 0;
 		return new ShiftDecision(Reason.SERVED, medianShift, oddParity, false, medianShift);
+	}
+
+	/**
+	 * Plan 2026-10-17 (door/basis fix, section 3.5): the second authoritative
+	 * alignment works from a TOTAL shift from the vanilla position, while the
+	 * component has already accumulated its first-pass {@code dy}. The
+	 * additional move is the difference; {@link #DO_NOT_MOVE} means "no
+	 * authoritative target" and must never undo the first pass (user decision
+	 * 2026-10-17: keep the current shift in that case).
+	 */
+	public static int additionalShift(int desiredTotal, int currentDy) {
+		return desiredTotal == DO_NOT_MOVE ? 0 : desiredTotal - currentDy;
 	}
 
 	/** ceil(n / 2) for any int (positive or negative). */

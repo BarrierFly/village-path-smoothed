@@ -39,12 +39,14 @@ public final class VpsVillageSolution {
 	/** Door-front cells {frontX,frontZ,outwardDX,outwardDZ}; the writer suppresses the railing there. */
 	public int[][] doorFronts = new int[0][];
 	/**
-	 * Debug door signs (user request 2026-10-16, always on): one entry per
-	 * template door of a movable building - {doorX, doorWalkY, doorZ, outDX,
-	 * outDZ, roadX, roadSolvedP, roadZ}. The writer places a standing sign at
-	 * the door front printing line 1 "doorX doorWalkY doorZ" and line 2
-	 * "roadX roadSolvedP/2 roadZ" (numbers only); computed on the FINAL
-	 * network so line 2 names the surface the writer really renders.
+	 * Debug door signs (user request 2026-10-16; main door and NO FRONT by the
+	 * door/basis fix plan 2026-10-17): one entry per MAIN door -
+	 * {doorX, doorWalkY, doorZ, outDX, outDZ, roadX, roadSolvedP, roadZ,
+	 * doorFloorY, noFront}. The writer places a standing sign at the door front
+	 * printing line 1 "doorX doorWalkY doorZ", line 2 the selected road cell,
+	 * line 3 the actual door floor and line 4 "NO FRONT" when no eligible
+	 * outward cell existed; computed on the FINAL network so line 2 names the
+	 * surface the writer really renders.
 	 */
 	public int[][] doorSigns = new int[0][];
 	/**

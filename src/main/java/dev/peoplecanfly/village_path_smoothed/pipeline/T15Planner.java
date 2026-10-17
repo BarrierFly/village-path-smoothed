@@ -142,26 +142,37 @@ public final class T15Planner {
 		}
 		List<BuildingComponents.Component> components = BuildingComponents.group(pieces);
 		components.removeIf(component -> isSeatRider(component, pieces, seatColumns));
-		// F-C: the template's real door blocks, loaded once per plan and shared by
-		// the alignment, the door fronts and the offset counter below
-		Map<Integer, int[][]> doorsByPiece = BuildingComponents.templateDoors(pieces, templateManager);
-		countDoorAnchorOffsets(pieces, components, doorsByPiece);
+		// Door/basis fix plan 2026-10-17: real doors only, and the
+		// building_entrance jigsaw that selects the main door.
+		BuildingComponents.TemplateScan scan = BuildingComponents.scanTemplates(pieces, templateManager);
+		countDoorAnchorOffsets(pieces, components, scan);
 
 		int minY = ctx.getMinY();
 		int maxY = ctx.getMaxY();
 		if (components.isEmpty()) {
 			settleSeats(solution.network, pieces, minY, maxY, config);
+			List<List<DoorSigns.DoorTarget>> targets = collectDoorTargets(components, pieces, scan,
+					solution.network, true);
+			solution.doorFronts = buildDoorFronts(components, pieces, targets, solution.network);
+			solution.doorSigns = computeDoorSigns(components, targets, solution.network);
 			solution.seamSigns = computeSeamSigns(solution.network, config);
 			return solution;
 		}
 
 		int maxShift = config.roadSmoothing.maxBuildingShift;
 		List<int[]> shifted = new ArrayList<>();
+		int[][] firstBoxes = BuildingComponents.protectedBoxes(pieces);
+		List<List<DoorSigns.DoorTarget>> firstTargets = new ArrayList<>(components.size());
 
 		for (BuildingComponents.Component component : components) {
-			int desired = desiredShift(network, component, pieces, doorsByPiece, config);
-			if (desired == Integer.MIN_VALUE) {
-				continue; // no road access / unserved: left where it is
+			List<DoorSigns.DoorTarget> targets = doorTargets(component, pieces, scan, network, firstBoxes, false);
+			firstTargets.add(targets);
+			int desired = targets.isEmpty()
+					? desiredShiftFromJunctions(network, component, pieces, config)
+					: desiredShiftFromTargets(targets, component, config);
+			if (desired == BuildingShift.DO_NOT_MOVE) {
+				VpsPipeline.BUILDINGS_NO_ROAD_ACCESS.incrementAndGet();
+				continue; // no road access / no outward front: left where it is
 			}
 			desired = clampWorldHeight(pieces, component, desired, minY, maxY);
 			if (maxShift > 0) {
@@ -177,7 +188,8 @@ public final class T15Planner {
 					pieces.get(idx).move(0, chosen, 0);
 					VpsPipeline.BUILDINGS_SHIFTED.incrementAndGet();
 				}
-				shifted.add(new int[]{component.minX, component.maxX, component.minZ, component.maxZ, component.baseY + chosen});
+				shifted.add(new int[]{component.minX, component.maxX, component.minZ, component.maxZ,
+						component.baseWalkY + chosen});
 			}
 		}
 		VpsPipeline.BUILDING_COMPONENTS.addAndGet(components.size());
@@ -191,14 +203,6 @@ public final class T15Planner {
 		allShifted.addAll(components);
 		allShifted.addAll(plazaComponents);
 		syncJunctions(pieces, allShifted);
-		solution.shiftedComponents = shifted.toArray(new int[0][]);
-		// read after the shift: the boxes must describe where the buildings really
-		// are, because the writer uses them to refuse a road column (plan A).
-		solution.buildingBoxes = BuildingComponents.protectedBoxes(pieces);
-		// R3-1 (2026-10-16): the front direction reads the road network; the cell
-		// POSITIONS are identical in phase 1 and the phase-2 re-solve, so the
-		// first network is enough and the mismatch is counted exactly once.
-		solution.doorFronts = BuildingComponents.doorFronts(pieces, doorsByPiece, network);
 
 		// Review 4 section 7 (P1): close the probe gap that the move just opened.
 		// The road profile was solved against beard boxes taken BEFORE the shift,
@@ -206,104 +210,386 @@ public final class T15Planner {
 		// compensated the wrong columns - the +/-$1 near shifted buildings that
 		// the review measured. RoadCollector#collect reads the boxes live off the
 		// pieces, so re-running it after the move is enough: no second probe
-		// implementation, no state to keep in sync. The building shift itself is
-		// NOT repeated (a second pass would be circular: the road moved, so the
-		// buildings would move, so the road would move); this only corrects the
-		// road, which is what the write stage consumes.
+		// implementation, no state to keep in sync.
 		//
-		// Nothing moved -> nothing to correct. The re-collect is a full second
-		// RoadCollector#collect plus a full second RoadSmoother#solve, i.e. the
-		// single most expensive thing this planner does, and when `shifted` is
-		// empty every piece box, every beard box and therefore the whole road
-		// network is bit-for-bit what the first pass already produced. Most
-		// villages never shift anything, so this guard removes the second solve
-		// from the common path entirely. It is safe rather than merely cheap:
-		// solution.network already holds the first pass's network, and nothing
-		// between the two passes mutates it when dy == 0 for every component.
 		// R1-1 (2026-10-16): "nothing moved" is not enough to skip the phase-2
 		// re-solve. A plaza group whose dy the overlap/world guard pushed back to
 		// zero leaves its phase-1 pin at the noise median, but the rigid platform
 		// still renders at its vanilla level (plazaVanillaP) - the two disagree,
 		// so the second collect+solve is exactly what corrects the plaza edge.
-		if (shifted.isEmpty() && !plazaMoved(plazaComponents) && !plazaPinsMismatch(network)) {
-			settleSeats(solution.network, pieces, minY, maxY, config);
-			solution.doorSigns = computeDoorSigns(components, pieces, doorsByPiece, solution.network);
-			solution.seamSigns = computeSeamSigns(solution.network, config);
-			return solution;
+		RoadNetwork finalNetwork = network;
+		boolean reSolved = false;
+		if (!(shifted.isEmpty() && !plazaMoved(plazaComponents) && !plazaPinsMismatch(network))) {
+			RoadNetwork resolved = RoadCollector.collect(start, ctx, config);
+			if (config.roadSmoothing.enabled) {
+				// plan C phase 2: pin every plaza group at the level its pieces really
+				// render at after the move - the solve and the world agree by construction
+				resolved.applyPlazaPins(false);
+				VpsPipeline.accumulateSolveStats(RoadSmoother.solve(resolved, VpsPipeline.paramsFor(config)));
+			}
+			T15_RESOLVE_DELTA_CELLS.addAndGet(countProfileDelta(network, resolved));
+			T15_RESOLVED_AFTER_SHIFT.incrementAndGet();
+			finalNetwork = resolved;
+			reSolved = true;
 		}
+		solution.network = finalNetwork;
 
-		RoadNetwork resolved = RoadCollector.collect(start, ctx, config);
-		if (config.roadSmoothing.enabled) {
-			// plan C phase 2: pin every plaza group at the level its pieces really
-			// render at after the move - the solve and the world agree by construction
-			resolved.applyPlazaPins(false);
-			VpsPipeline.accumulateSolveStats(RoadSmoother.solve(resolved, VpsPipeline.paramsFor(config)));
+		// D5 (user decision 2026-10-17): settle the seats on the FINAL network
+		// first, then run the authoritative second alignment against that network
+		// and freeze. Seats may rewrite cell.solvedP at the world edge (R1-4), so
+		// they must run before the alignment that consumes those heights.
+		settleSeats(finalNetwork, pieces, minY, maxY, config);
+
+		List<List<DoorSigns.DoorTarget>> finalTargets = new ArrayList<>(components.size());
+		for (BuildingComponents.Component component : components) {
+			int[][] boxes = BuildingComponents.protectedBoxes(pieces);
+			List<DoorSigns.DoorTarget> targets = doorTargets(component, pieces, scan, finalNetwork, boxes, true);
+			finalTargets.add(targets);
+			int desired = targets.isEmpty()
+					? desiredShiftFromJunctions(finalNetwork, component, pieces, config)
+					: desiredShiftFromTargets(targets, component, config);
+			// D4 (user decision 2026-10-17): no outward road cell means no
+			// alignment. The user confirmed the second pass keeps the first pass's
+			// shift in that case (additional = 0) instead of undoing it.
+			int additional = BuildingShift.additionalShift(desired, component.dy);
+			if (additional == 0) {
+				continue;
+			}
+			additional = clampWorldHeight(pieces, component, additional, minY, maxY);
+			if (maxShift > 0) {
+				additional = Math.max(-maxShift, Math.min(maxShift, additional));
+			}
+			int chosen = resolveOverlap(pieces, component, additional);
+			if (chosen != additional) {
+				VpsPipeline.OVERLAP_GUARDS.incrementAndGet();
+			}
+			if (chosen == 0) {
+				continue;
+			}
+			component.dy += chosen;
+			for (int idx : component.pieceIndices) {
+				pieces.get(idx).move(0, chosen, 0);
+			}
+			VpsPipeline.SECOND_ALIGN_MOVED.incrementAndGet();
 		}
-		T15_RESOLVE_DELTA_CELLS.addAndGet(countProfileDelta(network, resolved));
-		solution.network = resolved;
-		T15_RESOLVED_AFTER_SHIFT.incrementAndGet();
-		settleSeats(resolved, pieces, minY, maxY, config);
-		solution.doorSigns = computeDoorSigns(components, pieces, doorsByPiece, resolved);
-		solution.seamSigns = computeSeamSigns(resolved, config);
+		// only the ADDITIONAL move is propagated; the first pass already synced
+		// its own dy (the old code would have moved the junction twice).
+		syncJunctions(pieces, components);
+
+		solution.shiftedComponents = shiftedComponents(components);
+		// read after both shifts: the boxes must describe where the buildings
+		// really are, because the writer uses them to refuse a road column (plan A).
+		solution.buildingBoxes = BuildingComponents.protectedBoxes(pieces);
+		solution.doorFronts = buildDoorFronts(components, pieces, finalTargets, finalNetwork);
+		solution.doorSigns = computeDoorSigns(components, finalTargets, finalNetwork);
+		solution.seamSigns = computeSeamSigns(finalNetwork, config);
+		if (reSolved) {
+			VpsPipeline.DOOR_TARGET_CHANGED_BY_RESOLVE.addAndGet(countDoorTargetChanges(firstTargets, finalTargets));
+		}
 
 		if (config.diagnostics.dumpRoadNetwork) {
-			VillagePathSmoothed.LOGGER.info("[VPS] T1.5 village at {}: {} cells, {} building components, {} shifted, {} cells after the post-shift re-solve",
-					chunkPos, network.cells.size(), components.size(), shifted.size(), resolved.cells.size());
+			VillagePathSmoothed.LOGGER.info("[VPS] T1.5 village at {}: {} cells, {} building components, {} shifted, {} cells after the post-shift re-solve (second align moved {})",
+					chunkPos, network.cells.size(), components.size(), shifted.size(), finalNetwork.cells.size(),
+					VpsPipeline.SECOND_ALIGN_MOVED.get());
 		}
 		return solution;
 	}
 
+	private static int[][] shiftedComponents(List<BuildingComponents.Component> components) {
+		List<int[]> out = new ArrayList<>();
+		for (BuildingComponents.Component component : components) {
+			if (component.dy == 0) {
+				continue;
+			}
+			out.add(new int[]{component.minX, component.maxX, component.minZ, component.maxZ,
+					component.baseWalkY + component.dy});
+		}
+		return out.toArray(new int[0][]);
+	}
+
+	/**
+	 * Builds the main-door targets of every component against one network. The
+	 * eligibility filter is the SAME three-way exclusion the writer and the
+	 * alignment share (door/basis fix plan 2026-10-17, D3/D4): no seat, no 2D
+	 * building footprint, no 3D box the writer would skip. Counters are only
+	 * accumulated when {@code countStats} is true (the final pass), so the first
+	 * pass does not double them.
+	 */
+	private static List<List<DoorSigns.DoorTarget>> collectDoorTargets(
+			List<BuildingComponents.Component> components, List<StructurePiece> pieces,
+			BuildingComponents.TemplateScan scan, RoadNetwork network, boolean countStats) {
+		List<List<DoorSigns.DoorTarget>> out = new ArrayList<>(components.size());
+		for (BuildingComponents.Component component : components) {
+			int[][] boxes = BuildingComponents.protectedBoxes(pieces);
+			out.add(doorTargets(component, pieces, scan, network, boxes, countStats));
+		}
+		return out;
+	}
+
+	/** Package-visible bridge for the T5 path (no building move, same door rules). */
+	static List<DoorSigns.DoorTarget> doorTargetsFor(BuildingComponents.Component component,
+			List<StructurePiece> pieces, BuildingComponents.TemplateScan scan, RoadNetwork network,
+			int[][] buildingBoxes, boolean countStats) {
+		return doorTargets(component, pieces, scan, network, buildingBoxes, countStats);
+	}
+
+	/** Package-visible bridge for the T5 path. */
+	static int[][] doorFrontsFor(List<BuildingComponents.Component> components, List<StructurePiece> pieces,
+			List<List<DoorSigns.DoorTarget>> targetsPerComponent, RoadNetwork net) {
+		return buildDoorFronts(components, pieces, targetsPerComponent, net);
+	}
+
+	private static List<DoorSigns.DoorTarget> doorTargets(BuildingComponents.Component component,
+			List<StructurePiece> pieces, BuildingComponents.TemplateScan scan, RoadNetwork network,
+			int[][] buildingBoxes, boolean countStats) {
+		List<int[]> doors = new ArrayList<>();
+		List<int[]> entrances = new ArrayList<>();
+		for (int idx : component.pieceIndices) {
+			int[][] pieceDoors = scan.doors.get(idx);
+			if (pieceDoors != null) {
+				for (int[] door : pieceDoors) {
+					doors.add(door);
+				}
+			}
+			int[][] pieceEntrances = scan.entrances.get(idx);
+			if (pieceEntrances != null) {
+				for (int[] entrance : pieceEntrances) {
+					entrances.add(entrance);
+				}
+			}
+		}
+		if (doors.isEmpty()) {
+			return List.of(); // no real door: junction fallback (farm/pen)
+		}
+		int[][] doorArray = doors.toArray(new int[0][]);
+		int[][] entrancePositions = new int[entrances.size()][];
+		for (int i = 0; i < entrances.size(); i++) {
+			entrancePositions[i] = new int[]{entrances.get(i)[0], entrances.get(i)[1]};
+		}
+		int[] main = DoorSigns.mainDoorIndices(doorArray, entrancePositions);
+		if (countStats) {
+			if (entrancePositions.length == 0) {
+				VpsPipeline.MAIN_DOOR_NO_ENTRANCE.incrementAndGet();
+			}
+			VpsPipeline.MAIN_DOOR_SELECTED.addAndGet(main.length);
+		}
+		java.util.function.IntPredicate eligible = index -> {
+			RoadCell cell = network.cells.get(index);
+			if (cell.seat) {
+				if (countStats) {
+					VpsPipeline.SEAT_TARGET_EXCLUDED.incrementAndGet();
+				}
+				return false;
+			}
+			if (RoadWritePolicy.insideFootprint(buildingBoxes, cell.x, cell.z)
+					|| RoadWritePolicy.insideBuilding(buildingBoxes, cell.x, cell.z, cell.solvedP)) {
+				if (countStats) {
+					VpsPipeline.DOOR_TARGET_INSIDE_BUILDING.incrementAndGet();
+				}
+				return false;
+			}
+			return true;
+		};
+		List<DoorSigns.DoorTarget> out = new ArrayList<>(main.length);
+		for (int index : main) {
+			int[] door = doorArray[index];
+			int[] normal = doorNormal(component, door[0], door[1], entrances);
+			DoorSigns.Selection selection = DoorSigns.selectDoorRoadCell(network, door[0], door[1],
+					normal[0], normal[1], eligible);
+			if (countStats) {
+				VpsPipeline.DOOR_TARGET_BEHIND.addAndGet(selection.behindExcluded());
+			}
+			RoadCell road = selection.cell();
+			int[] outStep = road != null ? DoorSigns.stepToward(road, door[0], door[1]) : null;
+			if (outStep == null) {
+				outStep = normal;
+			}
+			if (road == null && countStats) {
+				VpsPipeline.NO_FRONT_ROAD.incrementAndGet();
+			}
+			int floorY = door.length > 2 ? door[2] : component.baseWalkY;
+			out.add(new DoorSigns.DoorTarget(door[0], door[1], floorY,
+					normal[0], normal[1], outStep[0], outStep[1], road));
+		}
+		return out;
+	}
+
+	/**
+	 * The outward normal of the wall a main door sits in (door/basis fix plan
+	 * 2026-10-17, section 3.4): the nearest of the component's four footprint
+	 * faces. A corner tie is resolved by the {@code building_entrance} front,
+	 * then by the axis on which the entrance lies, then by +x; template door
+	 * leaves are deliberately not used (only ~30% face outward).
+	 */
+	private static int[] doorNormal(BuildingComponents.Component component, int doorX, int doorZ,
+			List<int[]> entrances) {
+		int dxMin = doorX - component.minX;
+		int dxMax = component.maxX - doorX;
+		int dzMin = doorZ - component.minZ;
+		int dzMax = component.maxZ - doorZ;
+		int min = Math.min(Math.min(dxMin, dxMax), Math.min(dzMin, dzMax));
+		List<int[]> tied = new ArrayList<>(4);
+		if (dxMin == min) {
+			tied.add(new int[]{-1, 0, dxMin});
+		}
+		if (dxMax == min) {
+			tied.add(new int[]{1, 0, dxMax});
+		}
+		if (dzMin == min) {
+			tied.add(new int[]{0, -1, dzMin});
+		}
+		if (dzMax == min) {
+			tied.add(new int[]{0, 1, dzMax});
+		}
+		if (tied.size() == 1) {
+			return new int[]{tied.get(0)[0], tied.get(0)[1]};
+		}
+		int[] entrance = nearestEntrance(doorX, doorZ, entrances);
+		if (entrance != null) {
+			for (int[] candidate : tied) {
+				if (candidate[0] == entrance[2] && candidate[1] == entrance[3]) {
+					return new int[]{candidate[0], candidate[1]};
+				}
+			}
+			if (Math.abs(entrance[0] - doorX) >= Math.abs(entrance[1] - doorZ)) {
+				if (dxMin == min) {
+					return new int[]{-1, 0};
+				}
+				if (dxMax == min) {
+					return new int[]{1, 0};
+				}
+			} else {
+				if (dzMin == min) {
+					return new int[]{0, -1};
+				}
+				if (dzMax == min) {
+					return new int[]{0, 1};
+				}
+			}
+		}
+		VpsPipeline.DOOR_NORMAL_AMBIGUOUS.incrementAndGet();
+		if (dxMin == min) {
+			return new int[]{-1, 0};
+		}
+		if (dxMax == min) {
+			return new int[]{1, 0};
+		}
+		if (dzMin == min) {
+			return new int[]{0, -1};
+		}
+		return new int[]{0, 1};
+	}
+
+	private static int[] nearestEntrance(int doorX, int doorZ, List<int[]> entrances) {
+		int[] best = null;
+		int bestDistance = Integer.MAX_VALUE;
+		for (int[] entrance : entrances) {
+			int distance = Math.max(Math.abs(entrance[0] - doorX), Math.abs(entrance[1] - doorZ));
+			if (distance < bestDistance) {
+				best = entrance;
+				bestDistance = distance;
+			}
+		}
+		return best;
+	}
+
+	/**
+	 * Door fronts for the railing exemption: one cell one step outside each main
+	 * door, from the same {@link DoorSigns.DoorTarget} the alignment and the sign
+	 * use. A component without real doors keeps the junction fallback.
+	 */
+	private static int[][] buildDoorFronts(List<BuildingComponents.Component> components,
+			List<StructurePiece> pieces, List<List<DoorSigns.DoorTarget>> targetsPerComponent, RoadNetwork net) {
+		List<int[]> out = new ArrayList<>();
+		for (int c = 0; c < components.size(); c++) {
+			List<DoorSigns.DoorTarget> targets = targetsPerComponent.get(c);
+			if (!targets.isEmpty()) {
+				for (DoorSigns.DoorTarget target : targets) {
+					if (target.road() == null) {
+						VpsPipeline.DOOR_FRONT_FALLBACK.incrementAndGet();
+					}
+					out.add(new int[]{target.doorX() + target.outX(), target.doorZ() + target.outZ(),
+							target.outX(), target.outZ()});
+				}
+				continue;
+			}
+			BuildingComponents.Component component = components.get(c);
+			int cx = (component.minX + component.maxX) / 2;
+			int cz = (component.minZ + component.maxZ) / 2;
+			for (int idx : component.pieceIndices) {
+				StructurePiece piece = pieces.get(idx);
+				if (!(piece instanceof PoolElementStructurePiece pool)) {
+					continue;
+				}
+				for (JigsawJunction junction : pool.getJunctions()) {
+					if (junction.getDestProjection() == StructureTemplatePool.Projection.RIGID) {
+						continue;
+					}
+					addJunctionFront(out, junction.getSourceX(), junction.getSourceZ(), cx, cz, net);
+				}
+			}
+		}
+		return out.toArray(new int[0][]);
+	}
+
+	/** One junction front, the pre-F-C fallback for farms/pens without real doors. */
+	private static void addJunctionFront(List<int[]> out, int ax, int az, int cx, int cz, RoadNetwork net) {
+		int[] outward = BuildingComponents.outwardAxis(ax, az, cx, cz);
+		int[] towardRoad = net != null ? DoorSigns.stepTowardRoad(net, ax, az) : null;
+		if (towardRoad != null && outward != null
+				&& (towardRoad[0] != outward[0] || towardRoad[1] != outward[1])) {
+			VpsPipeline.DOOR_FRONT_DIR_MISMATCH.incrementAndGet();
+		}
+		int[] axis = towardRoad != null ? towardRoad : outward;
+		if (axis == null) {
+			return;
+		}
+		out.add(new int[]{ax + axis[0], az + axis[1], axis[0], axis[1]});
+	}
+
+	/** Door target changes between the first and the final network (XZ or solvedP). */
+	private static int countDoorTargetChanges(List<List<DoorSigns.DoorTarget>> before,
+			List<List<DoorSigns.DoorTarget>> after) {
+		int changed = 0;
+		for (int c = 0; c < Math.min(before.size(), after.size()); c++) {
+			List<DoorSigns.DoorTarget> a = before.get(c);
+			List<DoorSigns.DoorTarget> b = after.get(c);
+			for (int i = 0; i < Math.min(a.size(), b.size()); i++) {
+				RoadCell ra = a.get(i).road();
+				RoadCell rb = b.get(i).road();
+				if (ra == null || rb == null) {
+					if (ra != rb) {
+						changed++;
+					}
+				} else if (ra.x != rb.x || ra.z != rb.z || ra.solvedP != rb.solvedP) {
+					changed++;
+				}
+			}
+		}
+		return changed;
+	}
+
 	/**
 	 * Debug door signs (user request 2026-10-16, always on): one standing sign
-	 * per template door of every movable component, documenting the door-to-road
-	 * alignment on foot - line 1 the door X/Z with the base walk level the
-	 * alignment used (baseY + dy + 1, the Y0 layer top), line 2 the
-	 * corresponding road cell X/Z with its solved walk surface. Pure data; the
+	 * per MAIN door - the template's real door nearest {@code building_entrance}
+	 * (door/basis fix plan 2026-10-17, D2). Line 1 is the door X/Z with the
+	 * component's {@code baseWalkY + dy}; line 2 the selected road cell and its
+	 * solved walk surface; line 3 the actual door floor after the shift; line 4
+	 * {@code NO FRONT} when no eligible outward cell existed. Pure data; the
 	 * writer places the blocks. Must run on the FINAL network so line 2 prints
-	 * the surface the writer will actually render. Doors without a road cell in
-	 * the alignment window get no sign; the skip is counted.
+	 * the surface the writer will actually render.
 	 */
-	static int[][] computeDoorSigns(List<BuildingComponents.Component> components, List<StructurePiece> pieces,
-			Map<Integer, int[][]> doorsByPiece, RoadNetwork net) {
-		List<int[][]> doorsPerComponent = new ArrayList<>(components.size());
+	static int[][] computeDoorSigns(List<BuildingComponents.Component> components,
+			List<List<DoorSigns.DoorTarget>> targetsPerComponent, RoadNetwork net) {
 		int[] baseWalkY = new int[components.size()];
 		for (int c = 0; c < components.size(); c++) {
 			BuildingComponents.Component component = components.get(c);
-			List<int[]> doors = new ArrayList<>();
-			for (int idx : component.pieceIndices) {
-				int[][] pieceDoors = doorsByPiece.get(idx);
-				if (pieceDoors == null) {
-					continue;
-				}
-				StructurePiece piece = pieces.get(idx);
-				var box = piece.getBoundingBox();
-				int cx = (box.minX() + box.maxX()) / 2;
-				int cz = (box.minZ() + box.maxZ()) / 2;
-				for (int[] door : pieceDoors) {
-					// R3-1/R4-1 (2026-10-16): the sign stands one step toward the
-					// nearest road cell (the same direction the railing exemption
-					// uses), falling back to the footprint-centre axis when the
-					// network holds no road cell; a door at both no-direction
-					// cases keeps the sign in its own column (visibility first)
-					int[] axis = DoorSigns.stepTowardRoad(net, door[0], door[1]);
-					if (axis == null) {
-						axis = BuildingComponents.outwardAxis(door[0], door[1], cx, cz);
-					}
-					int floorY = door.length > 2 ? door[2] + component.dy : component.baseY + component.dy;
-					if (axis != null) {
-						doors.add(new int[]{door[0], door[1], axis[0], axis[1], floorY});
-					} else {
-						doors.add(new int[]{door[0], door[1], 0, 0, floorY});
-					}
-				}
-			}
-			doorsPerComponent.add(doors.toArray(new int[0][]));
-			baseWalkY[c] = component.baseY + component.dy + BuildingShift.DOOR_WALK_OFFSET;
+			baseWalkY[c] = component.baseWalkY + component.dy;
 		}
-		int[][] signs = DoorSigns.compute(doorsPerComponent, baseWalkY, net);
+		int[][] signs = DoorSigns.compute(targetsPerComponent, baseWalkY, net);
 		int doorCount = 0;
-		for (int[][] doors : doorsPerComponent) {
-			doorCount += doors.length;
+		for (List<DoorSigns.DoorTarget> targets : targetsPerComponent) {
+			doorCount += targets.size();
 		}
 		VpsPipeline.DOOR_SIGNS_WITHOUT_ROAD.addAndGet(doorCount - signs.length);
 		return signs;
@@ -380,7 +666,7 @@ public final class T15Planner {
 			}
 			Arrays.sort(baseYs);
 			int baseY = baseYs[baseYs.length / 2];
-			component.baseY = baseY;
+			component.baseWalkY = baseY;
 			// the pin is a walk surface in half units (always even); the platform
 			// block layer that renders it sits at level / 2 - 1
 			int requested = level / 2 - 1 - baseY;
@@ -440,51 +726,57 @@ public final class T15Planner {
 	}
 
 	/**
-	 * Road heights the component should align to: the road cells nearest its
-	 * <b>door</b>, i.e. the front where it connects to the street network (user
-	 * decision 2026-10-14).
-	 *
-	 * <p>The old rule took the median of every road cell within the footprint
-	 * plus one ring, so a long house or a farm next to a plaza was pulled to a
-	 * road several blocks away and ended up off its own doorstep. Now:
-	 *
-	 * <ol>
-	 *   <li>the door is the component's <b>template door block</b> - the lower
-	 *       door halves read from the piece's template (F-C, 2026-10-15: the
-	 *       junction sits 2-7 blocks from the door on 53 of the 120 vanilla
-	 *       house templates, so anchoring on it left the door-side road
-	 *       unconstrained - the measured "road higher than the door" symptom);</li>
-	 *   <li>each door contributes exactly <b>one</b> road cell: the cell nearest
-	 *       the door by the <b>horizontal Manhattan distance</b>
-	 *       ({@code |dx| + |dz|}), searched inside the footprint plus
-	 *       {@link #DOOR_SEARCH_PAD}. The old rule took every cell at the minimum
-	 *       Chebyshev distance, which is what let a diagonal cell win and pulled
-	 *       the alignment off the orthogonal doorway (R4-1, user decision
-	 *       2026-10-16);</li>
-	 *   <li>the component's shift is then decided over the one height per door
-	 *       (multiple doors still resolve through the median/interval rule);</li>
-	 *   <li>with no template door (a component that only touches other
-	 *       buildings, or a farm/pen without door blocks) the connection
-	 *       junctions are the fallback, and with no junction at all the
-	 *       footprint centre's nearest road cell is used instead.</li>
-	 * </ol>
+	 * Road heights of a component's main-door targets. Only targets with an
+	 * eligible outward cell count; {@code null} means no front at all, and the
+	 * caller must not move the component for it (door/basis fix plan 2026-10-17,
+	 * D4).
 	 */
-	private static int[] adjacentRoadHeights(RoadNetwork network, BuildingComponents.Component component,
-			List<StructurePiece> pieces, Map<Integer, int[][]> doorsByPiece) {
+	private static int[] adjacentRoadHeights(List<DoorSigns.DoorTarget> targets) {
+		int count = 0;
+		for (DoorSigns.DoorTarget target : targets) {
+			if (target.road() != null) {
+				count++;
+			}
+		}
+		if (count == 0) {
+			return null;
+		}
+		int[] out = new int[count];
+		int n = 0;
+		for (DoorSigns.DoorTarget target : targets) {
+			if (target.road() != null) {
+				out[n++] = target.road().solvedP;
+			}
+		}
+		return out;
+	}
+
+	/** The windowed junction fallback for a component without real doors (farm/pen). */
+	private static int desiredShiftFromJunctions(RoadNetwork network, BuildingComponents.Component component,
+			List<StructurePiece> pieces, VillagePathSmoothedConfig config) {
 		int[] window = {
 				component.minX - DOOR_SEARCH_PAD, component.maxX + DOOR_SEARCH_PAD,
 				component.minZ - DOOR_SEARCH_PAD, component.maxZ + DOOR_SEARCH_PAD
 		};
-		int[][] doors = doorPoints(component, pieces, doorsByPiece);
 		List<Integer> values = new ArrayList<>();
-		if (doors != null) {
-			for (int[] door : doors) {
-				RoadCell road = DoorSigns.nearestRoadCell(network, door[0], door[1], window);
+		boolean hasJunction = false;
+		for (int idx : component.pieceIndices) {
+			StructurePiece piece = pieces.get(idx);
+			if (!(piece instanceof PoolElementStructurePiece pool)) {
+				continue;
+			}
+			for (JigsawJunction junction : pool.getJunctions()) {
+				if (junction.getDestProjection() == StructureTemplatePool.Projection.RIGID) {
+					continue;
+				}
+				hasJunction = true;
+				RoadCell road = DoorSigns.nearestRoadCell(network, junction.getSourceX(), junction.getSourceZ(), window);
 				if (road != null) {
 					values.add(road.solvedP);
 				}
 			}
-		} else {
+		}
+		if (!hasJunction) {
 			int cx = (component.minX + component.maxX) / 2;
 			int cz = (component.minZ + component.maxZ) / 2;
 			RoadCell road = DoorSigns.nearestRoadCell(network, cx, cz, window);
@@ -492,93 +784,66 @@ public final class T15Planner {
 				values.add(road.solvedP);
 			}
 		}
-		if (values.isEmpty()) {
-			return null;
-		}
-		int[] out = new int[values.size()];
-		for (int i = 0; i < out.length; i++) {
-			out[i] = values.get(i);
-		}
-		return out;
+		return decisionFromHeights(values, component, config);
 	}
 
-	/** How far past the footprint a door's road cell may sit and still count. */
+	/** How far past the footprint a junction's fallback road cell may sit and still count. */
 	private static final int DOOR_SEARCH_PAD = 4;
 
-	/**
-	 * Door positions {x, z, floorY} of one component: the template's lower door
-	 * halves (F-C), or - when the component carries none - its non-RIGID
-	 * connection junctions (the pre-F-C rule, kept as the fallback for farms,
-	 * pens and unloadable templates).
-	 */
-	private static int[][] doorPoints(BuildingComponents.Component component, List<StructurePiece> pieces,
-			Map<Integer, int[][]> doorsByPiece) {
-		List<int[]> doors = new ArrayList<>();
-		for (int idx : component.pieceIndices) {
-			int[][] pieceDoors = doorsByPiece.get(idx);
-			if (pieceDoors != null) {
-				for (int[] door : pieceDoors) {
-					doors.add(door);
-				}
-			}
+	/** The authoritative shift from the selected main-door road cells. */
+	private static int desiredShiftFromTargets(List<DoorSigns.DoorTarget> targets,
+			BuildingComponents.Component component, VillagePathSmoothedConfig config) {
+		int[] adjacent = adjacentRoadHeights(targets);
+		if (adjacent == null) {
+			return BuildingShift.DO_NOT_MOVE;
 		}
-		if (!doors.isEmpty()) {
-			return doors.toArray(new int[0][]);
+		BuildingShift.ShiftDecision decision = BuildingShift.desiredShift(adjacent, component.baseWalkY);
+		return applyDecision(decision, config);
+	}
+
+	private static int decisionFromHeights(List<Integer> values, BuildingComponents.Component component,
+			VillagePathSmoothedConfig config) {
+		if (values.isEmpty()) {
+			return BuildingShift.DO_NOT_MOVE;
 		}
-		for (int idx : component.pieceIndices) {
-			StructurePiece piece = pieces.get(idx);
-			if (!(piece instanceof PoolElementStructurePiece pool)) {
-				continue;
-			}
-			for (JigsawJunction junction : pool.getJunctions()) {
-				if (junction.getDestProjection() != StructureTemplatePool.Projection.RIGID) {
-					doors.add(new int[]{junction.getSourceX(), junction.getSourceZ()});
-				}
-			}
+		int[] adjacent = new int[values.size()];
+		for (int i = 0; i < adjacent.length; i++) {
+			adjacent[i] = values.get(i);
 		}
-		return doors.isEmpty() ? null : doors.toArray(new int[0][]);
+		return applyDecision(BuildingShift.desiredShift(adjacent, component.baseWalkY), config);
 	}
 
 	/**
-	 * Vertical shift so the component's Y0 layer top (the interior floor) meets
-	 * the solid levels of the adjacent road cells, delegated to the pure
-	 * {@link BuildingShift} helper (review 3 T5, plan D interval rework and
-	 * plan E slab-as-air targets, 2026-10-15) with the diagnostic counters kept
-	 * here. The optional median two-wing limit ({@code
-	 * buildingShiftMedianWingBlocks}, 0 = off) clamps the chosen shift around
-	 * the legacy median scheme's shift.
+	 * Vertical shift so the component's base walk level meets the solid levels of
+	 * the selected road cells, delegated to the pure {@link BuildingShift}
+	 * helper with the diagnostic counters kept here. The optional median
+	 * two-wing limit ({@code buildingShiftMedianWingBlocks}, 0 = off) clamps the
+	 * chosen shift around the legacy median scheme's shift.
 	 */
-	private static int desiredShift(RoadNetwork network, BuildingComponents.Component component, List<StructurePiece> pieces,
-			Map<Integer, int[][]> doorsByPiece, VillagePathSmoothedConfig config) {
-		int[] adjacent = adjacentRoadHeights(network, component, pieces, doorsByPiece);
-		BuildingShift.ShiftDecision decision = BuildingShift.desiredShift(adjacent, component.baseY);
-		switch (decision.reason()) {
-			case NO_ROAD:
-				VpsPipeline.BUILDINGS_NO_ROAD_ACCESS.incrementAndGet();
-				return BuildingShift.DO_NOT_MOVE;
-			default: {
-				int shift = decision.shift();
-				int wing = config.roadSmoothing.buildingShiftMedianWingBlocks;
-				if (wing > 0) {
-					shift = Math.max(decision.medianShift() - wing, Math.min(decision.medianShift() + wing, shift));
-				}
-				if (decision.doorParityOdd()) {
-					// B3-4: the MEDIAN FALLBACK aligned the door to a slab level. Since
-					// plan E (slab-as-air targets, 2026-10-15) every target is a whole
-					// block, so this can no longer fire; the counter is kept so a
-					// regression to raw-slab targets stays visible.
-					VpsPipeline.DOOR_PARITY_FALLBACK.incrementAndGet();
-				}
-				if (!decision.viaInterval()) {
-					// R2-C (2026-10-16): the door road cells span more than the
-					// half-block tolerance can bridge, so the shift came from the
-					// median fallback. Measured only; the minimax switch waits for
-					// the real-machine frequency.
-					VpsPipeline.ALIGN_INTERVAL_FALLBACK.incrementAndGet();
-				}
-				return shift;
-			}
+	private static int applyDecision(BuildingShift.ShiftDecision decision, VillagePathSmoothedConfig config) {
+		if (decision.reason() == BuildingShift.Reason.NO_ROAD) {
+			return BuildingShift.DO_NOT_MOVE;
 		}
+		int shift = decision.shift();
+		int wing = config.roadSmoothing.buildingShiftMedianWingBlocks;
+		if (wing > 0) {
+			shift = Math.max(decision.medianShift() - wing, Math.min(decision.medianShift() + wing, shift));
+		}
+		if (decision.doorParityOdd()) {
+			// B3-4: the MEDIAN FALLBACK aligned the door to a slab level. Since
+			// plan E (slab-as-air targets, 2026-10-15) every target is a whole
+			// block, so this can no longer fire; the counter is kept so a
+			// regression to raw-slab targets stays visible.
+			VpsPipeline.DOOR_PARITY_FALLBACK.incrementAndGet();
+		}
+		if (!decision.viaInterval()) {
+			// R2-C (2026-10-16): the door road cells span more than the
+			// half-block tolerance can bridge, so the shift came from the
+			// median fallback. Measured only; the minimax switch waits for
+			// the real-machine frequency.
+			VpsPipeline.ALIGN_INTERVAL_FALLBACK.incrementAndGet();
+		}
+		return shift;
 	}
 
 	private static int clampWorldHeight(List<StructurePiece> pieces, BuildingComponents.Component component, int dy, int minY, int maxY) {
@@ -665,19 +930,25 @@ public final class T15Planner {
 			}
 		}
 		for (BuildingComponents.Component component : components) {
-			if (component.dy == 0) {
+			// second alignment (D5, 2026-10-17): propagate only the ADDITIONAL
+			// move; the first pass already synced its own dy
+			int delta = component.dy - component.syncedDy;
+			if (delta == 0) {
 				continue;
 			}
 			for (int idx : component.pieceIndices) {
 				StructurePiece piece = pieces.get(idx);
 				if (piece instanceof PoolElementStructurePiece pool) {
 					for (JigsawJunction junction : pool.getJunctions()) {
-						dyByIdentity.put(junction, component.dy);
+						dyByIdentity.put(junction, delta);
 					}
 				}
 			}
 		}
 		if (dyByIdentity.isEmpty()) {
+			for (BuildingComponents.Component component : components) {
+				component.syncedDy = component.dy;
+			}
 			return;
 		}
 		// pair the counterpart junctions of pieces that did not move
@@ -721,6 +992,9 @@ public final class T15Planner {
 			for (JigsawJunction junction : rebuilt) {
 				pool.addJunction(junction);
 			}
+		}
+		for (BuildingComponents.Component component : components) {
+			component.syncedDy = component.dy;
 		}
 	}
 
@@ -815,11 +1089,11 @@ public final class T15Planner {
 	 * Components without template doors (farms, pens) contribute nothing.
 	 */
 	private static void countDoorAnchorOffsets(List<StructurePiece> pieces, List<BuildingComponents.Component> components,
-			Map<Integer, int[][]> doorsByPiece) {
+			BuildingComponents.TemplateScan scan) {
 		for (BuildingComponents.Component component : components) {
 			List<int[]> doors = new ArrayList<>();
 			for (int idx : component.pieceIndices) {
-				int[][] pieceDoors = doorsByPiece.get(idx);
+				int[][] pieceDoors = scan.doors.get(idx);
 				if (pieceDoors != null) {
 					for (int[] door : pieceDoors) {
 						doors.add(door);

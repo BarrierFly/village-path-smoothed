@@ -28,7 +28,6 @@ import net.minecraft.world.level.levelgen.structure.pools.SinglePoolElement;
 import net.minecraft.world.level.levelgen.structure.templatesystem.StructureTemplateManager;
 
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -133,6 +132,33 @@ public final class VpsPipeline {
 	// under the old upper-median rule. The fix excludes 1x1 pieces from the
 	// median; a non-zero count is how many components that actually moved.
 	public static final AtomicLong BASEY_DECOR_UPPER = new AtomicLong();
+	// Door/basis fix plan 2026-10-17 (user decisions D1-D5). The base is now
+	// the MAIN building piece's minY + groundLevelDelta; this counts components
+	// whose other non-1x1 pieces disagree with it (a merged/anomalous RIGID
+	// component), measured instead of silently averaged.
+	public static final AtomicLong BASE_PLANE_MISMATCH = new AtomicLong();
+	/** Lower double-block halves rejected because they are not in {@code #minecraft:doors} (tall grass, large fern). */
+	public static final AtomicLong NON_DOOR_LOWER_HALF_SKIPPED = new AtomicLong();
+	/** Templates without a {@code building_entrance} jigsaw: every real door is treated as a main door. */
+	public static final AtomicLong MAIN_DOOR_NO_ENTRANCE = new AtomicLong();
+	/** Main doors selected (a double door counts two). */
+	public static final AtomicLong MAIN_DOOR_SELECTED = new AtomicLong();
+	/** Corner tie of the door wall normal that could not be resolved by the entrance front/axis. */
+	public static final AtomicLong DOOR_NORMAL_AMBIGUOUS = new AtomicLong();
+	/** Seat columns rejected as a door target (D3: a building never aligns to a decor seat). */
+	public static final AtomicLong SEAT_TARGET_EXCLUDED = new AtomicLong();
+	/** Cells rejected because they lie in a protected footprint or in the writer's 3D building box. */
+	public static final AtomicLong DOOR_TARGET_INSIDE_BUILDING = new AtomicLong();
+	/** Cells rejected because they are on the door column or behind the door wall. */
+	public static final AtomicLong DOOR_TARGET_BEHIND = new AtomicLong();
+	/** Main doors with no eligible outward road cell (the building is not moved for them, D4). */
+	public static final AtomicLong NO_FRONT_ROAD = new AtomicLong();
+	/** Railing exemptions that fell back to the door wall normal because no road target existed. */
+	public static final AtomicLong DOOR_FRONT_FALLBACK = new AtomicLong();
+	/** Components the second authoritative alignment moved after the final re-solve (D5). */
+	public static final AtomicLong SECOND_ALIGN_MOVED = new AtomicLong();
+	/** Main-door target cells whose XZ or solved surface changed between the first and the final network. */
+	public static final AtomicLong DOOR_TARGET_CHANGED_BY_RESOLVE = new AtomicLong();
 	// R2-C (2026-10-16): a SERVED component whose door road cells span more than
 	// the half-block tolerance can bridge, so the shift came from the median
 	// fallback instead of the legal interval. Measurement for the minimax
@@ -526,11 +552,19 @@ public final class VpsPipeline {
 		solution.solved = true;
 		// T5 never moves buildings, so the boxes are already final here
 		solution.buildingBoxes = BuildingComponents.protectedBoxes(start.getPieces());
-		Map<Integer, int[][]> t5DoorsByPiece = BuildingComponents.templateDoors(start.getPieces(),
+		BuildingComponents.TemplateScan t5Scan = BuildingComponents.scanTemplates(start.getPieces(),
 				templateManagerOf(start.getPieces()));
-		solution.doorFronts = BuildingComponents.doorFronts(start.getPieces(), t5DoorsByPiece, network);
-		solution.doorSigns = T15Planner.computeDoorSigns(BuildingComponents.group(start.getPieces()),
-				start.getPieces(), t5DoorsByPiece, network);
+		List<BuildingComponents.Component> t5Components = BuildingComponents.group(start.getPieces());
+		// Door/basis fix plan 2026-10-17: the T5 path uses the same main doors,
+		// the same filtered door target and the same sign format as T1.5; no
+		// building moves here, so the current boxes are the eligibility boxes.
+		int[][] t5Boxes = BuildingComponents.protectedBoxes(start.getPieces());
+		List<List<DoorSigns.DoorTarget>> t5Targets = new java.util.ArrayList<>(t5Components.size());
+		for (BuildingComponents.Component component : t5Components) {
+			t5Targets.add(T15Planner.doorTargetsFor(component, start.getPieces(), t5Scan, network, t5Boxes, true));
+		}
+		solution.doorFronts = T15Planner.doorFrontsFor(t5Components, start.getPieces(), t5Targets, network);
+		solution.doorSigns = T15Planner.computeDoorSigns(t5Components, t5Targets, network);
 		solution.seamSigns = T15Planner.computeSeamSigns(network, config);
 
 		long nanos = System.nanoTime() - begin;

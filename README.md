@@ -58,14 +58,21 @@ water use scaffolding, and dangerous edges get leaf railings.
    the terrain the seam-band extension toward the region keeps a legal ramp
    reachable.
 3. **Buildings follow the road / 建筑随路** — before the village's bounding box
-   is frozen, each movable rigid component (buildings, plus the decor pool's hay
-   piles) is shifted vertically so its base meets the median road walk surface at
-   its **door** — the road cells nearest the component's street connection, not
-   every cell in its footprint. The shift is applied to the whole rigid component
-   at once and its jigsaw junctions are synced, so bearding stays around the
-   building; the shift is a pure function of the seed. After the buildings move,
-   the road is re-solved once against the moved footprints. Floating/buried
-   components are only counted (`/vps stats`), never repaired (`buildingGuard`).
+   is frozen, each movable rigid component is shifted vertically so its
+   **vanilla base walk level** (`main piece minY + groundLevelDelta`) meets the
+   road at its **main door** — the real door nearest the template's
+   `building_entrance` jigsaw. Only blocks in `#minecraft:doors` count as doors
+   (tall grass/ferns no longer do), and a double door keeps both leaves. The
+   selected road cell is outside every protected building footprint, is not a
+   decor seat, and lies on the outward side of the door wall; if there is no
+   such cell the component is not moved (`NO FRONT` on its debug sign). The
+   shift is applied to the whole rigid component at once and its jigsaw
+   junctions are synced, so bearding stays around the building; the shift is a
+   pure function of the seed. After the buildings move, the road is re-solved
+   once against the moved footprints, then a second authoritative alignment
+   aligns the components to that final network and the road is frozen.
+   Floating/buried components are only counted (`/vps stats`), never repaired
+   (`buildingGuard`).
 4. **Kerbs and leaf railings / 路肩包边与树叶护栏** — each side column is probed
    **from the road block's own height**, in the direction that decides the
    detail:
@@ -199,11 +206,12 @@ vanilla street processor randomly punches grass holes into the road), probes the
 decomposes the mask into thin **arms** (exact slice DP) and wide **regions**
 (platform init + row/column iterative minimisation), solves a height profile
 where adjacent cells differ by at most half a block, shifts every movable rigid
-component (buildings, plus the decor pool's hay piles) onto the solved profile at
-its door (syncing jigsaw junctions, clamping to the world height and guarding
-against overlaps with **other buildings** - streets and terminators are not
-obstacles), and then re-solves the road once more so the height probe compensates
-the buildings' new footprints. The solution is cached on the structure start.
+component onto the solved profile at its main door (syncing jigsaw junctions,
+clamping to the world height and guarding against overlaps with **other
+buildings** - streets and terminators are not obstacles), and then re-solves the
+road once more so the height probe compensates the buildings' new footprints.
+The second authoritative alignment then runs against that final network and the
+road is frozen. The solution is cached on the structure start.
 
 At feature placement the current chunk's road cells are rewritten with slabs,
 fills, cuts, kerbs, railings and scaffolding, and a diagnostic guard counts
@@ -338,8 +346,12 @@ Two things are worth spelling out:
   各的边缘，同侧列可同时出现矮路的包边和高路的护栏）；过水段脚手架（`distance` 有
   支撑 0 / 无支撑 1，`waterlogged=true`；过水锚点为软约束，偏离水面会被计数）。
   广场（town_centers）进路网并钉定为水平（T1.5 把广场件整体移到解出的高度，写入端
-  由原版刚性平台自己呈现，井沿/喷泉原样）；房屋对齐到门内地面（`baseY+1`），位移取
-  门邻路格的合法区间内离 0 最近者；解算结果按（维度+结构+锚点区块）跨实例共享。
+  由原版刚性平台自己呈现，井沿/喷泉原样）；房屋对齐到原版基面
+  （`主体件 minY + groundLevelDelta`）与**主门**（离 `building_entrance` 最近的真实门，
+  双开门并列；高草/大蕨/侧门/后门/上层门不再参与），门口路格只取房屋外、门墙外侧、
+  非座格且写入端不会跳过者；没有合格外侧路时房屋不动，门牌第四行写 `NO FRONT`。
+  重解后再做一次权威对齐并冻结道路。位移取门邻路格的合法区间内离 0 最近者；解算结果
+  按（维度+结构+锚点区块）跨实例共享。
   路面由本 mod **写入**而非覆盖：认领列上的原版街道路块在放置链里被丢弃，未认领列
   保留原版路，因此不会再出现上下两层路。写入端只渲染不解题（R3）：超预算格保留
   解算高度并计数，不再吸附回真实地表。

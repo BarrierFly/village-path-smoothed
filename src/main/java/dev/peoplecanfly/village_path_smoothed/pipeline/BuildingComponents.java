@@ -10,7 +10,11 @@ import dev.peoplecanfly.village_path_smoothed.duck.FeaturePoolElementVpsAccess;
 import dev.peoplecanfly.village_path_smoothed.duck.SinglePoolElementVpsAccess;
 import dev.peoplecanfly.village_path_smoothed.duck.StructureTemplateVpsAccess;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.core.Holder;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.tags.BlockTags;
+import net.minecraft.world.level.block.JigsawBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.level.block.state.properties.DoubleBlockHalf;
@@ -47,10 +51,20 @@ public final class BuildingComponents {
 		public int maxX = Integer.MIN_VALUE;
 		public int minZ = Integer.MAX_VALUE;
 		public int maxZ = Integer.MIN_VALUE;
-		/** Median of the component pieces' bounding-box minY; the base the road profile aligns to. */
-		public int baseY;
-		/** Chosen vertical shift (whole blocks). */
+		/**
+		 * Vanilla base walk level of the MAIN building piece:
+		 * {@code bbox.minY + getGroundLevelDelta()} (door/basis fix plan
+		 * 2026-10-17, D1). This is exactly the level vanilla's terrain
+		 * adaptation aligns the piece to; the old "median minY + 1"
+		 * approximation is gone.
+		 */
+		public int baseWalkY;
+		/** Index (into the piece list) of the main building piece, or -1 for an all-1x1 component. */
+		public int basePieceIndex = -1;
+		/** Cumulative vertical shift (whole blocks) from the vanilla position. */
 		public int dy;
+		/** Part of {@link #dy} already propagated to the jigsaw junctions. */
+		public int syncedDy;
 	}
 
 	private BuildingComponents() {
@@ -144,21 +158,36 @@ public final class BuildingComponents {
 		return out.toArray(new int[0][]);
 	}
 
-	private static final int[][] NO_DOORS = new int[0][];
+	private static final int[][] NONE = new int[0][];
 
 	/**
-	 * Lower door halves {x, z} per movable piece index, read from the piece's
-	 * template (F-C, door two-symptom recheck 2026-10-15): the jigsaw connection
-	 * sits 2-7 blocks from the real door on 53 of the 120 vanilla house
-	 * templates, so the junction is not a door anchor. The template cell is
-	 * rotated with the piece the same way RoadCollector rotates road cells
-	 * (pivot ZERO, no mirror - exactly {@code SinglePoolElement#getSettings});
-	 * only the XZ position is needed. Pieces without a template, without doors
-	 * or with a failing load map to an empty array - callers fall back to the
-	 * junctions (farms and pens carry no doors either).
+	 * The template scan of every movable piece (door/basis fix plan 2026-10-17,
+	 * section 3.2): the REAL lower door halves and the {@code building_entrance}
+	 * jigsaw positions plus their outward front directions (already rotated by
+	 * the piece's rotation).
+	 *
+	 * <p>The old scan accepted every lower double-block half, so tall grass and
+	 * large ferns were treated as doors. Only blocks in {@link BlockTags#DOORS}
+	 * count now; the skipped lower halves are counted
+	 * ({@code NON_DOOR_LOWER_HALF_SKIPPED}).
 	 */
-	public static Map<Integer, int[][]> templateDoors(List<StructurePiece> pieces, StructureTemplateManager templateManager) {
-		Map<Integer, int[][]> out = new HashMap<>();
+	public static final class TemplateScan {
+		/** Piece index -> {x, z, floorY} real lower door halves. */
+		public final Map<Integer, int[][]> doors = new HashMap<>();
+		/** Piece index -> {x, z, frontDX, frontDZ} {@code building_entrance} jigsaws. */
+		public final Map<Integer, int[][]> entrances = new HashMap<>();
+	}
+
+	/**
+	 * Reads the real doors and {@code building_entrance} jigsaws of every
+	 * movable piece. The template cell is rotated with the piece the same way
+	 * RoadCollector rotates road cells (pivot ZERO, no mirror - exactly
+	 * {@code SinglePoolElement#getSettings}). Pieces without a template, without
+	 * doors or with a failing load map to empty arrays - callers fall back to
+	 * the junctions (farms and pens carry no doors either).
+	 */
+	public static TemplateScan scanTemplates(List<StructurePiece> pieces, StructureTemplateManager templateManager) {
+		TemplateScan out = new TemplateScan();
 		if (templateManager == null) {
 			return out;
 		}
@@ -170,19 +199,20 @@ public final class BuildingComponents {
 			}
 			String location = ((SinglePoolElementVpsAccess) element).village_path_smoothed$getTemplateLocation();
 			if (location == null) {
-				out.put(i, NO_DOORS); // runtime pool element without a location
+				out.doors.put(i, NONE); // runtime pool element without a location
 				continue;
 			}
 			try {
 				StructureTemplate template = VpsCompat.loadTemplate(templateManager, location);
 				List<StructureTemplate.Palette> palettes = ((StructureTemplateVpsAccess) template).village_path_smoothed$getPalettes();
 				if (palettes == null || palettes.isEmpty()) {
-					out.put(i, NO_DOORS);
+					out.doors.put(i, NONE);
 					continue;
 				}
 				StructurePlaceSettings settings = new StructurePlaceSettings().setRotation(pool.getRotation());
 				StructureTemplate.Palette palette = settings.getRandomPalette(palettes, pool.getPosition());
 				List<int[]> doors = new ArrayList<>();
+				List<int[]> entrances = new ArrayList<>();
 				for (StructureTemplate.StructureBlockInfo info : palette.blocks()) {
 					//#if MC >= 12001
 					//$$ BlockState state = info.state();
@@ -191,93 +221,60 @@ public final class BuildingComponents {
 					BlockState state = info.state;
 					BlockPos infoPos = info.pos;
 					//#endif
-					if (!state.hasProperty(BlockStateProperties.DOUBLE_BLOCK_HALF)
-							|| state.getValue(BlockStateProperties.DOUBLE_BLOCK_HALF) != DoubleBlockHalf.LOWER) {
-						continue; // upper half or not a door at all
+					boolean lowerHalf = state.hasProperty(BlockStateProperties.DOUBLE_BLOCK_HALF)
+							&& state.getValue(BlockStateProperties.DOUBLE_BLOCK_HALF) == DoubleBlockHalf.LOWER;
+					if (lowerHalf && !state.is(BlockTags.DOORS)) {
+						// tall grass / large fern and other double plants
+						VpsPipeline.NON_DOOR_LOWER_HALF_SKIPPED.incrementAndGet();
+						continue;
+					}
+					if (lowerHalf) {
+						BlockPos worldPos = StructureTemplate.calculateRelativePosition(settings, infoPos).offset(pool.getPosition());
+						// {x, z, floorY}: the lower door half's world Y is the actual
+						// door floor (R4-2, 2026-10-16) - the sign prints it after the
+						// component shift so assumption and reality can be compared
+						doors.add(new int[]{worldPos.getX(), worldPos.getZ(), worldPos.getY()});
+						continue;
+					}
+					if (!state.is(net.minecraft.world.level.block.Blocks.JIGSAW)) {
+						continue;
+					}
+					String name = jigsawName(info);
+					if (!"minecraft:building_entrance".equals(name)) {
+						continue;
 					}
 					BlockPos worldPos = StructureTemplate.calculateRelativePosition(settings, infoPos).offset(pool.getPosition());
-					// {x, z, floorY}: the lower door half's world Y is the actual
-					// door floor (R4-2, 2026-10-16) - the sign prints it after the
-					// component shift so assumption and reality can be compared
-					doors.add(new int[]{worldPos.getX(), worldPos.getZ(), worldPos.getY()});
+					Direction front = pool.getRotation().rotate(JigsawBlock.getFrontFacing(state));
+					entrances.add(new int[]{worldPos.getX(), worldPos.getZ(), front.getStepX(), front.getStepZ()});
 				}
-				out.put(i, doors.toArray(new int[0][]));
+				out.doors.put(i, doors.toArray(new int[0][]));
+				if (!entrances.isEmpty()) {
+					out.entrances.put(i, entrances.toArray(new int[0][]));
+				}
 			} catch (Throwable t) {
 				// an unloadable template must cost the door anchors, not the village
-				out.put(i, NO_DOORS);
+				out.doors.put(i, NONE);
 			}
 		}
 		return out;
 	}
 
-	/**
-	 * Door-front cells {frontX, frontZ, outwardDX, outwardDZ} of every movable
-	 * piece. Since F-C (door two-symptom recheck 2026-10-15) the anchor is the
-	 * piece's template door block: one front cell per lower door half, one step
-	 * outside the wall along the dominant axis from the footprint centre to the
-	 * door. Template door facings are deliberately NOT used - measured on the
-	 * 120 vanilla house templates, only 30% of the unambiguous door leaves face
-	 * outward, 56% face inward.
-	 *
-	 * <p>A piece without template doors (a farm or a pen, or a template that
-	 * failed to load) falls back to its non-RIGID junctions - each connection to
-	 * a street/terminator/centre piece rather than to another building - with
-	 * the same footprint-centre axis rule. Every door of the template gets a
-	 * front, including the ones facing RIGID attachments or plazas (R7 fix).
-	 *
-	 * <p>R3-1 (user decision 2026-10-16): the front direction is now the step
-	 * from the door toward the nearest road cell (the road network is the only
-	 * ground truth for "the way out"); the old footprint-main-axis direction is
-	 * the fallback when the network holds no road cell. The writer suppresses the
-	 * railing on the door front (within one block) so a doorway can never be
-	 * fenced in (user decision 2026-10-15; the 3x3 box shape is kept per the R8
-	 * decision of 2026-10-15).
-	 */
-	public static int[][] doorFronts(List<StructurePiece> pieces, Map<Integer, int[][]> doorsByPiece, RoadNetwork net) {
-		List<int[]> out = new ArrayList<>();
-		for (int i = 0; i < pieces.size(); i++) {
-			StructurePiece piece = pieces.get(i);
-			if (!isMovable(piece) || !(piece instanceof PoolElementStructurePiece pool)) {
-				continue;
-			}
-			BoundingBox box = piece.getBoundingBox();
-			int cx = (box.minX() + box.maxX()) / 2;
-			int cz = (box.minZ() + box.maxZ()) / 2;
-			int[][] pieceDoors = doorsByPiece != null ? doorsByPiece.get(i) : null;
-			if (pieceDoors != null && pieceDoors.length > 0) {
-				for (int[] door : pieceDoors) {
-					addDoorFront(out, door[0], door[1], cx, cz, net);
-				}
-			} else {
-				for (JigsawJunction junction : pool.getJunctions()) {
-					if (junction.getDestProjection() == StructureTemplatePool.Projection.RIGID) {
-						continue; // attaches to another building, not a door
-					}
-					addDoorFront(out, junction.getSourceX(), junction.getSourceZ(), cx, cz, net);
-				}
-			}
+	/** The jigsaw's {@code name} NBT, version-correct ({@code Optional<String>} from 1.21.10). */
+	private static String jigsawName(StructureTemplate.StructureBlockInfo info) {
+		CompoundTag nbt;
+		//#if MC >= 12001
+		//$$ nbt = info.nbt();
+		//#else
+		nbt = info.nbt;
+		//#endif
+		if (nbt == null) {
+			return null;
 		}
-		return out.toArray(new int[0][]);
-	}
-
-	/**
-	 * One front cell one step outside the wall along the door-to-road direction
-	 * (R3-1), falling back to the footprint-centre axis when the network holds no
-	 * road cell. Every disagreement between the two is counted
-	 * ({@code DOOR_FRONT_DIR_MISMATCH}).
-	 */
-	private static void addDoorFront(List<int[]> out, int ax, int az, int cx, int cz, RoadNetwork net) {
-		int[] outward = outwardAxis(ax, az, cx, cz);
-		int[] towardRoad = net != null ? DoorSigns.stepTowardRoad(net, ax, az) : null;
-		if (towardRoad != null && outward != null
-				&& (towardRoad[0] != outward[0] || towardRoad[1] != outward[1])) {
-			VpsPipeline.DOOR_FRONT_DIR_MISMATCH.incrementAndGet();
-		}
-		int[] axis = towardRoad != null ? towardRoad : outward;
-		if (axis == null) {
-			return; // anchor at the footprint centre and no road cell: no direction
-		}
-		out.add(new int[]{ax + axis[0], az + axis[1], axis[0], axis[1]});
+		//#if MC >= 12110
+		//$$ return nbt.getString("name").orElse(null);
+		//#else
+		return nbt.getString("name");
+		//#endif
 	}
 
 	/**
@@ -341,27 +338,75 @@ public final class BuildingComponents {
 		}
 		for (Component component : byRoot.values()) {
 			int size = component.pieceIndices.size();
-			int[] baseYs = new int[size];
-			boolean[] oneByOne = new boolean[size];
+			// Door/basis fix plan 2026-10-17 D1: the base is the MAIN building
+			// piece - the largest footprint (then the larger Y span, then the
+			// lower packedXZ) - and its vanilla walk level
+			// minY + groundLevelDelta. That is exactly what JigsawPlacement and
+			// Beardifier call the ground level; the old median minY + 1 was only
+			// an approximation and a 1x1 decor could still skew it.
+			int bestPiece = -1;
+			long bestArea = -1;
+			int bestYSpan = -1;
+			long bestPacked = Long.MAX_VALUE;
+			int[] walkLevels = new int[size];
+			boolean[] nonDecor = new boolean[size];
 			for (int k = 0; k < size; k++) {
-				BoundingBox box = pieces.get(component.pieceIndices.get(k)).getBoundingBox();
-				baseYs[k] = box.minY();
-				oneByOne[k] = box.minX() == box.maxX() && box.minZ() == box.maxZ();
+				int pieceIndex = component.pieceIndices.get(k);
+				StructurePiece piece = pieces.get(pieceIndex);
+				BoundingBox box = piece.getBoundingBox();
+				walkLevels[k] = box.minY() + groundLevelDelta(piece);
+				boolean oneByOne = box.minX() == box.maxX() && box.minZ() == box.maxZ();
+				nonDecor[k] = !oneByOne;
+				if (oneByOne) {
+					continue;
+				}
+				long area = (long) (box.maxX() - box.minX() + 1) * (box.maxZ() - box.minZ() + 1);
+				int ySpan = box.maxY() - box.minY() + 1;
+				long packed = RoadCell.packedXZ(box.minX(), box.minZ());
+				if (bestPiece < 0 || area > bestArea
+						|| (area == bestArea && ySpan > bestYSpan)
+						|| (area == bestArea && ySpan == bestYSpan && packed < bestPacked)) {
+					bestPiece = pieceIndex;
+					bestArea = area;
+					bestYSpan = ySpan;
+					bestPacked = packed;
+				}
 			}
-			int[] sorted = Arrays.copyOf(baseYs, size);
-			Arrays.sort(sorted);
-			int naive = sorted[size / 2];
-			// R2-A (2026-10-16): a 1x1 decor piece (a light/decoration on the
-			// house's up jigsaw) must not decide the component's baseY. The old
-			// upper-median of every piece took the decor's minY (one or two
-			// blocks above the house) for a 2-piece component and shifted the
-			// whole house one or two blocks too low.
-			component.baseY = BuildingShift.componentBaseY(baseYs, oneByOne);
-			if (component.baseY != naive) {
-				VpsPipeline.BASEY_DECOR_UPPER.incrementAndGet();
+			if (bestPiece >= 0) {
+				component.basePieceIndex = bestPiece;
+				component.baseWalkY = pieces.get(bestPiece).getBoundingBox().minY() + groundLevelDelta(pieces.get(bestPiece));
+				boolean mismatch = false;
+				for (int k = 0; k < size; k++) {
+					if (nonDecor[k] && walkLevels[k] != component.baseWalkY) {
+						mismatch = true;
+						break;
+					}
+				}
+				if (mismatch) {
+					VpsPipeline.BASE_PLANE_MISMATCH.incrementAndGet();
+					long seen = VpsPipeline.BASE_PLANE_MISMATCH.get();
+					if (seen % 100 == 1) {
+						dev.peoplecanfly.village_path_smoothed.VillagePathSmoothed.LOGGER.warn(
+								"[VPS] building component pieces disagree on minY + groundLevelDelta; using the main piece {} (walk Y {})",
+								bestPiece, component.baseWalkY);
+					}
+				}
+			} else {
+				// all-1x1 component (vanilla has no such building): median fallback
+				int[] sorted = Arrays.copyOf(walkLevels, size);
+				Arrays.sort(sorted);
+				component.baseWalkY = sorted[size / 2];
 			}
 		}
 		return new ArrayList<>(byRoot.values());
+	}
+
+	/** The piece's vanilla ground-level delta, or 1 for a non-pool piece. */
+	private static int groundLevelDelta(StructurePiece piece) {
+		if (piece instanceof PoolElementStructurePiece pool) {
+			return pool.getGroundLevelDelta();
+		}
+		return 1;
 	}
 
 	private static boolean isRigid(StructurePiece piece) {

@@ -8,7 +8,6 @@ package dev.peoplecanfly.village_path_smoothed;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertSame;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -16,135 +15,121 @@ import java.util.List;
 import org.junit.Test;
 
 import dev.peoplecanfly.village_path_smoothed.pipeline.DoorSigns;
+import dev.peoplecanfly.village_path_smoothed.pipeline.DoorSigns.DoorTarget;
+import dev.peoplecanfly.village_path_smoothed.pipeline.DoorSigns.Selection;
 import dev.peoplecanfly.village_path_smoothed.pipeline.RoadCell;
 import dev.peoplecanfly.village_path_smoothed.pipeline.RoadNetwork;
 
 /**
- * The debug door signs' pure selection rule (user request 2026-10-16, reworked
- * by the R4-1 decision 2026-10-16): the corresponding road cell is the one
- * nearest the door by horizontal MANHATTAN distance ({@code |dx| + |dz|}) in the
- * WHOLE network - the same cell the building alignment and the railing exemption
- * use - with the lowest x/z breaking a tie, and line 3 carries the actual door
- * floor Y.
+ * Door/basis fix plan 2026-10-17: the main-door selection and the filtered
+ * door-road target are pure rules, pinned here.
  */
 public class DoorSignsTest {
 
-	@Test
-	public void eachDoorGetsItsManhattanNearestRoadCell() {
-		// door at (1,1): (1,0) is one Manhattan step away, (0,0) and (2,0) are two
-		// (a Chebyshev tie under the old rule). Manhattan picks the orthogonal
-		// cell, the very fix R4-1 asks for.
-		List<RoadCell> cells = new ArrayList<>();
-		cells.add(new RoadCell(0, 0, "plains", 130, false));
-		cells.add(new RoadCell(1, 0, "plains", 132, false));
-		cells.add(new RoadCell(2, 0, "plains", 130, false));
-		RoadNetwork net = RoadNetwork.build(cells, 4);
-		List<int[][]> doorsPerComponent = new ArrayList<>();
-		doorsPerComponent.add(new int[][]{{1, 1, 0, -1, 64}});
-		int[] baseWalkY = {65};
-
-		int[][] signs = DoorSigns.compute(doorsPerComponent, baseWalkY, net);
-
-		assertEquals("one sign for the one door", 1, signs.length);
-		// {doorX, doorWalkY, doorZ, outDX, outDZ, roadX, roadSolvedP, roadZ, floorY}
-		assertArrayEquals(new int[]{1, 65, 1, 0, -1, 1, 132, 0, 64}, signs[0]);
+	private static RoadNetwork net(List<RoadCell> cells) {
+		return RoadNetwork.build(new ArrayList<>(cells), 4);
 	}
 
 	@Test
-	public void theCoordinateTieBreakPicksTheLowestXZ() {
-		// door at (5,5): both (4,5) and (6,5) are one Manhattan step away, so the
-		// lower x wins; among equal x the lower z
-		List<RoadCell> cells = new ArrayList<>();
-		cells.add(new RoadCell(4, 5, "plains", 130, false));
-		cells.add(new RoadCell(4, 4, "plains", 130, false));
-		cells.add(new RoadCell(6, 5, "plains", 130, false));
-		RoadNetwork net = RoadNetwork.build(cells, 4);
-		List<int[][]> doorsPerComponent = new ArrayList<>();
-		doorsPerComponent.add(new int[][]{{5, 5, 0, -1, 70}});
-		int[] baseWalkY = {70};
+	public void aSingleRealDoorIsTheMainDoor() {
+		int[][] doors = {{1, 1, 64}};
+		int[][] entrances = {{0, 0}};
+		assertArrayEquals(new int[]{0}, DoorSigns.mainDoorIndices(doors, entrances));
+	}
 
-		int[][] signs = DoorSigns.compute(doorsPerComponent, baseWalkY, net);
+	@Test
+	public void aDoubleDoorKeepsBothLeavesWhenTheyAreEquallyClose() {
+		// both leaves are Chebyshev 1 from the entrance: a double door stays a pair
+		int[][] doors = {{1, 1, 64}, {1, 2, 64}};
+		int[][] entrances = {{0, 1}};
+		assertArrayEquals(new int[]{0, 1}, DoorSigns.mainDoorIndices(doors, entrances));
+	}
 
+	@Test
+	public void sideAndUpperDoorsAreExcludedWhenFartherFromTheEntrance() {
+		// main door at (1,1), side door at (7,1), upper door at (5,5)
+		int[][] doors = {{1, 1, 64}, {7, 1, 64}, {5, 5, 69}};
+		int[][] entrances = {{0, 1}};
+		assertArrayEquals(new int[]{0}, DoorSigns.mainDoorIndices(doors, entrances));
+	}
+
+	@Test
+	public void noEntranceFallsBackToEveryRealDoor() {
+		int[][] doors = {{1, 1, 64}, {7, 1, 64}};
+		assertArrayEquals(new int[]{0, 1}, DoorSigns.mainDoorIndices(doors, new int[0][]));
+		assertArrayEquals(doors, DoorSigns.mainDoors(doors, new int[0][]));
+	}
+
+	@Test
+	public void theSelectorPicksTheNearestCellOnTheOutwardSide() {
+		// door at (1,1), outward +x: (2,1) is one step out; (0,1) is behind
+		RoadNetwork network = net(List.of(
+				new RoadCell(0, 1, "plains", 130, false),
+				new RoadCell(2, 1, "plains", 132, false),
+				new RoadCell(5, 1, "plains", 130, false)));
+		Selection selection = DoorSigns.selectDoorRoadCell(network, 1, 1, 1, 0, null);
+		assertEquals(2, selection.cell().x);
+		assertEquals(1, selection.cell().z);
+		assertEquals("(0,1) is behind the wall plus (3,0)... only (0,1)", 1, selection.behindExcluded());
+	}
+
+	@Test
+	public void theDoorColumnBeatsAnOffAxisCellAtTheSameDistance() {
+		// door at (0,0), outward +x: (1,0) is on the door column, (1,1) is a
+		// diagonal at the same Manhattan distance - the on-axis cell wins
+		RoadNetwork network = net(List.of(
+				new RoadCell(1, 1, "plains", 130, false),
+				new RoadCell(1, 0, "plains", 130, false)));
+		Selection selection = DoorSigns.selectDoorRoadCell(network, 0, 0, 1, 0, null);
+		assertEquals(1, selection.cell().x);
+		assertEquals(0, selection.cell().z);
+	}
+
+	@Test
+	public void aCellInsideTheBuildingOrOnASeatIsExcludedByThePredicate() {
+		RoadNetwork network = net(List.of(
+				new RoadCell(2, 0, "plains", 130, false),
+				new RoadCell(1, 0, "plains", 130, false)));
+		// the seat/inside column (1,0) is skipped, only (2,0) remains
+		Selection selection = DoorSigns.selectDoorRoadCell(network, 0, 0, 1, 0,
+				index -> network.cells.get(index).x != 1);
+		assertEquals(2, selection.cell().x);
+	}
+
+	@Test
+	public void noOutwardCellMeansNull() {
+		RoadNetwork network = net(List.of(
+				new RoadCell(0, 0, "plains", 130, false),
+				new RoadCell(-1, 0, "plains", 130, false)));
+		Selection selection = DoorSigns.selectDoorRoadCell(network, 0, 0, 1, 0, null);
+		assertNull(selection.cell());
+		assertEquals(2, selection.behindExcluded());
+	}
+
+	@Test
+	public void aNoFrontDoorStillGetsASignNamingTheNearestWholeNetworkCell() {
+		RoadNetwork network = net(List.of(
+				new RoadCell(-1, 0, "plains", 128, false),
+				new RoadCell(-2, 0, "plains", 130, false)));
+		// door has no selected target (road null) but the network is not empty
+		DoorTarget target = new DoorTarget(0, 0, 64, 1, 0, 1, 0, null);
+		List<List<DoorTarget>> targets = new ArrayList<>();
+		targets.add(List.of(target));
+		int[][] signs = DoorSigns.compute(targets, new int[]{65}, network);
 		assertEquals(1, signs.length);
-		assertEquals("lowest x wins the tie", 4, signs[0][5]);
-		assertEquals("then the lowest z", 5, signs[0][7]);
+		// {doorX, doorWalkY, doorZ, outDX, outDZ, roadX, roadP, roadZ, floorY, noFront}
+		assertArrayEquals(new int[]{0, 65, 0, 1, 0, -1, 128, 0, 64, 1}, signs[0]);
 	}
 
-	/**
-	 * R4-1: the Manhattan rule keeps the orthogonal doorway cell when a diagonal
-	 * cell is one Chebyshev step away but two Manhattan steps away.
-	 */
 	@Test
-	public void theOrthogonalCellBeatsTheDiagonalOne() {
-		List<RoadCell> cells = new ArrayList<>();
-		cells.add(new RoadCell(1, 1, "plains", 130, false));
-		cells.add(new RoadCell(1, 0, "plains", 130, false));
-		RoadNetwork net = RoadNetwork.build(cells, 4);
-		List<int[][]> doorsPerComponent = new ArrayList<>();
-		doorsPerComponent.add(new int[][]{{0, 0, 1, 0, 60}});
-		int[] baseWalkY = {65};
-
-		int[][] signs = DoorSigns.compute(doorsPerComponent, baseWalkY, net);
-
+	public void aServedDoorSignsItsSelectedTargetWithNoFrontClear() {
+		RoadCell road = new RoadCell(1, 0, "plains", 132, false);
+		RoadNetwork network = net(List.of(road));
+		DoorTarget target = new DoorTarget(0, 0, 64, 1, 0, 1, 0, road);
+		List<List<DoorTarget>> targets = new ArrayList<>();
+		targets.add(List.of(target));
+		int[][] signs = DoorSigns.compute(targets, new int[]{65}, network);
 		assertEquals(1, signs.length);
-		assertEquals("the orthogonal (1,0) wins", 1, signs[0][5]);
-		assertEquals(0, signs[0][7]);
-	}
-
-	/**
-	 * Visibility beats fidelity (user decision 2026-10-16): the road cell is
-	 * searched in the WHOLE network - a door far from any street still gets its
-	 * sign naming the nearest road cell, however many blocks past the old
-	 * footprint+4 alignment window it sits.
-	 */
-	@Test
-	public void theNearestRoadCellIsChosenEvenBeyondTheOldAlignmentWindow() {
-		List<RoadCell> cells = new ArrayList<>();
-		cells.add(new RoadCell(30, 0, "plains", 130, false));
-		cells.add(new RoadCell(31, 0, "plains", 130, false));
-		RoadNetwork net = RoadNetwork.build(cells, 4);
-		List<int[][]> doorsPerComponent = new ArrayList<>();
-		doorsPerComponent.add(new int[][]{{0, 0, 1, 0, 65}});
-		int[] baseWalkY = {65};
-
-		int[][] signs = DoorSigns.compute(doorsPerComponent, baseWalkY, net);
-
-		assertEquals("no window any more: the far cell is named", 1, signs.length);
-		assertEquals(30, signs[0][5]);
-	}
-
-	@Test
-	public void doorsOfAVillageWithoutAnyRoadCellGetNoSign() {
-		List<int[][]> doorsPerComponent = new ArrayList<>();
-		doorsPerComponent.add(new int[][]{{0, 0, 1, 0, 65}, {0, 3, 1, 0, 65}});
-		int[] baseWalkY = {65};
-
-		int[][] signs = DoorSigns.compute(doorsPerComponent, baseWalkY, RoadNetwork.build(new ArrayList<>(), 4));
-
-		assertEquals("no road cell anywhere: no sign", 0, signs.length);
-	}
-
-	/**
-	 * The alignment's windowed search (R4-1) shares the Manhattan metric and the
-	 * tie-break with the sign's whole-network search; outside the window the
-	 * door's cell must be ignored.
-	 */
-	@Test
-	public void theWindowedSearchIgnoresCellsOutsideTheWindow() {
-		List<RoadCell> cells = new ArrayList<>();
-		cells.add(new RoadCell(10, 0, "plains", 130, false));
-		cells.add(new RoadCell(0, 0, "plains", 130, false));
-		RoadNetwork net = RoadNetwork.build(cells, 4);
-
-		// window around (0,0): only the (0,0) cell counts, even though (10,0)
-		// exists in the network
-		RoadCell windowed = DoorSigns.nearestRoadCell(net, 1, 0, new int[]{-2, 2, -2, 2});
-		assertEquals(0, windowed.x);
-
-		// the whole network sees (0,0) as nearest to (1,0) too (distance 1 vs 9)
-		assertSame(windowed, DoorSigns.nearestRoadCell(net, 1, 0));
-
-		// no cell in the window -> null (the alignment must then not move)
-		assertNull(DoorSigns.nearestRoadCell(net, 1, 0, new int[]{20, 30, 20, 30}));
+		assertArrayEquals(new int[]{0, 65, 0, 1, 0, 1, 132, 0, 64, 0}, signs[0]);
 	}
 }

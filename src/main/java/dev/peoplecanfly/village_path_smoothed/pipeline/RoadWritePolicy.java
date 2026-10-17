@@ -133,6 +133,49 @@ public final class RoadWritePolicy {
 	}
 
 	/**
+	 * Plan 2026-10-17 (door/basis fix, section 3.3): true when the road block of
+	 * a column would land inside one of the protected building boxes
+	 * {minX, maxX, minY, maxY, minZ, maxZ}. This is the SAME test the writer
+	 * uses to make a building win its column (plan A); it was extracted here so
+	 * the door road-cell selector cannot drift from the writer.
+	 *
+	 * <p>The Y test keeps a road that passes well below a building's basement
+	 * (or well above it) from being skipped: the box is expanded by one block on
+	 * each side, matching the writer's historical behaviour.
+	 */
+	public static boolean insideBuilding(int[][] buildingBoxes, int x, int z, int solvedP) {
+		if (buildingBoxes == null) {
+			return false;
+		}
+		int blockY = roadTopBlockY(solvedP);
+		for (int[] box : buildingBoxes) {
+			if (x >= box[0] && x <= box[1] && z >= box[4] && z <= box[5]
+					&& blockY >= box[2] - 1 && blockY <= box[3] + 1) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Plan 2026-10-17 (door/basis fix, section 3.3): true when the column lies
+	 * inside a protected piece's 2D footprint. A vanilla side street routed
+	 * through a house is still in the road network but the writer skips it
+	 * (plan A); it must never be chosen as a door front.
+	 */
+	public static boolean insideFootprint(int[][] buildingBoxes, int x, int z) {
+		if (buildingBoxes == null) {
+			return false;
+		}
+		for (int[] box : buildingBoxes) {
+			if (x >= box[0] && x <= box[1] && z >= box[4] && z <= box[5]) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
 	 * The single-cell surface nudge (fix plan v4 D6-b, rule from AGENTS.md
 	 * 2026-10-14): when a cell cannot carry its solved height - out of the
 	 * dimension bounds, or its profile write threw - it may be written at the

@@ -211,24 +211,23 @@ Rules:
   a block (`RAILINGS_SKIPPED_AT_WATER` counts the suppressed ones). Detection
   scans the side column at the road block's Y and one below.
 - **No railing on a movable building's door front (user decision 2026-10-15;
-  re-anchored on the template's real doors, F-C/R7, 2026-10-15).**
-  `BuildingComponents#doorFronts` derives one front cell per lower door half
-  read from the piece's template (`BuildingComponents#templateDoors`). **R3-1
-  (user decision 2026-10-16): the front direction is the step from the door
-  toward the NEAREST ROAD CELL** (whole network, horizontal Manhattan distance,
-  dominant axis with x breaking the tie - `DoorSigns#stepTowardRoad`), because
-  the road network is the only ground truth for "the way out"; the old
-  footprint-centre-to-door axis is kept only as the fallback when the network
-  holds no road cell, and every disagreement between the two is counted
-  (`DOOR_FRONT_DIR_MISMATCH`). Template facings are deliberately not used (only
-  30% of vanilla door leaves face outward). A piece
-  without template doors (farm/pen, unloaded template) falls back to its
-  non-RIGID junctions. EVERY template door gets a front, including doors facing
-  RIGID attachments or plazas (the R7 fix). The writer skips railings on that
-  cell (within one block; the 3x3 box shape is kept per the R8 decision of
-  2026-10-15) so a doorway can never be fenced in
-  (`RAILINGS_SKIPPED_AT_DOOR`); `railing.skipAtBuildingDoors` gates it.
-  `door anchor offsets 0/1/2/3/4+` in /vps stats is the junction-to-door
+  re-anchored on the template's real doors, F-C/R7, 2026-10-15; narrowed to
+  the MAIN door by the door/basis fix plan 2026-10-17, D2).**
+  `BuildingComponents#scanTemplates` reads only blocks in
+  `#minecraft:doors` as doors (tall grass and large ferns were being treated as
+  doors; the skipped lower halves are counted
+  `NON_DOOR_LOWER_HALF_SKIPPED`). The main door is the real door nearest the
+  template's `building_entrance` jigsaw by horizontal Chebyshev distance, with
+  a double door keeping both equally-close leaves
+  (`DoorSigns#mainDoorIndices`). The front is one step from that door toward the
+  selected road target (`DoorSigns#selectDoorRoadCell`: outside every protected
+  footprint, not a seat, outside the door wall); without a target the front is
+  the door wall's outward normal and `DOOR_FRONT_FALLBACK` is counted. A piece
+  without real doors (farm/pen, unloaded template) keeps the non-RIGID junction
+  fallback. The writer skips railings within one block of that front (the 3x3
+  box shape is kept per the R8 decision of 2026-10-15) so a doorway can never be
+  fenced in (`RAILINGS_SKIPPED_AT_DOOR`); `railing.skipAtBuildingDoors` gates
+  it. `door anchor offsets 0/1/2/3/4+` in /vps stats is the junction-to-door
   distance distribution (F-D) that documents why the junction is not a door.
 - **Street decor seats ride the solved profile (原版多向道路结构调查 2026-10-15,
   reworked by user decision 2026-10-16, clarified by the user the same day).**
@@ -276,25 +275,27 @@ Rules:
   free residual. "Try harder to keep the old residual" is not an acceptable fix:
   move the movable interval instead; plan B (even-level plaza flattening) stays
   rejected as a default.
-- **Debug door signs are always on (user request 2026-10-16).** Every movable
-  building's template door front gets one standing oak sign: line 1 the door X/Z
-  with the base walk level the alignment used (baseY + dy + 1, the Y0 layer top),
-  line 2 the corresponding road cell's X/Z and its solved walk surface (x.0/x.5,
-  numbers only, locale-free integer formatting), and **line 3 the actual door
-  floor Y** of the template's lower door half after the shift (R4-2, user
-  decision 2026-10-16), so the assumed reference and the real floor can be
-  compared. The corresponding road cell is the cell nearest the door by the
-  **horizontal Manhattan distance** in the WHOLE network, ties keeping the lower
-  x/z (`DoorSigns`, pure). **R4-1 (user decision 2026-10-16): this is the SAME
-  cell the building alignment and the railing exemption use** - the alignment
-  additionally restricts the search to the footprint plus `DOOR_SEARCH_PAD` so a
-  component with no road nearby still stays put (a `no-road` component's sign may
-  name a farther cell; every door still gets a sign). Signs are placed after the
-  road cells of their own chunk. Debug visibility beats fidelity (user decision
-  2026-10-16): the sign replaces whatever occupies the target cell and may float,
-  so EVERY door gets its sign; `door signs placed / no road` in `/vps stats`
-  documents the skips. No config gate; the water-seat base rules are deliberately
-  untouched by it.
+- **Debug door signs are always on (user request 2026-10-16; main-door narrowing
+  and NO FRONT by the door/basis fix plan 2026-10-17, D2/D4).** Every movable
+  building's **main door** gets one standing oak sign: line 1 the door X/Z with
+  `baseWalkY + dy` (the main piece's `bbox.minY + getGroundLevelDelta`), line 2
+  the selected road cell's X/Z and its solved walk surface (x.0/x.5, numbers
+  only, locale-free integer formatting), **line 3 the actual door floor Y** of
+  the template's lower door half after the shift, and line 4 `NO FRONT` when the
+  door had no eligible outward cell. The selected cell is the SAME `DoorTarget`
+  the alignment and the railing exemption use
+  (`DoorSigns#selectDoorRoadCell`): nearest by horizontal Manhattan distance,
+  on the outward side of the door wall, excluding seats, 2D protected
+  footprints and the writer's 3D `insideBuilding` columns. Cells inside a
+  building are therefore never the sign's road cell even when vanilla routed a
+  side street through the house. A NO FRONT door still gets a sign: line 2 names
+  the unfiltered nearest whole-network cell and line 4 says `NO FRONT`; the
+  building is not moved for it (user decision 2026-10-17). Signs are placed
+  after the road cells of their own chunk. Debug visibility beats fidelity (user
+  decision 2026-10-16): the sign replaces whatever occupies the target cell and
+  may float, so EVERY main door gets its sign; `door signs placed / no road` in
+  `/vps stats` now means main doors without an eligible front. No config gate;
+  the water-seat base rules are deliberately untouched by it.
 - **Debug seam signs are always on (user request 2026-10-16).** `SeamSigns`
   (pure) walks every 4-adjacency edge of the solved mask and emits one sign per
   "seam cell": an edge whose two cells come from different sources - two
@@ -370,29 +371,30 @@ Rules:
     fights the vanilla terrain adaptation that raises the ground under it. A
     `town_centers` piece is **not** a movable building any more (plan C): the
     plaza group has its own shift;
-  - the alignment target is the road cells at the component's **door** - the
-    lower door halves read from the piece's TEMPLATE (`F-C`, 2026-10-15: the
-    jigsaw connection sits 2-7 blocks from the real door on 53 of the 120
-    vanilla house templates, so anchoring on the junction left the door-side
-    road unconstrained - the measured "road higher than the door"). Junctions
-    (`destProjection` not RIGID) are only the fallback for pieces without
-    template doors (`T15Planner#adjacentRoadHeights`). Do not go back to "every
-    road cell within the footprint plus one ring": that pulled a long house or
-    a farm to a road several blocks away;
-  - the alignment reference is the **top of the structure's Y0 layer**
-    (`baseY + 1`, plan D 2026-10-15, re-derived as plan E 2026-10-15) - the y=0
-    template layer is the foundation, and vanilla houses are designed with their
-    bottom layer facing the road, NOT the door: a template whose door sits
-    higher (doorY > 1, e.g. the stilt fisher cottage) keeps its door above the
-    road on purpose. Aligning `baseY` itself left every door one whole block
-    above its road (the measured +1.5 door offsets);
-  - **R2-A (user decision 2026-10-16): `baseY` is the median of the component
-    pieces' bounding-box minY with the 1x1 pieces EXCLUDED** (`BuildingShift#componentBaseY`;
-    all-1x1 components fall back to the whole set). A light or decoration hung on
-    the house's up jigsaw is a 1x1 RIGID piece one or two blocks above the house;
-    with the old upper-median of every piece a "house + decor" 2-piece component
-    took the decor's minY as its base and the whole house aligned one or two
-    blocks too low. `BASEY_DECOR_UPPER` counts the components the exclusion moved;
+  - the alignment target is the road cell selected at the component's **main
+    door** - the real lower door half nearest the template's
+    `building_entrance` jigsaw (door/basis fix plan 2026-10-17, D2; the old
+    template scan treated tall grass/large ferns as doors, and every side/back/
+    upper door entered the median). A double door keeps both leaves. The
+    selected cell is the nearest eligible cell on the door wall's outward side
+    (`DoorSigns#selectDoorRoadCell`); it excludes seats, protected 2D
+    footprints and the writer's 3D `insideBuilding` columns, so a hidden
+    vanilla side street through a house can no longer win. Junctions
+    (`destProjection` not RIGID) are only the fallback for pieces without real
+    doors (`T15Planner#desiredShiftFromJunctions`). No outward cell means
+    `NO_FRONT_ROAD` and the building is not moved for that door (D4);
+  - the alignment reference is **`baseWalkY = mainPiece.bbox.minY +
+    getGroundLevelDelta()`** (door/basis fix plan 2026-10-17, D1). That is the
+    exact level `JigsawPlacement` and `Beardifier` align a RIGID piece to; the
+    old "median minY + 1" was only an approximation. The main piece is the
+    largest footprint among the component's non-1x1 pieces (ties: larger Y
+    span, then lower packedXZ); `BASE_PLANE_MISMATCH` counts components whose
+    other non-1x1 pieces disagree. `BuildingShift#desiredShift` takes the base
+    walk level directly and adds no `DOOR_WALK_OFFSET` any more;
+  - **R2-A (user decision 2026-10-16) is superseded by D1**: the 1x1 decor
+    exclusion stays meaningful, but the production base no longer comes from a
+    median at all. `BuildingShift#componentBaseY` is kept for the historical
+    unit test only; `BASEY_DECOR_UPPER` stays as a legacy observation counter;
   - every door road cell presents its **SOLID level** (`BuildingShift#solidTargetP`,
     plan E 2026-10-15): a full block its own top, a bottom slab counts as AIR
     and presents the level below - the house's Y0 layer sits flush with a
@@ -414,6 +416,20 @@ Rules:
   - `BuildingShift` has **no `SPAN_TOO_WIDE` refusal** any more. It left the
     building at the vanilla terrain height beside a smoothed road, which is the
     symptom it was supposed to avoid.
+- **The second authoritative alignment runs after the final re-solve and then
+  the road is frozen (door/basis fix plan 2026-10-17, D5).** The first pass still
+  runs and still triggers the post-shift re-solve (it lets the beard boxes
+  follow the moved pieces and keeps the plaza triggers). Afterwards
+  `settleSeats` runs on the FINAL network, then every component is aligned
+  again against that network with the main-door targets; the move applied is
+  `desiredTotal - component.dy`, so it is only the ADDITIONAL shift.
+  `Component#syncedDy` makes `syncJunctions` propagate exactly that additional
+  amount; syncing the total again would double-move the junctions. No
+  `RoadCollector#collect` / `RoadSmoother#solve` may run after this pass:
+  `shiftedComponents` / `buildingBoxes` / door signs all read the final pieces
+  and the final network. `SECOND_ALIGN_MOVED` counts the components the second
+  pass actually added, and `DOOR_TARGET_CHANGED_BY_RESOLVE` counts main doors
+  whose selected cell XZ or solved surface changed between the two networks.
 - **The single-cell surface nudge is allowed, and it is guarded (AGENTS.md rule,
   fix plan v4 D6-b).** A cell whose profile write threw, or whose solved height
   left the world bounds, may be written at the real surface - but only if no

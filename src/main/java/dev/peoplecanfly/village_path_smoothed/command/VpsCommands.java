@@ -256,7 +256,7 @@ public final class VpsCommands {
 						+ "  defects    : writer overrides %d, nudged to the surface %d, refused %d (out of world %d), surface fallbacks %d, over-budget %d, edge drops > 1 block %d (worst %d half units)%n"
 						+ "  solve      : contradictions %d, step violations %d (worst %d), seam re-solves refused %d, polish moved %d (max delta %d half units, p90 %d, midpoint conflicts %d), water anchor deviations %d, villages without arms %d, solution cache hits %d%n"
 						+ "  suppression: vanilla road blocks dropped %d (passed through %d)%n"
-						+ "  buildings  : T1.5 applied %d (no-server %d), components %d, shifted %d, no-road %d, overlap guards %d, floating %d, buried %d, re-solved after shift %d (%d cells changed), road cells yielded %d, door anchor offsets 0/1/2/3/4+ %d/%d/%d/%d/%d, door signs placed %d (no road %d), seam signs %d computed / %d placed (step violations %d, no-BE %d), baseY decor %d, align fallback %d, door dir mismatch %d%n"
+						+ "  buildings  : T1.5 applied %d (no-server %d), components %d, shifted %d, no-road %d, overlap guards %d, second align moved %d, floating %d, buried %d, re-solved after shift %d (T15 resolve delta cells %d, door targets changed %d), road cells yielded %d, main doors %d (no entrance %d, non-door lower halves skipped %d, normal ambiguous %d), door targets excluded seat/inside/behind %d/%d/%d, no front %d, front fallback %d, door anchor offsets 0/1/2/3/4+ %d/%d/%d/%d/%d, door signs placed %d (no road %d), seam signs %d computed / %d placed (step violations %d, no-BE %d), base plane mismatch %d, baseY decor %d, align fallback %d, door dir mismatch %d%n"
 						+ "  centres    : town-centre plaza cells %d (non-road cells skipped %d), vanilla-rendered %d, groups %d (shifted %d, pieces %d), plaza guards %d, decor seats %d (written %d, decor pieces moved %d, probe dropped %d, write fallback %d, edge clamped %d)%n"
 						+ "  model gap  : written surface vs real terrain: mean %s half units, worst %d, over threshold %d, cut below terrain %d, fill above %d%n"
 						+ "  misc       : floor-garbage probes %d, probe boundary switches %d, probe mismatch columns %d, y0 non-solid skipped %d, villager freeze: %s (brain ticks skipped: %d)",
@@ -307,22 +307,34 @@ public final class VpsCommands {
 				VpsPipeline.BUILDINGS_SHIFTED.get(),
 				VpsPipeline.BUILDINGS_NO_ROAD_ACCESS.get(),
 				VpsPipeline.OVERLAP_GUARDS.get(),
+				VpsPipeline.SECOND_ALIGN_MOVED.get(),
 				VpsPipeline.BUILDING_FLOATING.get(),
 				VpsPipeline.BUILDING_BURIED.get(),
 				T15Planner.T15_RESOLVED_AFTER_SHIFT.get(),
 				T15Planner.T15_RESOLVE_DELTA_CELLS.get(),
+				VpsPipeline.DOOR_TARGET_CHANGED_BY_RESOLVE.get(),
 				RoadWriter.BUILDING_CELLS_SKIPPED.get(),
+				VpsPipeline.MAIN_DOOR_SELECTED.get(),
+				VpsPipeline.MAIN_DOOR_NO_ENTRANCE.get(),
+				VpsPipeline.NON_DOOR_LOWER_HALF_SKIPPED.get(),
+				VpsPipeline.DOOR_NORMAL_AMBIGUOUS.get(),
+				VpsPipeline.SEAT_TARGET_EXCLUDED.get(),
+				VpsPipeline.DOOR_TARGET_INSIDE_BUILDING.get(),
+				VpsPipeline.DOOR_TARGET_BEHIND.get(),
+				VpsPipeline.NO_FRONT_ROAD.get(),
+				VpsPipeline.DOOR_FRONT_FALLBACK.get(),
 				VpsPipeline.DOOR_ANCHOR_OFFSET_0.get(),
 				VpsPipeline.DOOR_ANCHOR_OFFSET_1.get(),
 				VpsPipeline.DOOR_ANCHOR_OFFSET_2.get(),
 				VpsPipeline.DOOR_ANCHOR_OFFSET_3.get(),
 				VpsPipeline.DOOR_ANCHOR_OFFSET_4_PLUS.get(),
 				VpsPipeline.DOOR_SIGNS_PLACED.get(),
-				VpsPipeline.DOOR_SIGNS_WITHOUT_ROAD.get(),
+				VpsPipeline.NO_FRONT_ROAD.get(),
 				VpsPipeline.SEAM_SIGNS_COMPUTED.get(),
 				VpsPipeline.SEAM_SIGNS_PLACED.get(),
 				VpsPipeline.SEAM_STEP_VIOLATIONS.get(),
 				VpsPipeline.SEAM_SIGNS_NO_BE.get(),
+				VpsPipeline.BASE_PLANE_MISMATCH.get(),
 				VpsPipeline.BASEY_DECOR_UPPER.get(),
 				VpsPipeline.ALIGN_INTERVAL_FALLBACK.get(),
 				VpsPipeline.DOOR_FRONT_DIR_MISMATCH.get(),

@@ -381,7 +381,8 @@ public final class RoadWriter {
 		// skipped entirely - no road block, no support fill, no upward clear - so
 		// smoothing can never overwrite a building body. Counted so the yield is
 		// visible in /vps stats.
-		if (config.roadSmoothing.protectBuildings && !cell.seat && insideBuilding(buildingBoxes, x, z, cell.solvedP)) {
+		if (config.roadSmoothing.protectBuildings && !cell.seat
+				&& RoadWritePolicy.insideBuilding(buildingBoxes, x, z, cell.solvedP)) {
 			BUILDING_CELLS_SKIPPED.incrementAndGet();
 			return;
 		}
@@ -833,26 +834,6 @@ public final class RoadWriter {
 	}
 
 	/**
-	 * Plan A (user decision 2026-10-15): true when the cell's road block would
-	 * land inside a movable building's 3D box {minX,maxX,minY,maxY,minZ,maxZ}.
-	 * The Y test keeps a road that passes well below a building's basement (or
-	 * well above it) from being skipped.
-	 */
-	private static boolean insideBuilding(int[][] buildingBoxes, int x, int z, int solvedP) {
-		if (buildingBoxes == null) {
-			return false;
-		}
-		int blockY = RoadWritePolicy.roadTopBlockY(solvedP);
-		for (int[] box : buildingBoxes) {
-			if (x >= box[0] && x <= box[1] && z >= box[4] && z <= box[5]
-					&& blockY >= box[2] - 1 && blockY <= box[3] + 1) {
-				return true;
-			}
-		}
-		return false;
-	}
-
-	/**
 	 * Replaces dirt-tag blocks on the side column from one above the road block
 	 * up to the column's height-spectrum top, skipping air gaps (user decision
 	 * 2026-10-15; Q07 replaceable set unchanged). The block level with the road
@@ -954,11 +935,13 @@ public final class RoadWriter {
 
 	/**
 	 * Debug door signs (user request 2026-10-16, always on): one standing oak
-	 * sign at every movable building's template door front, documenting the
-	 * door-to-road alignment on foot. Line 1: the door X/Z with the base walk
-	 * level the alignment used (the component's Y0 layer top); line 2: the
-	 * corresponding road cell's X/Z and its solved walk surface (x.0 / x.5,
-	 * locale-free integer formatting). Numbers only, space separated. Signs are
+	 * sign at every movable building's MAIN door front, documenting the
+	 * door-to-road alignment on foot (door/basis fix plan 2026-10-17). Line 1:
+	 * the door X/Z with {@code baseWalkY + dy} (the main piece's
+	 * {@code minY + groundLevelDelta}); line 2: the selected road cell's X/Z
+	 * and its solved walk surface (x.0 / x.5, locale-free integer formatting);
+	 * line 3 the actual door floor; line 4 {@code NO FRONT} when no eligible
+	 * outward cell existed. Numbers only, space separated. Signs are
 	 * placed after every road cell of this chunk, and a sign whose column
 	 * belongs to another chunk is placed when that chunk generates - the same
 	 * incremental rule the road cells follow. Debug visibility beats fidelity
@@ -1007,11 +990,14 @@ public final class RoadWriter {
 				// Y of the template's lower door half after the shift, so the
 				// assumed reference on line 1 and the real floor can be compared
 				String doorFloorY = sign.length > 8 ? Integer.toString(sign[8]) : "?";
+				// D4 (user decision 2026-10-17): no eligible outward cell means
+				// the building was not aligned to this sign's line 2; say so.
+				String noFront = sign.length > 9 && sign[9] != 0 ? "NO FRONT" : "";
 				setSignLines(signBlock,
 						sign[0] + " " + sign[1] + " " + sign[2],
 						sign[5] + " " + walkY(sign[6]) + " " + sign[7],
 						doorFloorY,
-						"");
+						noFront);
 				VpsPipeline.DOOR_SIGNS_PLACED.incrementAndGet();
 			}
 		}

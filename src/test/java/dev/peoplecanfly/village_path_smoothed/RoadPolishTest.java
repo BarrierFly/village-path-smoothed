@@ -157,17 +157,17 @@ public class RoadPolishTest {
 	}
 
 	/**
-	 * G1 + G2 (four-item confirmation section 6.3, 2026-10-16): a seat clamped
-	 * into a one-odd-value-wide interval keeps its even value one half unit
-	 * above the clamp and counts the conflict so the sweep engages. The sweep
-	 * cannot repair the seat<->pin edge (both ends immovable), so the residual
-	 * must stay VISIBLE: the final verification counts edges against pinned
-	 * cells since G2 - the old code skipped every edge of a pinned cell, so
-	 * this residual only showed up when the pin happened to sort after the
-	 * seat (packedXZ order here puts the pin first, which used to hide it).
+	 * G1 + G2 (four-item confirmation section 6.3, 2026-10-16; refined by the
+	 * 2026-10-17 seam-sign findings): a seat clamped into a one-odd-value-wide
+	 * interval has NO even value that fits. It must still render an even walk
+	 * surface and must take the even side CLOSEST to the adjacent road, not the
+	 * old unconditional "even above". Here the free neighbour (130) and the low
+	 * pin (130) are the nearer road, so the seat lands on 130 instead of 132.
+	 * The sweep cannot repair the seat<->pin edge (both ends immovable for that
+	 * edge), so the residual stays VISIBLE and counted.
 	 */
 	@Test
-	public void aSeatSqueezedByTwoPinsKeepsItsEvenValueAndTheResidualStaysVisible() {
+	public void aSeatSqueezedByTwoPinsTakesTheNearerEvenValueAndKeepsTheResidualVisible() {
 		// pins 130 and 132 differ by exactly one whole block: the seat between
 		// them has the single clamp value 131, odd, so no even value fits. F(1,-1)
 		// sits at the component's box centre, so IT is the BFS seed - the seat is
@@ -187,11 +187,11 @@ public class RoadPolishTest {
 		RoadNetwork net = RoadNetwork.build(new ArrayList<>(List.of(p1, free, seat, p2)), 4);
 		RoadSmoother.SolveStats stats = RoadSmoother.solve(net, params());
 		assertEquals("the width-0 even snap counts its conflict", 1, stats.polishConflicts());
-		assertEquals("the seat keeps the even walk surface above the clamp", 132, seat.solvedP);
-		// the sweep repairs the free side (free -> 131) but cannot move the
-		// pinned pin or the seat, so the seat<->pin residual stays and - since
-		// G2 - is COUNTED regardless of the pin's index order
-		assertEquals("the seat<->plaza residual is visible", 1, stats.residualViolations());
+		assertEquals("the seat takes the nearer even walk surface (the road side)", 130, seat.solvedP);
+		// the sweep repairs the free side but cannot move the pinned pin or the
+		// seat, so one seat<->pin residual stays and - since G2 - is COUNTED
+		// regardless of the pin's index order
+		assertEquals("the seat<->pin residual is visible", 1, stats.residualViolations());
 		assertEquals("the residual is exactly one whole block", 2, stats.worstStep());
 		assertEquals("the independent edge walk sees the same edge", 1, violations(net));
 	}
@@ -222,6 +222,91 @@ public class RoadPolishTest {
 		assertEquals("the even snap fits the clamp - no conflict", 0, stats.polishConflicts());
 		assertEquals("the seat sits on the even value inside the clamp", 130, seat.solvedP);
 		assertEquals("the profile is legal", 0, stats.residualViolations());
+	}
+
+	/**
+	 * 2026-10-17 seam-sign fix: two plaza groups close together used to be pinned
+	 * independently, so the single road cell between them could not be within
+	 * half a block of both - the sign said PLAZA PIN. A T1.5 phase-1 group is not
+	 * placed yet, so the whole group moves; the pairwise path constraint is
+	 * {@code |A - B| <= distance} (even levels), and the middle cell bridges it.
+	 */
+	@Test
+	public void twoMovablePlazaGroupsCloseTogetherAreCoordinatedBeforePlacement() {
+		RoadCell left = new RoadCell(0, 0, "plains", 130, false);
+		left.plaza = true;
+		left.plazaPinned = true;
+		left.plazaPinP = 130;
+		left.plazaVanillaP = 130;
+		RoadCell middle = new RoadCell(1, 0, "plains", 150, false);
+		RoadCell right = new RoadCell(2, 0, "plains", 140, false);
+		right.plaza = true;
+		right.plazaPinned = true;
+		right.plazaPinP = 140;
+		right.plazaVanillaP = 140;
+		RoadNetwork net = RoadNetwork.build(new ArrayList<>(List.of(left, middle, right)), 4);
+		net.plazaPinsMovable = true;
+		RoadSmoother.SolveStats stats = RoadSmoother.solve(net, params());
+		assertEquals("the plaza pair is reconciled", 0, stats.residualViolations());
+		assertEquals("the left group stays flat", left.plazaPinP, left.solvedP);
+		assertEquals("the right group stays flat", right.plazaPinP, right.solvedP);
+		assertTrue("the two plaza levels are within the one-cell path", Math.abs(left.solvedP - right.solvedP) <= 2);
+		assertEquals("the middle road cell bridges both seams", 0, violations(net));
+	}
+
+	/** Two adjacent full-block seats are ONE flat unit: a whole-block step between them is illegal. */
+	@Test
+	public void adjacentBareSeatsShareOneEvenLevel() {
+		RoadCell a = new RoadCell(0, 0, "plains", 130, false);
+		a.seat = true;
+		a.seatBlock = "grass_block";
+		RoadCell b = new RoadCell(1, 0, "plains", 138, false);
+		b.seat = true;
+		b.seatBlock = "grass_block";
+		RoadCell road = new RoadCell(1, 1, "plains", 134, false);
+		RoadNetwork net = RoadNetwork.build(new ArrayList<>(List.of(a, b, road)), 4);
+		RoadSmoother.SolveStats stats = RoadSmoother.solve(net, params());
+		assertEquals("the seats are flat", a.solvedP, b.solvedP);
+		assertEquals("and even (full-block walk surfaces)", 0, a.solvedP & 1);
+		assertEquals("no seat residual", 0, stats.residualViolations());
+		assertEquals("the free road is legal too", 0, violations(net));
+	}
+
+	/** A seat next to a plaza takes the reachable even level on the plaza side. */
+	@Test
+	public void aSeatBesideAPlazaLandsOnAReachableEvenLevel() {
+		RoadCell plaza = new RoadCell(0, 0, "plains", 130, false);
+		plaza.plaza = true;
+		plaza.plazaPinned = true;
+		plaza.plazaPinP = 130;
+		plaza.plazaVanillaP = 130;
+		RoadCell seat = new RoadCell(1, 0, "plains", 140, false);
+		seat.seat = true;
+		seat.seatBlock = "grass_block";
+		RoadCell road = new RoadCell(2, 0, "plains", 138, false);
+		RoadNetwork net = RoadNetwork.build(new ArrayList<>(List.of(plaza, seat, road)), 4);
+		RoadSmoother.SolveStats stats = RoadSmoother.solve(net, params());
+		assertTrue("the seat joins the plaza smoothly", Math.abs(seat.solvedP - plaza.solvedP) <= 1);
+		assertEquals("the seat is even", 0, seat.solvedP & 1);
+		assertEquals("no residual", 0, stats.residualViolations());
+	}
+
+	/**
+	 * 2026-10-17 seam-sign fix for POLISH RESID: a cycle of ordinary road cells
+	 * could leave a free<->free step after the old BFS+projection. The corridor
+	 * legalisation has a feasible envelope, so no ordinary cell may keep one.
+	 */
+	@Test
+	public void anOrdinaryRoadCycleLeavesNoFreeResidual() {
+		List<RoadCell> cells = new ArrayList<>();
+		cells.add(new RoadCell(0, 0, "plains", 120, false));
+		cells.add(new RoadCell(1, 0, "plains", 126, false));
+		cells.add(new RoadCell(0, 1, "plains", 126, false));
+		cells.add(new RoadCell(1, 1, "plains", 120, false));
+		RoadNetwork net = RoadNetwork.build(cells, 4);
+		RoadSmoother.SolveStats stats = RoadSmoother.solve(net, params());
+		assertEquals("no ordinary free<->free residual", 0, stats.residualViolations());
+		assertEquals("and the independent walk agrees", 0, violations(net));
 	}
 
 	private static void assertArrayEqualsMsg(String message, int[] expected, int[] actual) {

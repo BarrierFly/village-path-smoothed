@@ -52,11 +52,12 @@ public class RoadSmootherTest {
 	@Test
 	public void pinnedCellsSurviveTheConflictSweep() {
 		// A pinned cell (a plaza group or a fixed base seat) must never be moved
-		// by the polish's projection sweep - before the fix, a conflict between
-		// disagreeing pins let the sweep walk the pins themselves. Line: pin 10,
-		// free, seed 13, free, pin 14 with no-cut floors: the seed is forced high
-		// by its baseP, the cell next to the low pin has no legal value (conflict)
-		// and the sweep must correct around the pins, never through them.
+		// by the polish - before the fix, a conflict between disagreeing pins let
+		// the sweep walk the pins themselves. Line: pin 10, free, seed 13, free,
+		// pin 14 with no-cut floors. The two pins are four edges apart and differ
+		// by exactly four half units, so the road can ramp between them (filling
+		// above the low pin's terrain is allowed by the flag); the pins hold and
+		// the old residual is gone.
 		List<RoadCell> cells = new ArrayList<>();
 		int[] baseP = {10, 12, 13, 13, 14};
 		for (int x = 0; x < 5; x++) {
@@ -69,21 +70,15 @@ public class RoadSmootherTest {
 		}
 		RoadNetwork net = RoadNetwork.build(cells, 4);
 		RoadSmoother.SolveParams noCut = new RoadSmoother.SolveParams(Objective.SMOOTH_FIRST, 8 * 16, 32, 16, 4, false);
-		RoadSmoother.solve(net, noCut);
+		RoadSmoother.SolveStats stats = RoadSmoother.solve(net, noCut);
 		assertEquals("the low pin holds", 10, net.cells.get(0).solvedP);
 		assertEquals("the high pin holds", 14, net.cells.get(4).solvedP);
-		// the squeezed cell next to the low pin cannot be legal against both the
-		// pin and the seed: the residual stays and is counted (review 3 P0-A)
-		int violations = 0;
-		for (int i = 0; i < net.cells.size(); i++) {
-			for (int dir = 0; dir < 4; dir++) {
-				int j = net.neighbors[i][dir];
-				if (j > i && Math.abs(net.cells.get(i).solvedP - net.cells.get(j).solvedP) > 1) {
-					violations++;
-				}
-			}
+		// The no-cut floor at x=1 is 12 while the low pin forces at most 11:
+		// the flag wins, so this residual is expected and must stay visible.
+		assertTrue("the no-cut floor keeps its residual", stats.residualViolations() >= 1);
+		for (RoadCell cell : net.cells) {
+			assertTrue("no-cut never cuts below the terrain", cell.solvedP >= cell.baseP);
 		}
-		assertTrue("a conflict squeezed against a pin keeps a counted residual", violations >= 1);
 	}
 
 	@Test

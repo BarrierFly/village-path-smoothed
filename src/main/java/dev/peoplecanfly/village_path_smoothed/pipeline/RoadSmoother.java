@@ -15,6 +15,7 @@ import java.util.Deque;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.PriorityQueue;
 
 /**
  * Profile solver. Pure Java, no Minecraft imports.
@@ -138,7 +139,7 @@ public record SolveParams(
 			return polish.deltaP90();
 		}
 
-		/** Cells whose two fixed neighbours disagreed and forced a midpoint. */
+		/** Unresolved seams: free-cell squeezes plus immovable unit pairs. */
 		public int polishConflicts() {
 			return polish.conflictingNeighbours();
 		}
@@ -267,17 +268,20 @@ public record SolveParams(
 		// longer suppresses the whole edge - the pin only means that endpoint
 		// cannot move, the edge is still checked, which is what makes seat<->plaza
 		// and seat<->road residues visible regardless of cell index order. Only
-		// edges with BOTH endpoints pinned are skipped: a plaza group is
-		// 4-connected and flat, so such an edge can never be violated and nothing
-		// on either side could ever have moved.
+		// edges INSIDE one plaza group are skipped: that group is flat and moves as
+		// one unit, so its internal edges cannot be violated. Two DIFFERENT pinned
+		// groups (or a plaza and a pinned seat) are checked: on the movable T1.5
+		// path the polish has just reconciled them, and if a guard left them apart
+		// the residual must stay visible.
+		int[] groupOf = groupOf(net);
 		for (int i = 0; i < net.cells.size(); i++) {
 			for (int dir = 0; dir < 4; dir++) {
 				int j = net.neighbors[i][dir];
 				if (j <= i) {
 					continue;
 				}
-				if (pinnedCells.get(i) && pinnedCells.get(j)) {
-					continue; // both endpoints pre-solved plaza pins
+				if (pinnedCells.get(i) && pinnedCells.get(j) && groupOf[i] >= 0 && groupOf[i] == groupOf[j]) {
+					continue; // both endpoints are cells of the same flat plaza group
 				}
 				int d = Math.abs(net.cells.get(i).solvedP - net.cells.get(j).solvedP);
 				if (d > 1) {
@@ -363,280 +367,601 @@ public record SolveParams(
 		if (n == 0) {
 			return PolishStats.EMPTY;
 		}
-		boolean[] fixed = new boolean[n];
-		int[] queue = new int[n];
-		int head = 0;
-		int tail = 0;
+		int[] before = new int[n];
+		for (int i = 0; i < n; i++) {
+			before[i] = net.cells.get(i).solvedP;
+		}
+		Units units = buildUnits(net, pinnedCells);
+		// Each unit starts flat: its members' median even level. Every later move
+		// moves the whole unit, so a unit can never be split again.
+		flattenUnits(net, units);
+
+		// Legalise the cells AROUND the units, then let the units answer. The
+		// wave is the same construction as before (a cell is clamped into its
+		// already-fixed neighbours' [v-1, v+1], so every edge is legal by
+		// construction), but the fixed seeds are the units (flat plaza groups /
+		// seat components) and the pinned T5 seats, not every individual seat.
+		// That is what removes the seat-seat and seat-plaza residuals: they are
+		// one unit each, not two independently clamped cells.
+		//
+		// After a wave, a unit may be pinched by two fixed neighbours (or simply
+		// want a better level). The unit passes move the WHOLE interval and the
+		// next wave re-clamps the free cells around it. A few rounds are enough;
+		// a unit that cannot improve any of its edges stays put and its residual
+		// (two immovable pins) is the physical one the sign must show.
+		int conflicts = 0;
+		int[] unitConflicts = new int[1];
+		for (int round = 0; round < 32; round++) {
+			boolean coordinated = coordinateUnits(net, units, unitConflicts);
+			conflicts = legaliseFreeCells(net, units, pinnedCells, allowCut);
+			boolean refined = projectUnits(net, units);
+			if (!coordinated && !refined) {
+				break;
+			}
+		}
+		// A unit may have moved in the last round above; reconcile the pair
+		// distances once more and assign the free cells around the final levels.
+		// The corridor construction is what makes every free<->free edge legal
+		// without a cyclic repair loop, and what leaves only a physical
+		// immovable<->immovable pinch visible.
+		coordinateUnits(net, units, unitConflicts);
+		conflicts = legaliseFreeCells(net, units, pinnedCells, allowCut) + unitConflicts[0];
+
 		List<Integer> movedDeltas = new ArrayList<>();
 		int moved = 0;
 		int maxDelta = 0;
-		int conflicts = 0;
-
-		// plan C: pinned plaza cells start FIXED at their pin, so the walk clamps
-		// every road cell into the plaza's [pin - 1, pin + 1] when it reaches it.
-		// They are also WAVE SOURCES: a pinned cell is never enqueued by the walk
-		// itself, so without this a pocket behind a pinned wall (or a component
-		// whose centre cell is pinned) would never be clamped at all - the whole
-		// component stayed at its DP values (dead-seed finding, plaza/seat bench
-		// scenarios, user decision 2026-10-16).
-		for (int i = pinnedCells.nextSetBit(0); i >= 0; i = pinnedCells.nextSetBit(i + 1)) {
-			fixed[i] = true;
-			queue[tail++] = i;
-		}
-		boolean[] conflictFlag = new boolean[1];
-		for (int start = 0; start < n; start++) {
-			if (fixed[start]) {
-				continue;
-			}
-			int seed = componentSeed(net, start, fixed);
-			// the seed is clamped like any other cell when it already has fixed
-			// neighbours (a pinned wall beside it): an unclamped seed would fix
-			// its DP value where it is illegal and the wall could never pull it
-			// back. With no fixed neighbour the clamp is a no-op and the DP
-			// value anchors the wave (the v3 centre-seed measurement).
-			conflictFlag[0] = false;
-			RoadCell seedCell = net.cells.get(seed);
-			int seedBefore = seedCell.solvedP;
-			int seedAfter = clampCell(net, seedCell, fixed, allowCut, conflictFlag);
-			if (conflictFlag[0]) {
-				conflicts++;
-			}
-			seedCell.solvedP = seedAfter;
-			if (seedAfter != seedBefore) {
+		for (int i = 0; i < n; i++) {
+			int delta = Math.abs(net.cells.get(i).solvedP - before[i]);
+			if (delta != 0) {
 				moved++;
-				int delta = Math.abs(seedAfter - seedBefore);
 				maxDelta = Math.max(maxDelta, delta);
 				movedDeltas.add(delta);
-			}
-			fixed[seed] = true;
-			queue[tail++] = seed;
-			while (head < tail) {
-				int current = queue[head++];
-				for (int dir = 0; dir < 4; dir++) {
-					int j = net.neighbors[current][dir];
-					if (j < 0 || fixed[j]) {
-						continue;
-					}
-					RoadCell target = net.cells.get(j);
-					int before = target.solvedP;
-					conflictFlag[0] = false;
-					int after = clampCell(net, target, fixed, allowCut, conflictFlag);
-					if (conflictFlag[0]) {
-						conflicts++;
-					}
-					target.solvedP = after;
-					if (after != before) {
-						moved++;
-						int delta = Math.abs(after - before);
-						maxDelta = Math.max(maxDelta, delta);
-						movedDeltas.add(delta);
-					}
-					fixed[j] = true;
-					queue[tail++] = j;
-				}
-			}
-		}
-		// conflicts are rare; the sweep is a safety net, not the main mechanism.
-		// Seats are immovable here too: the sweep writes arbitrary values and
-		// would break their even-parity constraint (plan 2026-10-16).
-		if (conflicts > 0) {
-			BitSet sweepFixed = (BitSet) pinnedCells.clone();
-			for (int i = 0; i < net.cells.size(); i++) {
-				if (net.cells.get(i).seat) {
-					sweepFixed.set(i);
-				}
-			}
-			for (int sweep = 0; sweep < PROJECTION_SWEEPS; sweep++) {
-				if (!projectViolatedEdges(net, movedDeltas, allowCut, sweepFixed)) {
-					break;
-				}
 			}
 		}
 		return new PolishStats(moved, maxDelta, percentile90(movedDeltas), conflicts);
 	}
 
 	/**
-	 * The one polish step: clamp {@code target} into the interval of its
-	 * already-fixed neighbours' {@code [v - 1, v + 1]} bands and return the new
-	 * value. fix plan v4 D7: with {@code allowCutIntoTerrain = false} the road
-	 * may never sit below the terrain, so the cell's own {@code baseP} is a hard
-	 * floor the polish cannot push through either. plan E: the same floor holds
-	 * for water cells at every config - the water surface is solid ground; a
-	 * seat is exempt (it rides the solve and is written there, plan 2026-10-16).
-	 * Two fixed neighbours that genuinely disagree leave no legal value: the
-	 * midpoint is kept, counted via {@code conflictOut[0]} and resolved by the
-	 * sweep. A seat squeezed into a one-odd-value-wide interval keeps the even
-	 * value above the clamp and sets {@code conflictOut[0]} as well (G1,
-	 * four-item confirmation section 6.3, 2026-10-16).
+	 * A legalisation unit: a movable plaza group or a 4-connected bare-seat
+	 * component. All its cells share one EVEN level and move together, so a step
+	 * can never be manufactured inside the unit: a plaza must stay flat, and two
+	 * adjacent full-block seats cannot differ by one whole block without breaking
+	 * the half-block promise anyway. Pinned T5 seats are deliberately NOT units -
+	 * their decor pieces are the rigid truth; the free side moves instead.
 	 */
-	private static int clampCell(RoadNetwork net, RoadCell target, boolean[] fixed, boolean allowCut,
-			boolean[] conflictOut) {
-		int lo = Integer.MIN_VALUE;
-		int hi = Integer.MAX_VALUE;
-		for (int other = 0; other < 4; other++) {
-			int k = net.neighbors[target.index][other];
-			if (k >= 0 && fixed[k]) {
-				int value = net.cells.get(k).solvedP;
-				lo = Math.max(lo, value - 1);
-				hi = Math.min(hi, value + 1);
+	private static final class Units {
+		final int[] unitOf;
+		final List<int[]> cells = new ArrayList<>();
+		final List<Boolean> movable = new ArrayList<>();
+
+		Units(int n) {
+			unitOf = new int[n];
+			Arrays.fill(unitOf, -1);
+		}
+
+		void add(int[] indices, boolean isMovable) {
+			int id = cells.size();
+			cells.add(indices);
+			movable.add(isMovable);
+			for (int idx : indices) {
+				unitOf[idx] = id;
 			}
 		}
-		int floor = (target.anchor || (!allowCut && !target.seat)) ? target.baseP : Integer.MIN_VALUE;
-		lo = Math.max(lo, floor);
-		int after;
-		if (lo > hi) {
-			after = Math.max(floor, (lo + hi + 1) / 2);
-			if (target.seat) {
-				after &= ~1; // full-block seat: even walk surfaces only
+
+		int value(RoadNetwork net, int unit) {
+			return net.cells.get(cells.get(unit)[0]).solvedP;
+		}
+
+		boolean isMovable(int unit) {
+			return unit >= 0 && movable.get(unit);
+		}
+
+		boolean move(RoadNetwork net, int unit, int target) {
+			int current = value(net, unit);
+			if (current == target) {
+				return false;
 			}
-			conflictOut[0] = true;
-		} else {
-			after = Math.max(lo, Math.min(hi, target.solvedP));
-			if (target.seat && (after & 1) != 0) {
-				// snap to the nearest even walk surface inside the clamp
-				if (after - 1 >= lo) {
-					after -= 1;
-				} else {
-					// after == lo: take the even above. When the clamp interval is
-					// one odd value wide (two fixed neighbours exactly one whole
-					// block apart) that value leaves [lo, hi]: the seat keeps it
-					// anyway - an odd seat would break the whole-block render
-					// parity, and "only land even when it fits" would leave the
-					// odd value - and the conflict is counted so the projection
-					// sweep below engages and repairs the free side. Whatever
-					// residual remains stays visible through the final
-					// verification.
-					after += 1;
-					if (after > hi) {
-						conflictOut[0] = true;
-					}
+			int delta = target - current;
+			for (int idx : cells.get(unit)) {
+				RoadCell cell = net.cells.get(idx);
+				cell.solvedP += delta;
+				if (cell.plazaPinned) {
+					cell.plazaPinP = cell.solvedP;
+				}
+			}
+			return true;
+		}
+
+		/** Sets every member to the same level (used once, after the per-cell BFS). */
+		void flatten(RoadNetwork net, int unit, int target) {
+			for (int idx : cells.get(unit)) {
+				RoadCell cell = net.cells.get(idx);
+				cell.solvedP = target;
+				if (cell.plazaPinned) {
+					cell.plazaPinP = target;
 				}
 			}
 		}
-		return after;
+
+		long localCost(RoadNetwork net, int unit, int value) {
+			long cost = 0;
+			for (int idx : cells.get(unit)) {
+				for (int dir = 0; dir < 4; dir++) {
+					int j = net.neighbors[idx][dir];
+					if (j < 0 || unitOf[j] == unit) {
+						continue;
+					}
+					cost += Math.max(0, Math.abs((long) value - net.cells.get(j).solvedP) - 1);
+				}
+			}
+			return cost;
+		}
+	}
+
+	private static void flattenUnits(RoadNetwork net, Units units) {
+		for (int unit = 0; unit < units.cells.size(); unit++) {
+			if (!units.isMovable(unit)) {
+				continue;
+			}
+			int[] values = new int[units.cells.get(unit).length];
+			for (int k = 0; k < values.length; k++) {
+				values[k] = net.cells.get(units.cells.get(unit)[k]).solvedP;
+			}
+			Arrays.sort(values);
+			int level = evenAtMost(values[values.length / 2]);
+			units.flatten(net, unit, level);
+		}
+	}
+
+	private static Units buildUnits(RoadNetwork net, BitSet pinnedCells) {
+		int n = net.cells.size();
+		Units units = new Units(n);
+		for (int[] group : net.plazaGroups) {
+			boolean movable = net.plazaPinsMovable;
+			for (int idx : group) {
+				if (!pinnedCells.get(idx)) {
+					movable = false;
+					break;
+				}
+			}
+			units.add(group, movable);
+		}
+		// Bare seats: a 4-connected seat component cannot contain a legal step at
+		// all (both ends are full blocks, so an even difference must be 0), hence
+		// it is one flat unit. Pinned T5 seats are excluded: their decor pieces
+		// are the rigid truth and must not be dragged.
+		boolean[] seen = new boolean[n];
+		for (int start = 0; start < n; start++) {
+			RoadCell cell = net.cells.get(start);
+			if (!cell.seat || pinnedCells.get(start) || seen[start]) {
+				continue;
+			}
+			List<Integer> component = new ArrayList<>();
+			Deque<Integer> stack = new ArrayDeque<>();
+			stack.push(start);
+			seen[start] = true;
+			while (!stack.isEmpty()) {
+				int i = stack.pop();
+				component.add(i);
+				for (int dir = 0; dir < 4; dir++) {
+					int j = net.neighbors[i][dir];
+					if (j >= 0 && !seen[j] && net.cells.get(j).seat && !pinnedCells.get(j)) {
+						seen[j] = true;
+						stack.push(j);
+					}
+				}
+			}
+			int[] indices = new int[component.size()];
+			for (int k = 0; k < indices.length; k++) {
+				indices[k] = component.get(k);
+			}
+			units.add(indices, true);
+		}
+		// A pinned non-unit cell (the T5 decor-seat pin) is a fixed boundary too;
+		// making it a one-cell immovable unit lets the pairwise unit projection
+		// see it and move the neighbours that can still move.
+		for (int i = 0; i < n; i++) {
+			if (pinnedCells.get(i) && units.unitOf[i] < 0) {
+				units.add(new int[]{i}, false);
+			}
+		}
+		return units;
 	}
 
 	/**
-	 * One cyclic projection sweep: every edge still too steep has its two endpoints
-	 * moved towards each other by half the excess (rounded up, so the edge is legal
-	 * once the sweep ends). Returns true when something moved, i.e. when another
-	 * sweep is worthwhile.
-	 *
-	 * <p>With {@code allowCut = false} a cell cannot go below its own {@code baseP},
-	 * so the correction it cannot take is transferred to its neighbour. A terrain
-	 * step that no legal no-cut profile can bridge therefore keeps its residual -
-	 * which is what that flag asks for, and the solve's own verification counts it.
-	 *
-	 * <p>Pinned cells (plaza groups, fixed base seats) never move here. The sweep
-	 * used to shift them like any other cell, which broke the pin guarantee
-	 * whenever a polish conflict reached the safety net; now a pinned endpoint is
-	 * immovable and the free endpoint takes the whole excess (or the residual
-	 * stays, when both endpoints are pinned).
+	 * Coordinate projection of every movable unit onto its external neighbours.
+	 * The unit keeps ONE even level, so plaza flatness and seat parity are
+	 * preserved by construction. When the external constraints are feasible the
+	 * unit clamps into their intersection; when they disagree, the level with the
+	 * smallest remaining edge excess wins (and the unit is not moved when it is
+	 * already the best).
 	 */
-	private static boolean projectViolatedEdges(RoadNetwork net, List<Integer> movedDeltas, boolean allowCut,
-			BitSet pinnedCells) {
+	private static boolean projectUnits(RoadNetwork net, Units units) {
 		boolean changed = false;
-		for (int i = 0; i < net.cells.size(); i++) {
-			for (int dir = 0; dir < 4; dir++) {
-				int j = net.neighbors[i][dir];
-				if (j <= i) {
-					continue;
-				}
-				boolean pinnedA = pinnedCells.get(i);
-				boolean pinnedB = pinnedCells.get(j);
-				if (pinnedA && pinnedB) {
-					continue; // both endpoints fixed: the residual stays, nothing can move
-				}
-				RoadCell a = net.cells.get(i);
-				RoadCell b = net.cells.get(j);
-				int diff = a.solvedP - b.solvedP;
-				int excess = Math.abs(diff) - 1;
-				if (excess <= 0) {
-					continue;
-				}
-				RoadCell high = diff > 0 ? a : b;
-				RoadCell low = diff > 0 ? b : a;
-				boolean pinnedHigh = diff > 0 ? pinnedA : pinnedB;
-				boolean pinnedLow = diff > 0 ? pinnedB : pinnedA;
-				int beforeHigh = high.solvedP;
-				int beforeLow = low.solvedP;
-				if (pinnedHigh) {
-					// the pinned high cannot come down: the free low takes the whole excess up
-					low.solvedP += excess;
-				} else if (pinnedLow) {
-					// the pinned low cannot go up: the high gives what its own floor allows
-					int room = (allowCut && !high.anchor && !high.seat) ? excess : Math.max(0, Math.min(excess, high.solvedP - high.baseP));
-					high.solvedP -= room;
-				} else {
-					int half = (excess + 1) / 2;
-					int room = (allowCut && !high.anchor && !high.seat) ? half : Math.min(half, high.solvedP - high.baseP);
-					if (room < 0) {
-						room = 0;
+		for (int unit = 0; unit < units.cells.size(); unit++) {
+			if (!units.isMovable(unit)) {
+				continue;
+			}
+			int current = units.value(net, unit);
+			int lo = Integer.MIN_VALUE;
+			int hi = Integer.MAX_VALUE;
+			boolean anyExternal = false;
+			for (int idx : units.cells.get(unit)) {
+				for (int dir = 0; dir < 4; dir++) {
+					int j = net.neighbors[idx][dir];
+					if (j < 0 || units.unitOf[j] == unit) {
+						continue;
 					}
-					high.solvedP -= room;
-					low.solvedP += half - room;
+					anyExternal = true;
+					int value = net.cells.get(j).solvedP;
+					lo = Math.max(lo, value - 1);
+					hi = Math.min(hi, value + 1);
 				}
-				if (high.solvedP != beforeHigh || low.solvedP != beforeLow) {
-					changed = true;
-					movedDeltas.add(Math.abs(high.solvedP - beforeHigh));
-					movedDeltas.add(Math.abs(low.solvedP - beforeLow));
+			}
+			if (!anyExternal) {
+				continue;
+			}
+			int target;
+			if (lo <= hi) {
+				target = nearestEvenIn(lo, hi, current);
+				if (target == Integer.MIN_VALUE) {
+					target = evenAtMost(lo);
 				}
+			} else {
+				long bestCost = units.localCost(net, unit, current);
+				target = current;
+				int mid = (int) (((long) lo + hi) / 2);
+				int[] candidates = {evenAtMost(lo), evenAtLeast(hi), evenAtMost(mid), evenAtLeast(mid)};
+				for (int candidate : candidates) {
+					long cost = units.localCost(net, unit, candidate);
+					if (cost < bestCost) {
+						bestCost = cost;
+						target = candidate;
+					}
+				}
+			}
+			if (target != current) {
+				changed |= units.move(net, unit, target);
 			}
 		}
 		return changed;
 	}
 
+	private static int[] groupOf(RoadNetwork net) {
+		int[] groupOf = new int[net.cells.size()];
+		Arrays.fill(groupOf, -1);
+		for (int g = 0; g < net.plazaGroups.size(); g++) {
+			for (int idx : net.plazaGroups.get(g)) {
+				groupOf[idx] = g;
+			}
+		}
+		return groupOf;
+	}
+
+	private static int floorOf(RoadCell cell, boolean allowCut) {
+		return (cell.anchor || (!allowCut && !cell.seat)) ? cell.baseP : Integer.MIN_VALUE;
+	}
+
+	private static int evenAtMost(int value) {
+		return (value & 1) == 0 ? value : value - 1;
+	}
+
+	private static int evenAtLeast(int value) {
+		return (value & 1) == 0 ? value : value + 1;
+	}
+
+	private static int[] evenValues(int lo, int hi) {
+		int first = evenAtLeast(lo);
+		if (first > hi) {
+			return new int[0];
+		}
+		int[] values = new int[(hi - first) / 2 + 1];
+		for (int v = first, k = 0; v <= hi; v += 2, k++) {
+			values[k] = v;
+		}
+		return values;
+	}
+
+	/** Nearest even value inside [lo, hi], or Integer.MIN_VALUE when there is none. */
+	private static int nearestEvenIn(int lo, int hi, int preferred) {
+		int first = evenAtLeast(lo);
+		int last = evenAtMost(hi);
+		if (first > last) {
+			return Integer.MIN_VALUE;
+		}
+		return Math.abs((long) preferred - first) <= Math.abs((long) preferred - last) ? first : last;
+	}
+
 	/**
-	 * Seed of the component containing {@code start}: its cell closest to its
-	 * own box centre, skipping pre-fixed (pinned) cells. A pinned centre used
-	 * to be returned as the seed and its all-pinned neighbourhood killed the
-	 * wave before it started, leaving whole plaza-centred components unpolished
-	 * (found by the plaza/seat bench scenarios; user decision 2026-10-16).
+	 * Reconciles the movable units GLOBALLY before any free cell is assigned.
+	 * Two flat even units connected by a path of length {@code d} can only differ
+	 * by {@code D = d} rounded down to even (an odd difference cannot join two
+	 * even levels). Projecting every pair onto {@code |Lu - Lv| <= D} is a convex
+	 * problem; cyclic projection converges and is what makes a plaza-to-plaza or
+	 * seat-to-plaza pinch solvable BEFORE placement instead of leaving the middle
+	 * cell with an empty [lo, hi]. Units that are physically fixed (T5) never
+	 * move; the movable side takes the correction.
 	 */
-	private static int componentSeed(RoadNetwork net, int start, boolean[] fixed) {
-		Deque<Integer> stack = new ArrayDeque<>();
-		List<Integer> component = new ArrayList<>();
-		stack.push(start);
-		boolean[] seen = new boolean[net.cells.size()];
-		seen[start] = true;
-		int minX = Integer.MAX_VALUE;
-		int maxX = Integer.MIN_VALUE;
-		int minZ = Integer.MAX_VALUE;
-		int maxZ = Integer.MIN_VALUE;
-		while (!stack.isEmpty()) {
-			int i = stack.pop();
-			component.add(i);
-			RoadCell c = net.cells.get(i);
-			minX = Math.min(minX, c.x);
-			maxX = Math.max(maxX, c.x);
-			minZ = Math.min(minZ, c.z);
-			maxZ = Math.max(maxZ, c.z);
-			for (int dir = 0; dir < 4; dir++) {
-				int j = net.neighbors[i][dir];
-				if (j >= 0 && !seen[j]) {
-					seen[j] = true;
-					stack.push(j);
+	private static boolean coordinateUnits(RoadNetwork net, Units units, int[] conflictsOut) {
+		int count = units.cells.size();
+		conflictsOut[0] = 0;
+		if (count < 2) {
+			return false;
+		}
+		int n = net.cells.size();
+		int[][] distance = new int[count][count];
+		for (int u = 0; u < count; u++) {
+			int[] dist = new int[n];
+			Arrays.fill(dist, -1);
+			int[] queue = new int[n];
+			int head = 0;
+			int tail = 0;
+			for (int idx : units.cells.get(u)) {
+				dist[idx] = 0;
+				queue[tail++] = idx;
+			}
+			while (head < tail) {
+				int i = queue[head++];
+				for (int dir = 0; dir < 4; dir++) {
+					int j = net.neighbors[i][dir];
+					if (j >= 0 && dist[j] < 0) {
+						dist[j] = dist[i] + 1;
+						queue[tail++] = j;
+					}
+				}
+			}
+			for (int v = 0; v < count; v++) {
+				int best = Integer.MAX_VALUE;
+				for (int idx : units.cells.get(v)) {
+					if (dist[idx] >= 0) {
+						best = Math.min(best, dist[idx]);
+					}
+				}
+				distance[u][v] = best;
+			}
+		}
+		int[] parity = new int[count];
+		int[] start = new int[count];
+		for (int u = 0; u < count; u++) {
+			start[u] = units.value(net, u);
+			parity[u] = start[u] & 1;
+		}
+		int[] best = start.clone();
+		long bestCost = unitPairCost(net, units, distance, parity);
+		int maxSweeps = Math.min(64, Math.max(8, count * 2));
+		for (int sweep = 0; sweep < maxSweeps; sweep++) {
+			boolean sweepMoved = false;
+			for (int u = 0; u < count; u++) {
+				for (int v = u + 1; v < count; v++) {
+					int d = distance[u][v];
+					if (d == Integer.MAX_VALUE) {
+						continue;
+					}
+					int desiredParity = parity[u] ^ parity[v];
+					int allowed = (d & 1) == desiredParity ? d : d - 1;
+					int diff = units.value(net, u) - units.value(net, v);
+					int excess = Math.abs(diff) - allowed;
+					if (excess <= 0) {
+						continue;
+					}
+					int high = diff > 0 ? u : v;
+					int low = diff > 0 ? v : u;
+					boolean highMovable = units.isMovable(high);
+					boolean lowMovable = units.isMovable(low);
+					if (!highMovable && !lowMovable) {
+						continue;
+					}
+					if (highMovable && lowMovable) {
+						int down = evenAtMost(excess / 2);
+						if (down <= 0) {
+							down = Math.min(2, excess);
+						}
+						sweepMoved |= units.move(net, high, units.value(net, high) - down);
+						sweepMoved |= units.move(net, low, units.value(net, low) + (excess - down));
+					} else if (highMovable) {
+						sweepMoved |= units.move(net, high, evenAtMost(units.value(net, high) - excess));
+					} else {
+						sweepMoved |= units.move(net, low, evenAtLeast(units.value(net, low) + excess));
+					}
+				}
+			}
+			long cost = unitPairCost(net, units, distance, parity);
+			if (cost < bestCost) {
+				bestCost = cost;
+				for (int u = 0; u < count; u++) {
+					best[u] = units.value(net, u);
+				}
+			}
+			if (!sweepMoved) {
+				break;
+			}
+		}
+		// Every local move that lowered one pair can raise another; snapshotting
+		// the best total keeps the seat between two immovable pins at a STABLE
+		// even side instead of flipping it every sweep.
+		boolean changed = false;
+		for (int u = 0; u < count; u++) {
+			if (units.value(net, u) != best[u]) {
+				changed |= units.move(net, u, best[u]);
+			}
+		}
+		int violations = 0;
+		for (int u = 0; u < count; u++) {
+			for (int v = u + 1; v < count; v++) {
+				int d = distance[u][v];
+				if (d == Integer.MAX_VALUE) {
+					continue;
+				}
+				int desiredParity = parity[u] ^ parity[v];
+				int allowed = (d & 1) == desiredParity ? d : d - 1;
+				if (Math.abs(units.value(net, u) - units.value(net, v)) > allowed) {
+					violations++;
 				}
 			}
 		}
-		int centreX = minX + (maxX - minX) / 2;
-		int centreZ = minZ + (maxZ - minZ) / 2;
-		int best = -1;
-		int bestDistance = Integer.MAX_VALUE;
-		for (int i : component) {
-			if (fixed[i]) {
-				continue; // a pinned seed's all-pinned neighbourhood kills the wave
-			}
-			RoadCell c = net.cells.get(i);
-			int distance = Math.max(Math.abs(c.x - centreX), Math.abs(c.z - centreZ));
-			if (distance < bestDistance || (distance == bestDistance && i < best)) {
-				bestDistance = distance;
-				best = i;
+		conflictsOut[0] = violations;
+		return changed;
+	}
+
+	private static long unitPairCost(RoadNetwork net, Units units, int[][] distance, int[] parity) {
+		long cost = 0;
+		int count = units.cells.size();
+		for (int u = 0; u < count; u++) {
+			for (int v = u + 1; v < count; v++) {
+				int d = distance[u][v];
+				if (d == Integer.MAX_VALUE) {
+					continue;
+				}
+				int desiredParity = parity[u] ^ parity[v];
+				int allowed = (d & 1) == desiredParity ? d : d - 1;
+				cost += Math.max(0, Math.abs(units.value(net, u) - units.value(net, v)) - allowed);
 			}
 		}
-		// the caller's start is unfixed, so the component always has at least
-		// one unfixed cell; the fallback keeps a fully-pinned scan safe anyway
-		return best < 0 ? start : best;
+		return cost;
+	}
+
+	/**
+	 * Legalises every non-unit cell around the current (flat) unit levels with
+	 * a global feasible corridor.
+	 *
+	 * <p>The old outward wave is legal on its spanning tree but a cycle can
+	 * still leave two free cells one step apart, and a local projection across
+	 * such a cycle can flip values forever. The corridor removes that failure:
+	 * from every fixed seed {@code s} the constraint is
+	 * {@code |P(v) - s| <= dist(v, s)}, so
+	 * {@code L(v) = max(s - dist)} is a 1-Lipschitz lower bound and
+	 * {@code U(v) = min(s + dist)} a 1-Lipschitz upper bound. Floors are lower
+	 * seeds too. Both envelopes are computed by a multi-source Dijkstra
+	 * (unit edges). Every cell is first clamped into {@code [L, U]} - the part
+	 * of the profile the terrain chase wanted that is still feasible - and then
+	 * a bounded coordinate projection removes the remaining local steps.
+	 * Because both envelopes are legal, the projection has a non-empty feasible
+	 * set and cannot run away; only a cell wedged between two immovable pins
+	 * keeps a residual, and its corridor is already empty (counted).
+	 */
+	private static int legaliseFreeCells(RoadNetwork net, Units units, BitSet pinnedCells, boolean allowCut) {
+		int n = net.cells.size();
+		int[] lo = new int[n];
+		int[] hi = new int[n];
+		Arrays.fill(lo, Integer.MIN_VALUE);
+		Arrays.fill(hi, Integer.MAX_VALUE);
+		PriorityQueue<int[]> maxQueue = new PriorityQueue<>((a, b) -> Integer.compare(b[0], a[0]));
+		PriorityQueue<int[]> minQueue = new PriorityQueue<>((a, b) -> Integer.compare(a[0], b[0]));
+		for (int i = 0; i < n; i++) {
+			boolean fixed = units.unitOf[i] >= 0 || pinnedCells.get(i);
+			if (fixed) {
+				int value = net.cells.get(i).solvedP;
+				lo[i] = value;
+				hi[i] = value;
+				maxQueue.add(new int[]{value, i});
+				minQueue.add(new int[]{value, i});
+			} else {
+				int floor = floorOf(net.cells.get(i), allowCut);
+				if (floor != Integer.MIN_VALUE) {
+					lo[i] = Math.max(lo[i], floor);
+					maxQueue.add(new int[]{lo[i], i});
+				}
+			}
+		}
+		// L(v) = max(seed - dist): the highest value first, every edge -1.
+		boolean[] doneL = new boolean[n];
+		while (!maxQueue.isEmpty()) {
+			int[] top = maxQueue.poll();
+			int i = top[1];
+			if (doneL[i]) {
+				continue;
+			}
+			doneL[i] = true;
+			int next = top[0] - 1;
+			for (int dir = 0; dir < 4; dir++) {
+				int j = net.neighbors[i][dir];
+				if (j < 0 || units.unitOf[j] >= 0 || pinnedCells.get(j)) {
+					continue;
+				}
+				if (next > lo[j]) {
+					lo[j] = next;
+					maxQueue.add(new int[]{next, j});
+				}
+			}
+		}
+		// U(v) = min(seed + dist): ordinary multi-source Dijkstra.
+		boolean[] doneU = new boolean[n];
+		while (!minQueue.isEmpty()) {
+			int[] top = minQueue.poll();
+			int i = top[1];
+			if (doneU[i]) {
+				continue;
+			}
+			doneU[i] = true;
+			int next = top[0] + 1;
+			for (int dir = 0; dir < 4; dir++) {
+				int j = net.neighbors[i][dir];
+				if (j < 0 || units.unitOf[j] >= 0 || pinnedCells.get(j)) {
+					continue;
+				}
+				if (next < hi[j]) {
+					hi[j] = next;
+					minQueue.add(new int[]{next, j});
+				}
+			}
+		}
+		// Start inside the feasible corridor, as close to the terrain solution as
+		// the corridor allows.
+		for (int i = 0; i < n; i++) {
+			if (units.unitOf[i] >= 0 || pinnedCells.get(i)) {
+				continue;
+			}
+			int value = net.cells.get(i).solvedP;
+			if (lo[i] != Integer.MIN_VALUE) {
+				value = Math.max(value, lo[i]);
+			}
+			if (hi[i] != Integer.MAX_VALUE) {
+				value = Math.min(value, hi[i]);
+			}
+			net.cells.get(i).solvedP = value;
+		}
+		// Coordinate projection inside the corridor. The envelopes are legal, so
+		// a feasible value exists at every cell; a cell whose direct neighbours
+		// still disagree (two immovable pins) keeps its value and is counted.
+		int conflicts = 0;
+		int maxSweeps = Math.min(1024, Math.max(64, n));
+		for (int sweep = 0; sweep < maxSweeps; sweep++) {
+			boolean changed = false;
+			for (int i = 0; i < n; i++) {
+				if (units.unitOf[i] >= 0 || pinnedCells.get(i)) {
+					continue;
+				}
+				int cellLo = lo[i];
+				int cellHi = hi[i];
+				for (int dir = 0; dir < 4; dir++) {
+					int j = net.neighbors[i][dir];
+					if (j < 0) {
+						continue;
+					}
+					int value = net.cells.get(j).solvedP;
+					cellLo = Math.max(cellLo, value - 1);
+					cellHi = Math.min(cellHi, value + 1);
+				}
+				int current = net.cells.get(i).solvedP;
+				int target = Math.max(cellLo, Math.min(cellHi, current));
+				if (cellLo > cellHi) {
+					// The direct neighbours disagree. Clamp to the LOWER bound: it
+					// may contain a no-cut/water floor, so the flag must not be
+					// broken to hide the residual. Free cycles still move (their
+					// lower bound comes from a neighbour) and the next sweep pulls
+					// the other side along.
+					conflicts++;
+				}
+				if (target != current) {
+					net.cells.get(i).solvedP = target;
+					changed = true;
+				}
+			}
+			if (!changed) {
+				break;
+			}
+		}
+		return conflicts;
 	}
 
 	private static int percentile90(List<Integer> values) {
@@ -1325,14 +1650,17 @@ public record SolveParams(
 		if (cell.seat) {
 			// a seat renders a FULL block: even walk surfaces only, so the RIGID
 			// decor piece on top can shift by whole blocks (plan 2026-10-16)
-			int first = (lo & 1) == 0 ? lo : lo + 1;
-			if (first > hi) {
+			int[] evens = evenValues(lo, hi);
+			if (evens.length == 0) {
+				// No even value fits the clamp. Keep an EVEN value anyway (the
+				// parity promise must never be broken by the solver) as close as
+				// possible to the preferred height; the polish then moves the free
+				// side of the squeeze instead of leaving an odd seat.
 				stats.candidateContradictions++;
-				return new int[]{cell.solvedP};
-			}
-			int[] evens = new int[(hi - first) / 2 + 1];
-			for (int v = first, k = 0; v <= hi; v += 2, k++) {
-				evens[k] = v;
+				int below = evenAtMost(lo - 1);
+				int above = evenAtLeast(hi + 1);
+				int preferred = cell.solvedP;
+				return new int[]{Math.abs((long) preferred - below) <= Math.abs((long) preferred - above) ? below : above};
 			}
 			return evens;
 		}
@@ -1728,14 +2056,13 @@ public record SolveParams(
 		}
 		if (cell.seat) {
 			// full-block seat: even walk surfaces only (see candidatesFor)
-			int first = (lo & 1) == 0 ? lo : lo + 1;
-			if (first > hi) {
+			int[] evens = evenValues(lo, hi);
+			if (evens.length == 0) {
 				stats.candidateContradictions++;
-				return new int[]{cell.solvedP};
-			}
-			int[] evens = new int[(hi - first) / 2 + 1];
-			for (int v = first, k = 0; v <= hi; v += 2, k++) {
-				evens[k] = v;
+				int below = evenAtMost(lo - 1);
+				int above = evenAtLeast(hi + 1);
+				int preferred = cell.solvedP;
+				return new int[]{Math.abs((long) preferred - below) <= Math.abs((long) preferred - above) ? below : above};
 			}
 			return evens;
 		}

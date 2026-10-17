@@ -55,6 +55,14 @@ public final class RoadNetwork {
 	 * any other cell.
 	 */
 	public final BitSet regionCells = new BitSet();
+	/**
+	 * True only on the T1.5 phase-1 solve: the plaza groups have not been placed
+	 * yet, so the polish may move a whole group up/down by whole blocks to meet
+	 * its roads. The T1.5 shift then renders the group at the adjusted pin, and
+	 * the T5 / phase-2 solves leave it false because those pieces are already the
+	 * rigid truth.
+	 */
+	public boolean plazaPinsMovable;
 
 	private final Map<Long, Integer> cellIndexLookup;
 
@@ -343,14 +351,15 @@ public final class RoadNetwork {
 	}
 
 	/**
-	 * Pins every plaza group to ONE flat walk surface (plan C, user decision
-	 * 2026-10-15): the solver's own choice of plaza level is the group's median
-	 * - of the noise-probed terrain ({@code fromBaseP}, T1.5 phase 1) or of the
-	 * level the rigid pieces actually render at ({@code fromBaseP = false}, T1.5
-	 * phase 2 after the pieces were moved and the whole T5 path, where nothing
-	 * may move). The pin makes the plaza horizontal by construction and turns
-	 * it into a hard seam boundary: the roads solve into {@code |dP| <= 1}
-	 * against it.
+	 * Pins every plaza group to ONE flat EVEN walk surface (plan C, user decision
+	 * 2026-10-15; even since 2026-10-17): the solver's own choice of plaza level
+	 * is the group's median - of the noise-probed terrain ({@code fromBaseP},
+	 * T1.5 phase 1) or of the level the rigid pieces actually render at
+	 * ({@code fromBaseP = false}, T1.5 phase 2 after the pieces were moved and
+	 * the whole T5 path, where nothing may move). The even rounding matches the
+	 * full-block platform. On phase 1 {@link #plazaPinsMovable} lets the polish
+	 * shift the whole group before placement; on phase 2 / T5 the pin is the
+	 * physical render level and stays hard.
 	 */
 	public void applyPlazaPins(boolean fromBaseP) {
 		for (int[] group : plazaGroups) {
@@ -361,6 +370,12 @@ public final class RoadNetwork {
 			}
 			Arrays.sort(values);
 			int level = values[values.length / 2];
+			// A plaza platform renders full blocks, so a half-unit (odd) pin would
+			// ask the rigid piece to render a slab level it cannot have. Round to
+			// the even walk surface below the median; the T1.5 shift and the
+			// phase-2 re-pin then agree bit for bit instead of differing by the
+			// half step an odd phase-1 pin used to leave behind.
+			level &= ~1;
 			for (int idx : group) {
 				RoadCell cell = cells.get(idx);
 				cell.plazaPinned = true;

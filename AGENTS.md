@@ -115,34 +115,35 @@ Rules:
   what keeps the road from flattening sustained grades: on a long climb the
   flat line simply is not a candidate.
 - **Legality is established by the polish pass, not by the optimiser (fix plan
-  v4 A-1, decision N3-a).** Arms are solved by exact slice DP and junctions by
-  ICM; six structural defects leave residual `|dP| > 1` edges. `RoadSmoother#polish`
-  then walks outwards from one seed per connected component - the component's
-  centre, never an end (v3 measured 234 violating edges from an end seed against
-  0 from the centre) - clamping each cell into its already-fixed neighbours'
-  `[v-1, v+1]`, which makes every edge legal by construction. Two already-fixed
-  neighbours that disagree leave no legal value; those cells are counted
-  (`ROAD_POLISH_CONFLICTS`) and handed to cyclic projection, which converges
-  because `{|Pu - Pv| <= 1}` is convex. **N3-a: the result is adopted
-  unconditionally**, so one cell may be dragged several whole blocks - that is
-  the measured price of "no drop larger than half a block" and it is counted
+  v4 A-1, decision N3-a; reworked 2026-10-17 after the seam signs).** Arms are
+  solved by exact slice DP and junctions by ICM; six structural defects leave
+  residual `|dP| > 1` edges. The polish first groups every flat body into a
+  UNIT - a plaza group, a 4-connected bare-seat component, or a one-cell pinned
+  boundary - and flattens each movable unit to one EVEN level. Units are
+  reconciled globally by pairwise path constraints (`|Lu - Lv| <= d` with the
+  distance parity; cyclic projection, best-cost snapshot so a seat between two
+  immovable pins stays on a stable side instead of flipping), then the free
+  cells are assigned by a feasible corridor: from every fixed seed `s`,
+  `L(v)=max(s-dist)` and `U(v)=min(s+dist)` are 1-Lipschitz envelopes, floors
+  are lower seeds, and a bounded projection inside `[L,U]` removes the rest. A
+  free<->free residual is therefore impossible by construction; only an
+  immovable<->immovable pinch keeps one, and it is counted. **N3-a: the result
+  is adopted unconditionally** and every moved cell is counted
   (`ROAD_POLISH_MOVED` / `MAX_DELTA` / `DELTA_P90`), never hidden. Do not
   reintroduce a "freeze the outliers" variant: it reinstates a known cliff and
   invalidates the metric the pass exists to make zero. With
   `allowCutIntoTerrain = false` the polish treats `baseP` as a hard floor too, so
   a terrain step no legal no-cut profile can bridge keeps its residual - which is
-  what that flag promises. G1 (four-item confirmation §6.3, 2026-10-16): when the
-  clamp interval at a seat is one odd value wide, the seat keeps the even value
-  above the clamp (an odd seat would break the whole-block render parity) and the
-  conflict is counted, which engages the sweep to repair the free side - do not
-  change this to "only land even when it fits", that would leave the odd value.
-  G2 (same date): the final verification walks every edge; a pinned ENDPOINT no
-  longer suppresses the edge (only edges with BOTH endpoints pinned are skipped,
-  and a plaza group is flat), so seat<->plaza residues are visible regardless of
-  cell index order. The polish seed skips pre-fixed (pinned) cells, and pinned
-  cells are enqueued as wave sources: a pinned component centre used to kill the
-  wave before it started and left whole plaza-centred components unpolished at
-  their DP values (found by the plaza/seat scenarios, user decision 2026-10-16).
+  what that flag promises; the projection clamps to the LOWER bound, never below
+  a floor, to hide one. G1 (2026-10-16, refined 2026-10-17): a seat must always
+  be even; when the clamp contains no even value it takes the adjacent even side
+  CLOSEST to the neighbouring road (the old unconditional "even above" could
+  leave a whole-block gap), and the residual is counted only when the two
+  immovable sides genuinely cannot meet. G2: the final verification walks every
+  edge; a pinned ENDPOINT no longer suppresses it - only edges INSIDE one plaza
+  group are skipped, because that group is flat and moves as one unit. Movable
+  plaza group pins are reconciled before the T1.5 shift; T5 / phase-2 pins are
+  physically fixed and their residuals stay visible.
 - **The seam band extends TOWARD the seam, never narrows against it.** Phase 3
   merges the seam cells' own hard bound into their band outright and grows
   interior cells' bands toward the seam interval along the legal-slope cone
@@ -236,9 +237,12 @@ Rules:
   as a NORMAL solver cell (the four terrain bases plus the 44 dirt_path + 2
   cobblestone road-material seats per version, all in since 2026-10-16): it
   rides the solved profile with `|dP| <= 1` to its neighbours, constrained to
-  EVEN walk surfaces (`candidatesFor`/`runCandidates` filter, the polish snaps,
-  the conflict sweep treats seats as immovable) so the RIGID decor piece on
-  top shifts by whole blocks. **A seat WINS a shared column** (user decision
+  EVEN walk surfaces (`candidatesFor`/`runCandidates` filter and the unit level)
+  so the RIGID decor piece on top shifts by whole blocks. A 4-connected seat
+  component is ONE flat unit (two adjacent full-block seats cannot differ by a
+  half step, so they must share the level) and it MOVES as a whole during the
+  polish - only a T5 decor-pinned seat is immovable. **A seat WINS a shared
+  column** (user decision
   2026-10-16: the street piece already provides the base, the road must not
   pave over it) - a road cell on the seat's column (crossroad overlap) is
   replaced by the seat cell; a dropped seat probe keeps whatever claimed the
@@ -253,21 +257,25 @@ Rules:
   decor pins at the decor's real render level (the phase-2 plaza precedent)
   and a bare seat rides the solve. The old "pin at the probed vanilla height"
   design is gone - a seat must never drag the road to vanilla height.
-- **The polish conflict sweep never moves a pinned cell (2026-10-15).**
-  `RoadSmoother#projectViolatedEdges` treats pinned cells (plaza groups, fixed
-  base seats) as immovable: a pinned endpoint stays, the free endpoint takes the
-  whole excess, two pinned endpoints keep their counted residual. The old sweep
-  walked the pins themselves whenever a polish conflict reached the safety net.
+- **The polish never moves a physically fixed cell, but it DOES move a movable
+  unit before placement (2026-10-15, reworked 2026-10-17).** A T5 decor-seat pin
+  and a T5/phase-2 plaza pin are immovable: the free side takes the correction
+  and two immovable pins keep their counted residual. On the T1.5 phase-1 solve
+  no plaza piece has been placed yet, so a whole plaza group is a movable unit:
+  the pairwise projection shifts it (and the group pin) until the road can meet
+  it, and `T15Planner` renders the adjusted level. Do not freeze phase-1 plaza
+  groups again - that is the `PLAZA PIN` seam sign.
 - **Acceptance after G2 (four-item confirmation §6.3, 2026-10-16).** With pin
-  edges counted, a plaza/seat village's `/vps stats` `step violations` may rise
-  from 0 to non-0 - that is information recovery, not a regression. The gate is:
-  every residue visible (the solver's count equals an independent edge walk),
-  worst <= 2, each attributable (seat squeeze / seat<->plaza double anchor /
-  floor-limited anchor). The bench's plaza/seat scenarios assert exactly this and
-  print the two frequencies (scenarios with a polish conflict, scenarios with a
-  counted residual) that decide whether seats-first (plan A structural version)
-  is ever needed; plan B (even-level plaza flattening) stays rejected as a
-  default.
+  edges counted, every free<->free edge is legal by construction now; the only
+  residues left are between physically immovable pins (a T5 decor seat /
+  phase-2 plaza pair) or a floor-limited no-cut/water cell, and each is counted
+  and visible (the solver's count equals an independent edge walk). The bench's
+  plaza/seat scenarios and `RoadPolishTest` pin the three 2026-10-17 failures:
+  two movable plaza groups must meet through their shared road cell, adjacent
+  bare seats must share one even level, and an ordinary road cycle must leave no
+  free residual. "Try harder to keep the old residual" is not an acceptable fix:
+  move the movable interval instead; plan B (even-level plaza flattening) stays
+  rejected as a default.
 - **Debug door signs are always on (user request 2026-10-16).** Every movable
   building's template door front gets one standing oak sign: line 1 the door X/Z
   with the base walk level the alignment used (baseY + dy + 1, the Y0 layer top),
@@ -435,12 +443,16 @@ Rules:
   themselves (fix plan v4 D5-c + plan C, user decision 2026-10-15).** The mask
   regex matches them, but only road-material y=0 cells are taken
   (`TOWN_CENTER_NON_ROAD_SKIPPED` counts what was skipped). Each 4-connected
-  plaza group pins to ONE flat walk surface - the group's median terrain height
-  on the T1.5 first solve, the level the pieces really render at on the
-  post-shift re-solve and on the whole T5 path - and the solver treats the pin
-  as a hard seam boundary (`|dP| <= 1` to the roads). A dedicated group shift
-  moves the owning pieces onto the solved level (well rim and fountain riding
-  along as one rigid body) before the re-collect. The writer **never** writes a
+  plaza group pins to ONE flat EVEN walk surface - the group's median terrain
+  height on the T1.5 first solve, the level the pieces really render at on the
+  post-shift re-solve and on the whole T5 path. The median is rounded down to an
+  even level because a plaza platform renders full blocks. On the T1.5 phase-1
+  solve the pin is MOVABLE: the polish's pairwise unit projection reconciles
+  nearby groups/seat components (path-distance constraints) before anything is
+  placed, so the road always meets the group with `|dP| <= 1`; the dedicated
+  group shift then moves the owning pieces (well rim and fountain riding along
+  as one rigid body) onto that level. On T5 / phase 2 the pin is the physical
+  render level and stays hard. The writer **never** writes a
   road block, a fill or a clear on a plaza cell (the clear would raze the
   fountain): the vanilla rigid platform IS the solved surface by construction,
   and only the edge details run on the plaza boundary

@@ -114,8 +114,11 @@ public final class T15Planner {
 		if (config.roadSmoothing.enabled) {
 			// plan C phase 1: the plaza groups solve flat at the solver's own level
 			// (the group's median terrain height); the roads meet them via the
-			// normal seam constraints
+			// normal seam constraints. The group pins are still movable here - no
+			// plaza piece has been placed yet - so the polish may shift a whole
+			// group by whole blocks when a seam would otherwise be unsatisfiable.
 			network.applyPlazaPins(true);
+			network.plazaPinsMovable = true;
 			VpsPipeline.accumulateSolveStats(RoadSmoother.solve(network, VpsPipeline.paramsFor(config)));
 		}
 		VpsVillageSolution solution = new VpsVillageSolution(network);

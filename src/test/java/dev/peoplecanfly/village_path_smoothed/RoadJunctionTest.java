@@ -521,18 +521,25 @@ public class RoadJunctionTest {
 	 * but the mode still behaves the way the flag promises, so the assertion is
 	 * a bound, not the old exact value.
 	 */
+	/**
+	 * allowCut = false forbids digging below the terrain, not filling above the
+	 * low side. The corridor legalisation raises the low arm instead of leaving
+	 * the old seam cliff, and the flag's own promise is asserted cell by cell.
+	 * (A floor that genuinely cannot be bridged keeps its residual - that case
+	 * is pinned in RoadSmootherTest.)
+	 */
 	@Test
-	public void allowCutFalseKeepsTheCliffButCountsIt() {
+	public void allowCutFalseBridgesTheOutlierByFillingInsteadOfCutting() {
 		RoadNetwork net = RoadNetwork.build(
 				new ArrayList<>(junction(2, 6, 64, 68, 64, 64, 64).cells), MAX_EXACT_WIDTH);
 		RoadSmoother.SolveParams noCut = new RoadSmoother.SolveParams(Objective.SMOOTH_FIRST, 8 * 16, 32, 16, 4, false);
 		RoadSmoother.SolveStats stats = RoadSmoother.solve(net, noCut);
 		Tally t = tally(net);
-		assertEquals("without cutting the outlier direction cliffs", 3, t.seam);
-		assertTrue("a cliff really does remain, that is what the flag asks for (was " + t.worst + ")", t.worst > 1);
-		assertTrue("and it never exceeds the full height difference (was " + t.worst + ")", t.worst <= 8);
-		assertTrue("the contradiction is counted (was silent before the fix)", stats.candidateContradictions() >= 3);
-		assertEquals("and the verifier sees the same edges", t.total(), stats.residualViolations());
+		assertEquals("the no-cut outlier is bridged by fill", 0, t.seam);
+		assertEquals("the verifier sees the same legal profile", 0, stats.residualViolations());
+		for (RoadCell cell : net.cells) {
+			assertTrue("no-cut never cuts below the terrain", cell.solvedP >= cell.baseP);
+		}
 	}
 
 	private static Tally tally(RoadNetwork net) {

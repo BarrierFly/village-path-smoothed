@@ -89,23 +89,29 @@ water use scaffolding, and dangerous edges get leaf railings.
      `terracotta`). An air first cell is filled up to the probed top, so a
      one-block setback becomes a retaining wall; the material is no longer
      limited to the dirt tag. Building blocks are never replaced, but
-     road-generated kerbs/railings/leaves may be overwritten;
+     road-generated kerbs/railings/leaves may be overwritten. When the road has
+     a ceiling (a cap-formed roof or a natural cave roof), the wall stops one
+     block below it, so the ceiling layer stays road-only and the kerb never
+     climbs the hillside above the tunnel; open sky keeps the old
+     wrap-to-side-top behaviour;
    - the **kerb railing** puts one persistent-leaf layer on top of every
      contiguous wrapped run - the natural terrain top and every mid-column
-     air-gap top - never into a building; the run is not cut at the road's clear
-     cap, so there is no artificial cutoff top;
+     air-gap top - never into a building; a run artificially cut off at the
+     road's ceiling or the world edge gets no cutoff-top leaves;
    - the **drop railing** (the original leaf railing): scan **down** to the first
      standable ground. When the road is **at least 2 whole blocks** above it,
      persistent leaves (plains `oak`, desert/savanna `acacia`, snowy/taiga
      `spruce`) are placed on the road edge at the road block's height plus one;
    - the **ceiling lining** (包顶) still probes only the road's own column, now
      with the same collision/fluid rule. The clear end is re-read at write time
-     from the real column (up to the clear cap, default 4). When the cap forms
-     the ceiling, the bottom block becomes **glowstone** on the middle cell of a
-     straight 3-wide road; a natural cave roof beyond the cap keeps the kerb
-     material and instead gets a hanging **lantern** in the clear-cap cell,
-     connected to the roof by an **iron chain**. Side cells, non-3-wide roads,
-     corners and junctions get no light.
+     from the real column (up to the clear cap, default 4), and **only the
+     lowest block of the ceiling is lined** - the roof thickness above it is
+     left untouched. When the cap forms the ceiling, that bottom block becomes
+     **glowstone** on the middle cell of a straight 3-wide road; a natural cave
+     roof beyond the cap has its lowest block lined with the kerb material and
+     instead gets a hanging **lantern** in the clear-cap cell, connected to the
+     roof by an **iron chain**. Side cells, non-3-wide roads, corners and
+     junctions get no light.
 
    Every road cell dresses its own edges: a column shared by a low and a high
    road gets the low road's kerb AND the high road's railing (2026-10-15).
@@ -368,11 +374,13 @@ Two things are worth spelling out:
   广场/街件/房屋的土径均不改；地形追线候选带（无独立参考剖面，偏差直接对地形量，
   接缝带向区域侧延伸保证合法坡道可达）；路肩包边（**探2包1**：向外探测两格、只包
   第1格；写入时重读最高碰撞/液体方块，保留侧比路高 >1 格阈值，逐层只要两格中任一格
-  有碰撞或液体就包第1格，空气也补成挡土墙，不再限土类，不替换房屋）；包边护栏
-  （每个连续包边段顶端——地形顶端和空隙顶端——放一层树叶，不进入房屋）；包顶（仍只
-  探测路面本列，改用碰撞/液体判据；清格终点写入时重读，默认上限 4；到达上限形成的
-  顶板在三格宽直路中间格换**荧石**，超过上限的自然洞顶保留包边材质并在上限格放
-  **灯笼 + 铁链**，路口/拐角/非三格宽不做）；树叶落差护栏（条件不变；每条路各管
+  有碰撞或液体就包第1格，空气也补成挡土墙，不再限土类，不替换房屋；有顶板时包边在
+  顶板下一格截止，不再沿山坡包到顶板之上；开放天空仍包到侧列探测顶）；包边护栏
+  （每个连续包边段顶端——地形顶端和空隙顶端——放一层树叶，不进入房屋；因顶板或世界
+  边界被截断的段不放截断顶叶）；包顶（仍只探测路面本列，改用碰撞/液体判据；清格终点
+  写入时重读，默认上限 4；**只处理顶板最低一格**，其上厚度保持原样；到达上限形成的
+  顶板最低格在三格宽直路中间格换**荧石**，超过上限的自然洞顶最低格保留包边材质并在
+  上限格放**灯笼 + 铁链**，路口/拐角/非三格宽不做）；树叶落差护栏（条件不变；每条路各管
   各的边缘，同侧列可同时出现矮路的包边和高路的护栏）；过水段脚手架（`distance` 有
   支撑 0 / 无支撑 1，`waterlogged=true`；过水锚点为软约束，偏离水面会被计数）。
   广场（town_centers）进路网并钉定为水平（T1.5 把广场件整体移到解出的高度，写入端
@@ -391,7 +399,8 @@ Two things are worth spelling out:
 - **原理**：见上方 "How it works"。
 - **已知问题**：脚手架无支撑段会按原版规则衰减；沙漠村过水不处理；包边现已接受
   任意有碰撞/液体方块（沙壁、雪层、土径都会包，第1格为空时补墙），仅房屋结构不替换，
-  已生成的包边/护栏可被后续包边覆盖；包顶照明只在三格宽直路中间格、且存在顶板时
+  已生成的包边/护栏可被后续包边覆盖；包边止于道路顶板下一格，开放天空才包到侧列顶；
+  包顶只包道路正上方最低一格；包顶照明只在三格宽直路中间格、且存在顶板时
   出现（`maxClearLayers` 默认 4，调到 0/负数会改变可见性）；断崖处出现与原版一致
   的大台阶（计数可见）；`beard_thin` 核的密度-方块换算系数尚未实机标定，默认仍用
   `step` 核。

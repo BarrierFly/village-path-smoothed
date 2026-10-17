@@ -12,6 +12,8 @@ package dev.peoplecanfly.village_path_smoothed.pipeline;
 public final class RoadWritePolicy {
 	/** Sentinel walk surface for a column the writer refused to write (fix plan v4 D6-b). */
 	public static final int UNWRITTEN = Integer.MIN_VALUE;
+	/** Sentinel for "no ceiling above the road" in the kerb/ceiling helpers. */
+	public static final int NO_CEILING = Integer.MIN_VALUE;
 
 	private RoadWritePolicy() {
 	}
@@ -79,6 +81,16 @@ public final class RoadWritePolicy {
 	}
 
 	/**
+	 * True when the ceiling at {@code ceilingBottomY} was formed by the clear cap
+	 * itself (the block directly above the cleared space is terrain), rather than
+	 * a natural cave roof further above. Only a cap-formed ceiling turns its
+	 * single bottom layer into glowstone.
+	 */
+	public static boolean capFormedCeiling(int clearTop, int highestBlockY, int maxClearLayers, int ceilingBottomY) {
+		return maxClearLayers >= 0 && clearTop < highestBlockY && ceilingBottomY == clearTop + 1;
+	}
+
+	/**
 	 * Road walk surface in half-block units: a whole road block tops out 1.0
 	 * above its block Y, a bottom slab 0.5. All drop criteria are computed in
 	 * this unit (A1) - never from {@code roadTopBlockY + 1}.
@@ -90,6 +102,23 @@ public final class RoadWritePolicy {
 	/** Kerb: the side walk surface is more than {@code minDropHeight} whole blocks above the road. */
 	public static boolean kerbApplies(int sideWalkSurface2, int roadWalkSurface2, int minDropHeight) {
 		return sideWalkSurface2 - roadWalkSurface2 > 2 * minDropHeight;
+	}
+
+	/**
+	 * Top Y the kerb wall may write. When the road has a ceiling (a cap-formed
+	 * roof or a natural cave roof), the wall stops one block below it: the
+	 * ceiling layer itself belongs to the road column only, and the kerb must not
+	 * climb the hillside above the tunnel. Open sky ({@link #NO_CEILING}) keeps
+	 * the old behaviour and wraps up to the probed side top.
+	 *
+	 * @param probeTopY highest collision/fluid block in the two probed side columns
+	 * @param ceilingBottomY bottom block of the road's ceiling, or {@link #NO_CEILING}
+	 */
+	public static int kerbTopY(int probeTopY, int ceilingBottomY) {
+		if (ceilingBottomY == NO_CEILING) {
+			return probeTopY;
+		}
+		return Math.min(probeTopY, ceilingBottomY - 1);
 	}
 
 	/** Railing: the road walk surface is more than {@code minDropHeight} whole blocks above the side. */

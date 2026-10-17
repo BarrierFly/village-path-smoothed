@@ -371,6 +371,28 @@ public class RoadSmootherTest {
 	}
 
 	@Test
+	public void kerbStopsOneBlockBelowTheRoadCeiling() {
+		// No ceiling (open sky): the wall keeps wrapping to the probed side top.
+		assertEquals(90, RoadWritePolicy.kerbTopY(90, RoadWritePolicy.NO_CEILING));
+		// A ceiling below the side top cuts the wall at the roof - 1; the kerb
+		// never climbs the hillside above the tunnel and never occupies the
+		// ceiling layer itself (that layer belongs to the road column only).
+		assertEquals(69, RoadWritePolicy.kerbTopY(90, 70));
+		assertEquals(69, RoadWritePolicy.kerbTopY(70, 70));
+		// A side top below the ceiling is unchanged.
+		assertEquals(64, RoadWritePolicy.kerbTopY(64, 70));
+		// Capped clear: clearTop 64, first ceiling block at 65 -> kerb tops at 64.
+		int clearTop = RoadWritePolicy.clearTopY(60, 76, 4);
+		assertEquals(64, clearTop);
+		assertEquals(64, RoadWritePolicy.kerbTopY(90, clearTop + 1));
+		// Only the block directly above the capped clear is a cap-formed ceiling;
+		// a natural roof further above keeps the kerb material and the lantern.
+		assertTrue(RoadWritePolicy.capFormedCeiling(clearTop, 75, 4, clearTop + 1));
+		assertFalse(RoadWritePolicy.capFormedCeiling(clearTop, 75, 4, 70));
+		assertFalse(RoadWritePolicy.capFormedCeiling(clearTop, 75, -1, clearTop + 1));
+	}
+
+	@Test
 	public void beardCompensationOnlyRaisesNearBuildings() {
 		int[][] boxes = {{100, 110, 200, 210}}; // one building footprint 11x11
 		// inside the footprint and within the radius: compensated

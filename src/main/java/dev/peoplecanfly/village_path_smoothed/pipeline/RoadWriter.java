@@ -354,7 +354,7 @@ public final class RoadWriter {
 			RoadMaterialTable.StyleMaterials plazaMaterials = table.forStyle(cell.style);
 			applyKerbsAndRailings(net, cell, ctx, config, plazaMaterials,
 					RoadWritePolicy.roadTopBlockY(cell.solvedP), cell.solvedP, sideFacts, countedEdgeColumns,
-					buildingBoxes, doorFronts);
+					buildingBoxes, doorFronts, RoadWritePolicy.NO_CEILING);
 			return;
 		}
 
@@ -499,6 +499,7 @@ public final class RoadWriter {
 			}
 		}
 
+		int ceilingBottomY = RoadWritePolicy.NO_CEILING;
 		if (config.roadSmoothing.enabled) {
 			// The walk surface and the support fill are separate materials now:
 			// the non-desert surface is mud bricks, while the fill below it stays
@@ -567,91 +568,75 @@ public final class RoadWriter {
 			if (RoadWritePolicy.tunnelRoof(roadTopBlockY, clearSurfaceTopY, clearTop, config.roadSmoothing.maxClearLayers)) {
 				OVER_BUDGET_CELLS.incrementAndGet();
 			}
-			// User decision 2026-10-15 (kerb rework), extended 2026-10-17: the
-			// ceiling run above the walk surface is lined with the kerb material.
-			// When the clear stopped at its cap, the first ceiling block is the
-			// cap-formed ceiling (glowstone on a straight 3-wide middle cell); a
-			// natural roof beyond the cap keeps the kerb material and gets a
-			// hanging lantern on the middle cell instead. Plaza cells never reach
-			// here (their early return above protects the fountain).
+			// The road's ceiling is the lowest collision/fluid block above the
+			// cleared space: the cap-formed terrain or a natural cave roof. It
+			// bounds BOTH the single ceiling layer and the kerb wall (user
+			// decision 2026-10-17: no kerb above the ceiling, no ceiling beyond
+			// the road column).
+			int ceilingStart = clearTop + 1;
+			ceilingBottomY = ceilingStart > ctx.getMaxY() || aboveWater
+					? RoadWritePolicy.NO_CEILING
+					: ctx.firstCollisionOrFluidY(x, z, ceilingStart);
+			// User decision 2026-10-15 (kerb rework), extended 2026-10-17: only
+			// the bottom block of the ceiling is lined with the kerb material.
+			// When the clear stopped at its cap, that block is the cap-formed
+			// ceiling (glowstone on a straight 3-wide middle cell); a natural roof
+			// beyond the cap keeps the kerb material and gets a hanging lantern on
+			// the middle cell instead. Plaza cells never reach here (their early
+			// return above protects the fountain).
 			if (config.kerb.enabled && !aboveWater) {
 				lineCeiling(ctx, x, z, clearTop, highestBlockY, config.roadSmoothing.maxClearLayers,
-						threeWideMiddles.get(cell.index), buildingBoxes, materials);
+						ceilingBottomY, threeWideMiddles.get(cell.index), buildingBoxes, materials);
 			}
 		}
 		VpsPipeline.ROAD_CELLS_WRITTEN.incrementAndGet();
 
 		// ---- kerbs and railings on side edges (5.5)
 		applyKerbsAndRailings(net, cell, ctx, config, materials, roadTopBlockY, writtenWalkSurface2,
-				sideFacts, countedEdgeColumns, buildingBoxes, doorFronts);
+				sideFacts, countedEdgeColumns, buildingBoxes, doorFronts, ceilingBottomY);
 	}
 
 	/**
-	 * Lines the ceiling above the cleared column with the kerb material and, on
-	 * the middle cell of a straight 3-wide road, adds the ceiling light (user
-	 * decision 2026-10-17).
+	 * Lines the single lowest block of the ceiling above the cleared column with
+	 * the kerb material and, on the middle cell of a straight 3-wide road, adds
+	 * the ceiling light (user decision 2026-10-17: one layer, road column only).
 	 *
 	 * <p>Two cases:
 	 * <ul>
 	 *   <li>the clear stopped at its cap and the next block is terrain (a
-	 *       cap-formed ceiling): the bottom block becomes glowstone on a middle
-	 *       cell, the rest of the run keeps the kerb material - no lantern;</li>
-	 *   <li>the next block is air and a natural cave roof lies above: the roof
-	 *       keeps the kerb material and a hanging lantern is placed in the clear
-	 *       cap cell, connected to the roof by an iron chain - no glowstone.</li>
+	 *       cap-formed ceiling): that bottom block becomes glowstone on a middle
+	 *       cell - and nowhere else the slab on top, so the roof thickness is
+	 *       untouched;</li>
+	 *   <li>the next block is air and a natural cave roof lies above: only the
+	 *       roof's lowest block is lined with the kerb material and a hanging
+	 *       lantern is placed in the clear cap cell, connected to the roof by an
+	 *       iron chain - no glowstone.</li>
 	 * </ul>
 	 * A building block is never replaced.
 	 */
 	private static void lineCeiling(VpsGenContext ctx, int x, int z, int clearTop, int highestBlockY,
-			int maxClearLayers, boolean middle, int[][] buildingBoxes, RoadMaterialTable.StyleMaterials materials) {
-		int ceilingStart = clearTop + 1;
-		if (ceilingStart > ctx.getMaxY()) {
-			return;
-		}
-		boolean capped = maxClearLayers >= 0 && clearTop < highestBlockY;
-		if (ctx.hasCollisionOrFluid(x, ceilingStart, z)) {
-			int firstKerbY = ceilingStart;
-			if (capped && middle) {
-				if (!RoadWritePolicy.insideBuildingAt(buildingBoxes, x, ceilingStart, z)) {
-					setBlock(ctx, x, ceilingStart, z, Blocks.GLOWSTONE.defaultBlockState());
-					CEILING_GLOWSTONE_PLACED.incrementAndGet();
-				}
-				firstKerbY = ceilingStart + 1;
-			}
-			int lined = lineCeilingRun(ctx, x, z, firstKerbY, buildingBoxes, materials.kerbBlock);
-			if (lined > 0) {
-				ROOF_LINED_BLOCKS.addAndGet(lined);
-			}
-			return;
-		}
-		// Natural cave roof above the clear cap: line it with the kerb material
-		// and hang the lantern from it on the middle cell.
-		int roofY = ctx.firstCollisionOrFluidY(x, z, ceilingStart);
-		if (roofY == Integer.MIN_VALUE) {
+			int maxClearLayers, int ceilingBottomY, boolean middle, int[][] buildingBoxes,
+			RoadMaterialTable.StyleMaterials materials) {
+		if (ceilingBottomY == RoadWritePolicy.NO_CEILING || ceilingBottomY > ctx.getMaxY()) {
 			return; // open sky
 		}
-		int lined = lineCeilingRun(ctx, x, z, roofY, buildingBoxes, materials.kerbBlock);
-		if (lined > 0) {
-			ROOF_LINED_BLOCKS.addAndGet(lined);
-		}
-		if (middle) {
-			placeCeilingLantern(ctx, x, z, ceilingStart, roofY, buildingBoxes);
-		}
-	}
-
-	/** Lines the contiguous collision/fluid run starting at {@code fromY}; never replaces a building block. */
-	private static int lineCeilingRun(VpsGenContext ctx, int x, int z, int fromY, int[][] buildingBoxes, Block material) {
-		int lined = 0;
-		for (int y = fromY; y <= ctx.getMaxY(); y++) {
-			if (!ctx.hasCollisionOrFluid(x, y, z)) {
-				break; // the ceiling run ends
+		boolean capFormed = RoadWritePolicy.capFormedCeiling(clearTop, highestBlockY, maxClearLayers, ceilingBottomY);
+		boolean protectedBlock = RoadWritePolicy.insideBuildingAt(buildingBoxes, x, ceilingBottomY, z);
+		if (capFormed && middle) {
+			if (!protectedBlock) {
+				setBlock(ctx, x, ceilingBottomY, z, Blocks.GLOWSTONE.defaultBlockState());
+				CEILING_GLOWSTONE_PLACED.incrementAndGet();
 			}
-			if (!RoadWritePolicy.insideBuildingAt(buildingBoxes, x, y, z)) {
-				setBlock(ctx, x, y, z, material.defaultBlockState());
-				lined++;
-			}
+			return; // the glowstone IS the one ceiling layer
 		}
-		return lined;
+		if (!protectedBlock) {
+			setBlock(ctx, x, ceilingBottomY, z, materials.kerbBlock.defaultBlockState());
+			ROOF_LINED_BLOCKS.incrementAndGet();
+		}
+		if (!capFormed && middle) {
+			// Natural cave roof above the clear cap: hang the lantern from it.
+			placeCeilingLantern(ctx, x, z, clearTop + 1, ceilingBottomY, buildingBoxes);
+		}
 	}
 
 	/** Hanging lantern at {@code lanternY}, with an iron chain up to the natural roof. */
@@ -828,7 +813,8 @@ public final class RoadWriter {
 	 */
 	private static void applyKerbsAndRailings(RoadNetwork net, RoadCell cell, VpsGenContext ctx, VillagePathSmoothedConfig config,
 			RoadMaterialTable.StyleMaterials materials, int roadTopBlockY, int writtenWalkSurface2,
-			Map<SideKey, SideFacts> sideFacts, Set<Long> countedEdgeColumns, int[][] buildingBoxes, int[][] doorFronts) {
+			Map<SideKey, SideFacts> sideFacts, Set<Long> countedEdgeColumns, int[][] buildingBoxes,
+			int[][] doorFronts, int ceilingBottomY) {
 		int sRoad2 = writtenWalkSurface2;
 		for (int dir = 0; dir < 4; dir++) {
 			int outX = cell.x + SIDE_DX[dir];
@@ -875,7 +861,8 @@ public final class RoadWriter {
 			}
 
 			if (config.kerb.enabled && RoadWritePolicy.kerbApplies(sSide2, sRoad2, config.kerb.minDropHeight)) {
-				placeKerbWall(ctx, outX, outZ, farX, farZ, roadTopBlockY, probeTopY, buildingBoxes, materials);
+				placeKerbWall(ctx, outX, outZ, farX, farZ, roadTopBlockY, probeTopY, ceilingBottomY,
+						buildingBoxes, materials);
 			}
 
 			if (!config.railing.enabled) {
@@ -932,23 +919,29 @@ public final class RoadWriter {
 	}
 
 	/**
-	 * Wraps the first cell outward from one above the road block up to the top
-	 * probed in either of the two outward cells (user decision 2026-10-17). At
-	 * every layer, if the first or the second cell has a collision or a fluid,
-	 * the first cell gets the kerb material - even when it was air before, which
-	 * turns a one-block setback into a retaining wall. The block material is no
-	 * longer restricted to the dirt tag. A building block is never replaced.
+	 * Wraps the first cell outward from one above the road block up to the road's
+	 * ceiling (user decision 2026-10-17). At every layer, if the first or the
+	 * second cell has a collision or a fluid, the first cell gets the kerb
+	 * material - even when it was air before, which turns a one-block setback
+	 * into a retaining wall. The block material is no longer restricted to the
+	 * dirt tag. A building block is never replaced.
+	 *
+	 * <p>When the road has a ceiling, the wall stops one block below it
+	 * ({@link RoadWritePolicy#kerbTopY}): the ceiling layer belongs to the road
+	 * column only, and the kerb never climbs the hillside above the tunnel. Open
+	 * sky keeps the old "wrap to the probed side top" behaviour.
 	 *
 	 * <p>A leaf layer is placed above the top of every contiguous wrapped run
-	 * (the natural terrain top and every mid-column air-gap top). The run is not
-	 * cut at the road's clear cap, so there is no artificial cutoff top.
+	 * (the natural terrain top and every mid-column air-gap top). A run that was
+	 * artificially cut off at the ceiling gets no leaf layer, so nothing is
+	 * planted at the ceiling level outside the road column.
 	 */
 	private static void placeKerbWall(VpsGenContext ctx, int x, int z, int farX, int farZ, int roadTopBlockY,
-			int topmostY, int[][] buildingBoxes, RoadMaterialTable.StyleMaterials materials) {
+			int topmostY, int ceilingBottomY, int[][] buildingBoxes, RoadMaterialTable.StyleMaterials materials) {
 		boolean placed = false;
 		boolean runWrapped = false;
 		int runTopY = Integer.MIN_VALUE;
-		int limit = Math.min(ctx.getMaxY(), topmostY);
+		int limit = Math.min(ctx.getMaxY(), RoadWritePolicy.kerbTopY(topmostY, ceilingBottomY));
 		for (int y = roadTopBlockY + 1; y <= limit; y++) {
 			boolean nearTerrain = ctx.hasCollisionOrFluid(x, y, z);
 			boolean farTerrain = ctx.hasCollisionOrFluid(farX, y, farZ);
@@ -967,7 +960,7 @@ public final class RoadWriter {
 			runWrapped = false;
 			runTopY = Integer.MIN_VALUE;
 		}
-		if (runWrapped) {
+		if (runWrapped && (ceilingBottomY == RoadWritePolicy.NO_CEILING || runTopY + 1 < ceilingBottomY)) {
 			placeKerbRailing(ctx, x, z, runTopY + 1, buildingBoxes, materials);
 		}
 		if (placed) {

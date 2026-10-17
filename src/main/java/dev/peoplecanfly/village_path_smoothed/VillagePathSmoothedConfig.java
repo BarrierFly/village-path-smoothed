@@ -49,7 +49,7 @@ public final class VillagePathSmoothedConfig {
 		 */
 		public int maxFillLayers = 3;
 		/**
-		 * Max layers cleared above the road when it sits below the ground; beyond it the cell tunnels and the kerb lines the roof (< 0 = unlimited).
+		 * Max layers cleared above the road when it sits below the ground; beyond it the cell tunnels, only the ceiling's lowest block is lined and the kerb wall stops one block below it (< 0 = unlimited).
 		 * Writer-side only, see maxFillLayers (fix plan v2 R2).
 		 */
 		public int maxClearLayers = 4;

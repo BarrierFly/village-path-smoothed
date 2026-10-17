@@ -204,10 +204,13 @@ Rules:
   heightmap top and not at the first air of the contiguous ceiling probe. A cave
   inside the cap is cleared through, so the clear is exhaustive within the cap.
   `maxClearLayers` defaults to **4** (so the cap-formed ceiling is visible);
-  `< 0` means unlimited. A block inside a protected building box is never
-  cleared; road-generated kerbs/railings/leaves outside those boxes are fair
-  game. The contiguous-ceiling probe `ceilingSurfaceTopY` stays only for the
-  over-budget observation.
+  `< 0` means unlimited. The lowest collision/fluid block above the cleared
+  space is the road's **ceiling** (cap-formed or natural roof); it bounds both
+  the single ceiling layer and the kerb wall below it (2026-10-17). A block
+  inside a protected building box is never cleared; road-generated
+  kerbs/railings/leaves outside those boxes are fair game. The
+  contiguous-ceiling probe `ceilingSurfaceTopY` stays only for the over-budget
+  observation.
 - **Railing at water (user decision 2026-10-15).** Beside a water side column the
   drop threshold is overridden: no railing while the road walk surface is **not
   above** the water surface, and a railing as soon as it is above it - even half
@@ -365,22 +368,27 @@ Rules:
   overwritten). `kerb.minDropHeight` is **kept**: the two-column probe top must
   still rise more than the threshold above the road. The bottom course level
   with the road block stays vanilla - that is the chosen start level, not a bug.
-  A leaf **kerb railing** is placed at the top of every contiguous wrapped run
-  (terrain top and mid-column air-gap tops); a run is not cut at the road's
-  clear cap, so there is no artificial cutoff top.
-- **The ceiling above the walk surface is the collision/fluid run, with
-  cap-aware lighting (user decision 2026-10-15, extended 2026-10-17).**
-  `RoadWriter#lineCeiling` still probes only the road's own column, now with the
-  collision/fluid predicate. At a cap-formed ceiling the bottom block becomes
-  **glowstone** on the middle cell of a straight 3-wide road (not at a
-  corner/junction, never on a side cell or a non-3-wide road); the rest of the
-  run keeps the kerb material, and no lantern is placed. If the next block is
-  air and a natural cave roof lies above, the roof keeps the kerb material and
-  the clear-cap cell gets a hanging **lantern** plus an **iron chain** up to the
-  roof (no glowstone). Building blocks are never replaced. `RoadNetwork#
-  threeWideMiddleCells` implements the straight-3-wide test on the arm slices.
-  Plaza cells never reach the ceiling code - the run above a plaza platform is
-  the fountain.
+  **The wall stops one block below the road's ceiling** (2026-10-17,
+  `RoadWritePolicy#kerbTopY`): the ceiling layer belongs to the road column
+  only, and the kerb must not climb the hillside above the tunnel. With no
+  ceiling (open sky) it keeps wrapping to the probed side top. A leaf **kerb
+  railing** is placed at the top of every contiguous wrapped run (terrain top
+  and mid-column air-gap tops); a run artificially cut off at the ceiling or
+  the world edge gets no cutoff-top leaves.
+- **Only the lowest block of the ceiling is lined, and only above the road
+  (user decision 2026-10-15, restricted 2026-10-17).**
+  `RoadWriter#lineCeiling` probes only the road's own column with the
+  collision/fluid predicate and writes exactly one layer - the first
+  collision/fluid block at/above the clear end. At a cap-formed ceiling that
+  bottom block becomes **glowstone** on the middle cell of a straight 3-wide
+  road (not at a corner/junction, never on a side cell or a non-3-wide road);
+  the roof thickness above it is untouched and no lantern is placed. If the
+  clear cap stops in air and a natural cave roof lies above, only the roof's
+  lowest block is lined with the kerb material and the clear-cap cell gets a
+  hanging **lantern** plus an **iron chain** up to the roof (no glowstone).
+  Building blocks are never replaced. `RoadNetwork#threeWideMiddleCells`
+  implements the straight-3-wide test on the arm slices. Plaza cells never
+  reach the ceiling code - the run above a plaza platform is the fountain.
 - **Building shift rules (user decisions 2026-10-14 and 2026-10-15):**
   - a movable piece is a RIGID `SinglePoolElement` (a building) and nothing
     else (`BuildingComponents#isMovable`). The hay pile is **not** moved any

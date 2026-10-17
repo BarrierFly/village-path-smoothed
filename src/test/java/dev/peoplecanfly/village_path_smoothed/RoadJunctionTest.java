@@ -20,6 +20,7 @@ import java.util.Set;
 import java.util.function.BiFunction;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 /**
@@ -627,6 +628,31 @@ public class RoadJunctionTest {
 		assertEquals(0, solve(shiftedStrip()).total());
 		assertEquals(0, solve(stepWidthStrip(1)).total());
 		assertEquals(0, solve(tipStrip()).total());
+	}
+
+	@Test
+	public void ceilingLightsOnlyOnStraightThreeWideMiddleCells() {
+		Mask straight = strip(8, z -> 64, 1);
+		RoadNetwork straightNet = RoadNetwork.build(straight.cells, MAX_EXACT_WIDTH);
+		BitSet straightMiddle = straightNet.threeWideMiddleCells();
+		for (int z = 1; z <= 6; z++) {
+			assertTrue("middle of the straight 3-wide road at z=" + z,
+					straightMiddle.get(straightNet.cellAt(0, z)));
+		}
+		assertFalse("ends have no three-slice run", straightMiddle.get(straightNet.cellAt(0, 0)));
+		assertFalse("side cell is not the middle", straightMiddle.get(straightNet.cellAt(-1, 3)));
+
+		Mask cross = new Mask();
+		for (int i = -4; i <= 4; i++) {
+			for (int w = -1; w <= 1; w++) {
+				cross.add(w, i, 64);
+				cross.add(i, w, 64);
+			}
+		}
+		RoadNetwork crossNet = RoadNetwork.build(cross.cells, MAX_EXACT_WIDTH);
+		BitSet crossMiddle = crossNet.threeWideMiddleCells();
+		assertFalse("a junction is not a straight 3-wide middle cell",
+				crossMiddle.get(crossNet.cellAt(0, 0)));
 	}
 
 	private static Mask strip(int length, java.util.function.IntUnaryOperator terrain, int halfWidth) {

@@ -13,9 +13,10 @@ import dev.peoplecanfly.village_path_smoothed.terrain.WaterCrossings;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.network.chat.Component;
-import net.minecraft.tags.BlockTags;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.ChainBlock;
+import net.minecraft.world.level.block.LanternBlock;
 import net.minecraft.world.level.block.LeavesBlock;
 import net.minecraft.world.level.block.ScaffoldingBlock;
 import net.minecraft.world.level.block.SlabBlock;
@@ -33,10 +34,8 @@ import net.minecraft.world.level.block.state.properties.RotationSegment;
 import net.minecraft.world.level.block.state.properties.SlabType;
 import net.minecraft.world.level.levelgen.structure.BoundingBox;
 
-import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
@@ -141,6 +140,18 @@ public final class RoadWriter {
 	 * longer gated on a cap being configured at all.
 	 */
 	public static final AtomicLong ROOF_LINED_BLOCKS = new AtomicLong();
+	/**
+	 * Kerb railings (user decision 2026-10-17): leaf layers placed on top of a
+	 * kerb run, including the top of every run separated by an air gap, but not
+	 * where the run was artificially cut off at the world edge.
+	 */
+	public static final AtomicLong KERB_RAILINGS_PLACED = new AtomicLong();
+	/** Ceiling lights on straight 3-wide road middle cells: glowstone at a capped ceiling. */
+	public static final AtomicLong CEILING_GLOWSTONE_PLACED = new AtomicLong();
+	/** Ceiling lights on straight 3-wide road middle cells: hanging lantern + chain at a natural roof. */
+	public static final AtomicLong CEILING_LANTERNS_PLACED = new AtomicLong();
+	/** Chain blocks placed between a hanging ceiling lantern and the natural cave roof. */
+	public static final AtomicLong CEILING_CHAINS_PLACED = new AtomicLong();
 	/** Railings suppressed on a movable building's door front (user decision 2026-10-15). */
 	public static final AtomicLong RAILINGS_SKIPPED_AT_DOOR = new AtomicLong();
 	/** Railings suppressed beside water because the road is not above the water surface (user decision 2026-10-15). */
@@ -165,7 +176,6 @@ public final class RoadWriter {
 			int[][] shiftedComponents, int[][] buildingBoxes, int[][] doorFronts, int[][] doorSigns,
 			int[][] seamSigns, String village) {
 		RoadMaterialTable table = RoadMaterialTable.create(config);
-		List<Block> kerbExtras = resolveKerbExtras(config);
 		// User decision 2026-10-15: every road cell applies its own edge details
 		// - the one-owner-per-side-column rule is gone. A shared column now gets
 		// the low road's kerb AND the high road's railing, which is the point:
@@ -174,13 +184,14 @@ public final class RoadWriter {
 		// and the drop metric stays once per column.
 		Map<SideKey, SideFacts> sideFacts = new HashMap<>();
 		Set<Long> countedEdgeColumns = new HashSet<>();
+		java.util.BitSet threeWideMiddles = net.threeWideMiddleCells();
 		for (RoadCell cell : net.cells) {
 			if (cell.x < chunkBB.minX() || cell.x > chunkBB.maxX() || cell.z < chunkBB.minZ() || cell.z > chunkBB.maxZ()) {
 				continue; // written when this cell's own chunk generates
 			}
 			try {
-				writeCell(net, cell, ctx, config, table, kerbExtras, sideFacts, countedEdgeColumns, shiftedComponents,
-						buildingBoxes, doorFronts, village);
+				writeCell(net, cell, ctx, config, table, sideFacts, countedEdgeColumns, shiftedComponents,
+						buildingBoxes, doorFronts, threeWideMiddles, village);
 			} catch (Throwable t) {
 				VillagePathSmoothed.LOGGER.debug("[VPS] failed to write road cell {} {}", cell.x, cell.z, t);
 				// Review 4 risk R3: the cell's vanilla block is NOT there to fall
@@ -192,10 +203,14 @@ public final class RoadWriter {
 				writeSurfaceFallback(net, cell, ctx, config, table, shiftedComponents);
 			}
 		}
-		// debug door signs run LAST: a road write or a clear in this pass can
-		// never take a sign back down
-		writeDoorSigns(ctx, chunkBB, doorSigns, net);
-		writeSeamSigns(ctx, chunkBB, seamSigns);
+		// debug door/seam signs run LAST: a road write or a clear in this pass can
+		// never take a sign back down. Both are opt-in debug features (default off).
+		if (config.debug.doorSigns) {
+			writeDoorSigns(ctx, chunkBB, doorSigns, net);
+		}
+		if (config.debug.seamSigns) {
+			writeSeamSigns(ctx, chunkBB, seamSigns);
+		}
 	}
 
 	/**
@@ -227,12 +242,10 @@ public final class RoadWriter {
 	/** Returns the column's facts, or null when the column cannot be read (never fatal). */
 	private static SideFacts probeSideFacts(VpsGenContext ctx, int x, int z, int roadTopBlockY) {
 		try {
-			int topmost = Integer.MIN_VALUE;
-			for (int y = roadTopBlockY; y <= ctx.getMaxY(); y++) {
-				if (ctx.isSolidAt(x, y, z)) {
-					topmost = y;
-				}
-			}
+			// User decision 2026-10-17: the kerb criterion is "collision shape
+			// non-empty or fluid", re-read at write time. It is no longer a
+			// dirt-material test, and the height spectrum is not a stale probe.
+			int topmost = ctx.highestCollisionOrFluidY(x, z, roadTopBlockY);
 			int ground = ctx.groundSurfaceTopY(x, z, roadTopBlockY);
 			return new SideFacts(topmost, ground);
 		} catch (Throwable t) {
@@ -268,12 +281,6 @@ public final class RoadWriter {
 				return;
 			}
 			Block road = table.forStyle(cell.style).roadBlock;
-			Block configured = "STYLE_ROAD".equals(config.roadSmoothing.fillMaterial)
-					? null
-					: VpsCompat.blockById(config.roadSmoothing.fillMaterial);
-			if (configured != null) {
-				road = configured;
-			}
 			setBlock(ctx, cell.x, RoadWritePolicy.roadBlockY(column.walkSurface2(), column.slab()), cell.z,
 					road.defaultBlockState());
 			VpsPipeline.SURFACE_FALLBACK_WRITES.incrementAndGet();
@@ -331,9 +338,9 @@ public final class RoadWriter {
 	private static final int[] SIDE_DZ = {0, 0, -1, 1};
 
 	private static void writeCell(RoadNetwork net, RoadCell cell, VpsGenContext ctx, VillagePathSmoothedConfig config,
-			RoadMaterialTable table, List<Block> kerbExtras, Map<SideKey, SideFacts> sideFacts,
+			RoadMaterialTable table, Map<SideKey, SideFacts> sideFacts,
 			Set<Long> countedEdgeColumns, int[][] shiftedComponents,
-			int[][] buildingBoxes, int[][] doorFronts, String village) {
+			int[][] buildingBoxes, int[][] doorFronts, java.util.BitSet threeWideMiddles, String village) {
 		int x = cell.x;
 		int z = cell.z;
 
@@ -345,8 +352,9 @@ public final class RoadWriter {
 		if (cell.plaza) {
 			PLAZA_CELLS_VANILLA.incrementAndGet();
 			RoadMaterialTable.StyleMaterials plazaMaterials = table.forStyle(cell.style);
-			applyKerbsAndRailings(net, cell, ctx, config, plazaMaterials, kerbExtras,
-					RoadWritePolicy.roadTopBlockY(cell.solvedP), cell.solvedP, sideFacts, countedEdgeColumns, doorFronts);
+			applyKerbsAndRailings(net, cell, ctx, config, plazaMaterials,
+					RoadWritePolicy.roadTopBlockY(cell.solvedP), cell.solvedP, sideFacts, countedEdgeColumns,
+					buildingBoxes, doorFronts);
 			return;
 		}
 
@@ -391,9 +399,8 @@ public final class RoadWriter {
 		int minY = ctx.getMinY();
 		int maxY = ctx.getMaxY();
 		// The raw heightmap read now only feeds the observations (the model-vs-real
-		// deviation and the refused-write warning), the crossing predicate and the
-		// upward clear end. Every FILL/CUT decision comes from the directional probes
-		// below (user decision 2026-10-14).
+		// deviation and the refused-write warning) and the crossing predicate. The
+		// upward clear end is re-read at write time (user decision 2026-10-17).
 		int heightTopY = ctx.realSurfaceTopY(x, z);
 
 		// ---- water crossing. The predicate is unchanged (water at the heightmap
@@ -493,15 +500,10 @@ public final class RoadWriter {
 		}
 
 		if (config.roadSmoothing.enabled) {
+			// The walk surface and the support fill are separate materials now:
+			// the non-desert surface is mud bricks, while the fill below it stays
+			// the vanilla dirt path (user decision 2026-10-17).
 			Block roadBlock = materials.roadBlock;
-			if ("STYLE_ROAD".equals(config.roadSmoothing.fillMaterial)) {
-				// support columns use the style's road material
-			} else {
-				Block configured = VpsCompat.blockById(config.roadSmoothing.fillMaterial);
-				if (configured != null) {
-					roadBlock = configured;
-				}
-			}
 
 			if (aboveWater) {
 				// A crossing above the water is always a bridge deck: no scaffold
@@ -551,79 +553,163 @@ public final class RoadWriter {
 						: roadBlock.defaultBlockState();
 				setWaterloggableBlock(ctx, x, roadTopBlockY, z, roadState);
 			}
-			// Clear upward to min(clear cap, real surface top): never stop at the
-			// first air, so a cave inside the cap is cleared out too (user decision
-			// 2026-10-15). The real surface top replaces the contiguous-ceiling
-			// probe as the clear end.
-			clearAbove(ctx, x, z, roadTopBlockY, heightTopY, config);
-			int clearTop = RoadWritePolicy.clearTopY(roadTopBlockY, heightTopY, config.roadSmoothing.maxClearLayers);
-			if (RoadWritePolicy.tunnelRoof(roadTopBlockY, heightTopY, clearTop, config.roadSmoothing.maxClearLayers)) {
+			// User decision 2026-10-17: the clear end is re-read from the real
+			// column at write time ("highest block with a collision or a fluid"),
+			// not the possibly-stale height spectrum. The cap still applies, and
+			// building blocks are never cleared.
+			int highestBlockY = ctx.highestCollisionOrFluidY(x, z, roadTopBlockY + 1);
+			int clearSurfaceTopY = highestBlockY + 1;
+			int clearTop = RoadWritePolicy.clearTopY(roadTopBlockY, clearSurfaceTopY,
+					config.roadSmoothing.maxClearLayers);
+			// Clear upward to min(clear cap, the fresh column top): never stop at the
+			// first air, so a cave inside the cap is cleared out too.
+			clearAbove(ctx, x, z, roadTopBlockY, clearTop, buildingBoxes);
+			if (RoadWritePolicy.tunnelRoof(roadTopBlockY, clearSurfaceTopY, clearTop, config.roadSmoothing.maxClearLayers)) {
 				OVER_BUDGET_CELLS.incrementAndGet();
 			}
-			// User decision 2026-10-15 (kerb rework): the ceiling run directly above
-			// the walk surface is lined with the kerb material for its whole
-			// contiguous length - "转包顶". Whatever the capped clear left above the
-			// road (a tunnel roof, an overhang past the cap) gets the full lining;
-			// with the default unlimited clear the run is empty and this is a no-op.
-			// This replaces the old single-block lining at the clear cap and no
-			// longer depends on a cap being configured. Plaza cells never reach
+			// User decision 2026-10-15 (kerb rework), extended 2026-10-17: the
+			// ceiling run above the walk surface is lined with the kerb material.
+			// When the clear stopped at its cap, the first ceiling block is the
+			// cap-formed ceiling (glowstone on a straight 3-wide middle cell); a
+			// natural roof beyond the cap keeps the kerb material and gets a
+			// hanging lantern on the middle cell instead. Plaza cells never reach
 			// here (their early return above protects the fountain).
 			if (config.kerb.enabled && !aboveWater) {
-				lineCeiling(ctx, x, z, roadTopBlockY, materials);
+				lineCeiling(ctx, x, z, clearTop, highestBlockY, config.roadSmoothing.maxClearLayers,
+						threeWideMiddles.get(cell.index), buildingBoxes, materials);
 			}
 		}
 		VpsPipeline.ROAD_CELLS_WRITTEN.incrementAndGet();
 
 		// ---- kerbs and railings on side edges (5.5)
-		applyKerbsAndRailings(net, cell, ctx, config, materials, kerbExtras, roadTopBlockY, writtenWalkSurface2,
-				sideFacts, countedEdgeColumns, doorFronts);
+		applyKerbsAndRailings(net, cell, ctx, config, materials, roadTopBlockY, writtenWalkSurface2,
+				sideFacts, countedEdgeColumns, buildingBoxes, doorFronts);
 	}
 
 	/**
-	 * Lines the contiguous run of blocks directly above the road block with the
-	 * style's kerb material, up to the first air (the run's top). The road block
-	 * itself and everything below are untouched.
+	 * Lines the ceiling above the cleared column with the kerb material and, on
+	 * the middle cell of a straight 3-wide road, adds the ceiling light (user
+	 * decision 2026-10-17).
+	 *
+	 * <p>Two cases:
+	 * <ul>
+	 *   <li>the clear stopped at its cap and the next block is terrain (a
+	 *       cap-formed ceiling): the bottom block becomes glowstone on a middle
+	 *       cell, the rest of the run keeps the kerb material - no lantern;</li>
+	 *   <li>the next block is air and a natural cave roof lies above: the roof
+	 *       keeps the kerb material and a hanging lantern is placed in the clear
+	 *       cap cell, connected to the roof by an iron chain - no glowstone.</li>
+	 * </ul>
+	 * A building block is never replaced.
 	 */
-	private static void lineCeiling(VpsGenContext ctx, int x, int z, int roadTopBlockY,
-			RoadMaterialTable.StyleMaterials materials) {
-		int lined = 0;
-		for (int y = roadTopBlockY + 1; y <= ctx.getMaxY(); y++) {
-			if (!ctx.isSolidAt(x, y, z)) {
-				break; // the ceiling run ends
-			}
-			setBlock(ctx, x, y, z, materials.kerbBlock.defaultBlockState());
-			lined++;
+	private static void lineCeiling(VpsGenContext ctx, int x, int z, int clearTop, int highestBlockY,
+			int maxClearLayers, boolean middle, int[][] buildingBoxes, RoadMaterialTable.StyleMaterials materials) {
+		int ceilingStart = clearTop + 1;
+		if (ceilingStart > ctx.getMaxY()) {
+			return;
 		}
+		boolean capped = maxClearLayers >= 0 && clearTop < highestBlockY;
+		if (ctx.hasCollisionOrFluid(x, ceilingStart, z)) {
+			int firstKerbY = ceilingStart;
+			if (capped && middle) {
+				if (!RoadWritePolicy.insideBuildingAt(buildingBoxes, x, ceilingStart, z)) {
+					setBlock(ctx, x, ceilingStart, z, Blocks.GLOWSTONE.defaultBlockState());
+					CEILING_GLOWSTONE_PLACED.incrementAndGet();
+				}
+				firstKerbY = ceilingStart + 1;
+			}
+			int lined = lineCeilingRun(ctx, x, z, firstKerbY, buildingBoxes, materials.kerbBlock);
+			if (lined > 0) {
+				ROOF_LINED_BLOCKS.addAndGet(lined);
+			}
+			return;
+		}
+		// Natural cave roof above the clear cap: line it with the kerb material
+		// and hang the lantern from it on the middle cell.
+		int roofY = ctx.firstCollisionOrFluidY(x, z, ceilingStart);
+		if (roofY == Integer.MIN_VALUE) {
+			return; // open sky
+		}
+		int lined = lineCeilingRun(ctx, x, z, roofY, buildingBoxes, materials.kerbBlock);
 		if (lined > 0) {
 			ROOF_LINED_BLOCKS.addAndGet(lined);
+		}
+		if (middle) {
+			placeCeilingLantern(ctx, x, z, ceilingStart, roofY, buildingBoxes);
+		}
+	}
+
+	/** Lines the contiguous collision/fluid run starting at {@code fromY}; never replaces a building block. */
+	private static int lineCeilingRun(VpsGenContext ctx, int x, int z, int fromY, int[][] buildingBoxes, Block material) {
+		int lined = 0;
+		for (int y = fromY; y <= ctx.getMaxY(); y++) {
+			if (!ctx.hasCollisionOrFluid(x, y, z)) {
+				break; // the ceiling run ends
+			}
+			if (!RoadWritePolicy.insideBuildingAt(buildingBoxes, x, y, z)) {
+				setBlock(ctx, x, y, z, material.defaultBlockState());
+				lined++;
+			}
+		}
+		return lined;
+	}
+
+	/** Hanging lantern at {@code lanternY}, with an iron chain up to the natural roof. */
+	private static void placeCeilingLantern(VpsGenContext ctx, int x, int z, int lanternY, int roofY,
+			int[][] buildingBoxes) {
+		if (lanternY >= ctx.getMinY() && lanternY <= ctx.getMaxY()
+				&& !RoadWritePolicy.insideBuildingAt(buildingBoxes, x, lanternY, z)) {
+			BlockState lantern = Blocks.LANTERN.defaultBlockState();
+			if (lantern.hasProperty(LanternBlock.HANGING)) {
+				lantern = lantern.setValue(LanternBlock.HANGING, true);
+			}
+			setBlock(ctx, x, lanternY, z, lantern);
+			CEILING_LANTERNS_PLACED.incrementAndGet();
+		}
+		for (int y = lanternY + 1; y < roofY; y++) {
+			if (y < ctx.getMinY() || y > ctx.getMaxY()
+					|| RoadWritePolicy.insideBuildingAt(buildingBoxes, x, y, z)) {
+				continue;
+			}
+			BlockState chain = Blocks.CHAIN.defaultBlockState();
+			if (chain.hasProperty(ChainBlock.AXIS)) {
+				chain = chain.setValue(ChainBlock.AXIS, Direction.Axis.Y);
+			}
+			setBlock(ctx, x, y, z, chain);
+			CEILING_CHAINS_PLACED.incrementAndGet();
 		}
 	}
 
 	/** Support fill from the ground block up to (not including) the road block. */
 	private static void fillSupport(VpsGenContext ctx, int x, int z, int groundTopY, int roadTopBlockY,
 			RoadMaterialTable.StyleMaterials materials, VillagePathSmoothedConfig config) {
-		Block roadBlock = materials.roadBlock;
+		// The fill is deliberately NOT the new mud-brick surface: the dirt path
+		// packed under the road stays unchanged (user decision 2026-10-17). A
+		// configured fillMaterial still overrides it.
+		Block fillBlock = materials.fillBlock;
 		if (!"STYLE_ROAD".equals(config.roadSmoothing.fillMaterial)) {
 			Block configured = VpsCompat.blockById(config.roadSmoothing.fillMaterial);
 			if (configured != null) {
-				roadBlock = configured;
+				fillBlock = configured;
 			}
 		}
 		for (int y = groundTopY - 1; y < roadTopBlockY; y++) {
-			setBlock(ctx, x, y, z, roadBlock.defaultBlockState());
+			setBlock(ctx, x, y, z, fillBlock.defaultBlockState());
 		}
 	}
 
 	/**
-	 * Clears the terrain left above the road block, up to the clear cap.
-	 *
-	 * @param ceilingTopY first air above the contiguous terrain run above the road
-	 *        (the upward probe), so a canopy or a floating layer above an open road
-	 *        is not razed
+	 * Clears the terrain left above the road block, up to {@code clearTop}
+	 * (already clamped by the cap and the freshly re-read column top). A building
+	 * block inside a protected box is never cleared, while road decorations
+	 * (kerbs, leaves, scaffolding) outside those boxes are not protected.
 	 */
-	private static void clearAbove(VpsGenContext ctx, int x, int z, int roadTopBlockY, int ceilingTopY, VillagePathSmoothedConfig config) {
-		int clearTop = RoadWritePolicy.clearTopY(roadTopBlockY, ceilingTopY, config.roadSmoothing.maxClearLayers);
+	private static void clearAbove(VpsGenContext ctx, int x, int z, int roadTopBlockY, int clearTop,
+			int[][] buildingBoxes) {
 		for (int y = roadTopBlockY + 1; y <= clearTop; y++) {
+			if (RoadWritePolicy.insideBuildingAt(buildingBoxes, x, y, z)) {
+				continue;
+			}
 			setBlock(ctx, x, y, z, Blocks.AIR.defaultBlockState());
 		}
 	}
@@ -718,14 +804,14 @@ public final class RoadWriter {
 	 * probes decide the two details independently:
 	 *
 	 * <ul>
-	 *   <li><b>Kerb (the wall)</b>: scan <b>up</b> from the road block's level
-	 *       through air gaps to the side column's height-spectrum top and wrap
-	 *       the blocks above the road when they rise more than
-	 *       {@code kerb.minDropHeight} above it. The old gate - "the side must be
-	 *       solid AT the road level" - is gone: an open edge with a shelf higher
-	 *       up is wrapped too, and the wrap skips the air gap and continues to
-	 *       the topmost block. The threshold itself is unchanged (user decision
-	 *       2026-10-15): a side rising exactly one block still gets no kerb.</li>
+	 *   <li><b>Kerb (the wall)</b>: probe the first and second cell outward from
+	 *       the road block's level through air gaps; the highest collision/fluid
+	 *       block in either column is the probe top. The old drop threshold is
+	 *       kept (the side must rise more than {@code kerb.minDropHeight}), but
+	 *       every layer is wrapped when <em>either</em> of the two columns has a
+	 *       collision or a fluid. The first column is filled even where it was
+	 *       air, and the material is no longer limited to dirt. Building blocks
+	 *       are never replaced.</li>
 	 *   <li><b>Railing</b>: scan <b>down</b> to the first standable ground and
 	 *       apply a railing when the road is more than {@code railing.minDropHeight}
 	 *       above it. Conditions unchanged: the door skip, the water rule and the
@@ -741,8 +827,8 @@ public final class RoadWriter {
 	 *        scaffold is a full block, so it is half a unit above a slab)
 	 */
 	private static void applyKerbsAndRailings(RoadNetwork net, RoadCell cell, VpsGenContext ctx, VillagePathSmoothedConfig config,
-			RoadMaterialTable.StyleMaterials materials, List<Block> kerbExtras, int roadTopBlockY, int writtenWalkSurface2,
-			Map<SideKey, SideFacts> sideFacts, Set<Long> countedEdgeColumns, int[][] doorFronts) {
+			RoadMaterialTable.StyleMaterials materials, int roadTopBlockY, int writtenWalkSurface2,
+			Map<SideKey, SideFacts> sideFacts, Set<Long> countedEdgeColumns, int[][] buildingBoxes, int[][] doorFronts) {
 		int sRoad2 = writtenWalkSurface2;
 		for (int dir = 0; dir < 4; dir++) {
 			int outX = cell.x + SIDE_DX[dir];
@@ -750,17 +836,29 @@ public final class RoadWriter {
 			if (net.cellAt(outX, outZ) >= 0) {
 				continue; // road continues this way: no side edge
 			}
+			// User decision 2026-10-17 ("探2包1"): probe the first and the second
+			// cell outward, but still wrap only the first cell. The second cell can
+			// be the one that carries the terrain (a one-block gap between road and
+			// hillside), in which case the first cell is filled up to the probed top.
+			int farX = outX + SIDE_DX[dir];
+			int farZ = outZ + SIDE_DZ[dir];
 			SideFacts facts = sideFacts.computeIfAbsent(new SideKey(outX, outZ, roadTopBlockY),
 					k -> probeSideFacts(ctx, k.x(), k.z(), k.roadTopBlockY()));
 			if (facts == null) {
 				continue; // unreadable column: never fatal, skip the details here
 			}
+			SideFacts farFacts = sideFacts.computeIfAbsent(new SideKey(farX, farZ, roadTopBlockY),
+					k -> probeSideFacts(ctx, k.x(), k.z(), k.roadTopBlockY()));
+			int probeTopY = facts.topmostY();
+			if (farFacts != null) {
+				probeTopY = Math.max(probeTopY, farFacts.topmostY());
+			}
 
-			// the side surface the kerb threshold measures against: the column's
-			// height-spectrum top when it has any block at/above the road level,
-			// the ground below when it is empty up there
-			boolean rises = facts.topmostY() != Integer.MIN_VALUE;
-			int sSide2 = rises ? 2 * (facts.topmostY() + 1) : 2 * facts.groundTopY();
+			// the side surface the kerb threshold measures against: the two-column
+			// probe top when it has any block at/above the road level, the first
+			// column's ground below when it is empty up there
+			boolean rises = probeTopY != Integer.MIN_VALUE;
+			int sSide2 = rises ? 2 * (probeTopY + 1) : 2 * facts.groundTopY();
 			// the surface the railing guards against: always the WALKABLE ground
 			// below, so an open edge under a higher shelf still counts as a drop
 			int sSideGround2 = 2 * facts.groundTopY();
@@ -777,7 +875,7 @@ public final class RoadWriter {
 			}
 
 			if (config.kerb.enabled && RoadWritePolicy.kerbApplies(sSide2, sRoad2, config.kerb.minDropHeight)) {
-				placeKerbWall(ctx, outX, outZ, roadTopBlockY, facts.topmostY(), materials, kerbExtras);
+				placeKerbWall(ctx, outX, outZ, farX, farZ, roadTopBlockY, probeTopY, buildingBoxes, materials);
 			}
 
 			if (!config.railing.enabled) {
@@ -834,27 +932,62 @@ public final class RoadWriter {
 	}
 
 	/**
-	 * Replaces dirt-tag blocks on the side column from one above the road block
-	 * up to the column's height-spectrum top, skipping air gaps (user decision
-	 * 2026-10-15; Q07 replaceable set unchanged). The block level with the road
-	 * block itself is below the wrap's start, so a level side gets nothing and a
-	 * rising side keeps its bottom course vanilla - the wrap is what "keep going
-	 * up until the outer cell runs out of blocks" asks for, from the first layer
-	 * above the walk surface.
+	 * Wraps the first cell outward from one above the road block up to the top
+	 * probed in either of the two outward cells (user decision 2026-10-17). At
+	 * every layer, if the first or the second cell has a collision or a fluid,
+	 * the first cell gets the kerb material - even when it was air before, which
+	 * turns a one-block setback into a retaining wall. The block material is no
+	 * longer restricted to the dirt tag. A building block is never replaced.
+	 *
+	 * <p>A leaf layer is placed above the top of every contiguous wrapped run
+	 * (the natural terrain top and every mid-column air-gap top). The run is not
+	 * cut at the road's clear cap, so there is no artificial cutoff top.
 	 */
-	private static void placeKerbWall(VpsGenContext ctx, int x, int z, int roadTopBlockY, int topmostY,
-			RoadMaterialTable.StyleMaterials materials, List<Block> kerbExtras) {
+	private static void placeKerbWall(VpsGenContext ctx, int x, int z, int farX, int farZ, int roadTopBlockY,
+			int topmostY, int[][] buildingBoxes, RoadMaterialTable.StyleMaterials materials) {
 		boolean placed = false;
-		for (int y = roadTopBlockY + 1; y <= Math.min(ctx.getMaxY(), topmostY); y++) {
-			BlockState existing = ctx.blockState(x, y, z);
-			if (existing.is(BlockTags.DIRT) || kerbExtras.contains(existing.getBlock())) {
-				setBlock(ctx, x, y, z, materials.kerbBlock.defaultBlockState());
-				placed = true;
+		boolean runWrapped = false;
+		int runTopY = Integer.MIN_VALUE;
+		int limit = Math.min(ctx.getMaxY(), topmostY);
+		for (int y = roadTopBlockY + 1; y <= limit; y++) {
+			boolean nearTerrain = ctx.hasCollisionOrFluid(x, y, z);
+			boolean farTerrain = ctx.hasCollisionOrFluid(farX, y, farZ);
+			if (nearTerrain || farTerrain) {
+				runTopY = y;
+				if (!RoadWritePolicy.insideBuildingAt(buildingBoxes, x, y, z)) {
+					setBlock(ctx, x, y, z, materials.kerbBlock.defaultBlockState());
+					placed = true;
+					runWrapped = true;
+				}
+				continue;
 			}
+			if (runWrapped) {
+				placeKerbRailing(ctx, x, z, runTopY + 1, buildingBoxes, materials);
+			}
+			runWrapped = false;
+			runTopY = Integer.MIN_VALUE;
+		}
+		if (runWrapped) {
+			placeKerbRailing(ctx, x, z, runTopY + 1, buildingBoxes, materials);
 		}
 		if (placed) {
 			VpsPipeline.KERBS_PLACED.incrementAndGet();
 		}
+	}
+
+	/** One leaf layer on top of a wrapped kerb run; never replaces a building block. */
+	private static void placeKerbRailing(VpsGenContext ctx, int x, int z, int y, int[][] buildingBoxes,
+			RoadMaterialTable.StyleMaterials materials) {
+		if (y < ctx.getMinY() || y > ctx.getMaxY()
+				|| RoadWritePolicy.insideBuildingAt(buildingBoxes, x, y, z)) {
+			return;
+		}
+		BlockState leaves = materials.leavesBlock.defaultBlockState();
+		if (leaves.hasProperty(LeavesBlock.PERSISTENT)) {
+			leaves = leaves.setValue(LeavesBlock.PERSISTENT, true);
+		}
+		setWaterloggableBlock(ctx, x, y, z, leaves);
+		KERB_RAILINGS_PLACED.incrementAndGet();
 	}
 
 	private static void placeRailing(VpsGenContext ctx, int x, int z, int walkSurfaceY, RoadMaterialTable.StyleMaterials materials) {
@@ -934,8 +1067,8 @@ public final class RoadWriter {
 	}
 
 	/**
-	 * Debug door signs (user request 2026-10-16, always on): one standing oak
-	 * sign at every movable building's MAIN door front, documenting the
+	 * Debug door signs (user request 2026-10-16, opt-in since 2026-10-17): one
+	 * standing oak sign at every movable building's MAIN door front, documenting the
 	 * door-to-road alignment on foot (door/basis fix plan 2026-10-17). Line 1:
 	 * the door X/Z with {@code baseWalkY + dy} (the main piece's
 	 * {@code minY + groundLevelDelta}); line 2: the selected road cell's X/Z
@@ -1004,8 +1137,8 @@ public final class RoadWriter {
 	}
 
 	/**
-	 * Debug seam signs (user request 2026-10-16): one standing sign above the
-	 * anchor road cell of every mask seam, printing the two solved coordinates
+	 * Debug seam signs (user request 2026-10-16, opt-in since 2026-10-17): one
+	 * standing sign above the anchor road cell of every mask seam, printing the two solved coordinates
 	 * and - when the seam breaks the half-block guarantee - the known cause.
 	 * Line 1/2 are "x y z" with y = solvedP / 2 (x.0 / x.5); line 3 is the
 	 * cause, line 4 the magnitude, both empty on a legal seam. The sign stands
@@ -1100,26 +1233,5 @@ public final class RoadWriter {
 			return;
 		}
 		ctx.level.setBlock(new BlockPos(x, y, z), state, WRITE_FLAGS);
-	}
-
-	private static List<Block> resolveKerbExtras(VillagePathSmoothedConfig config) {
-		List<Block> extras = new ArrayList<>();
-		for (String entry : config.kerb.replaceableBlocks) {
-			if (entry == null) {
-				continue;
-			}
-			String trimmed = entry.trim().toLowerCase();
-			if (trimmed.startsWith("#")) {
-				if (!trimmed.equals("#minecraft:dirt")) {
-					VillagePathSmoothed.LOGGER.debug("[VPS] ignoring unsupported kerb tag {}", entry);
-				}
-				continue; // the dirt tag itself is always honoured
-			}
-			Block block = VpsCompat.blockById(trimmed);
-			if (block != null) {
-				extras.add(block);
-			}
-		}
-		return extras;
 	}
 }

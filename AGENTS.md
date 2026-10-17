@@ -197,14 +197,17 @@ Rules:
   source and set WATERLOGGED (`WATERLOGGED_PLACEMENTS` in /vps stats) instead of
   silently displacing the water. Full road blocks are not waterloggable and are
   unaffected; desert villages have no water and need no special case.
-- **Clearing runs to `min(clear cap, real surface top)` (user decision
-  2026-10-15).** `RoadWriter#clearAbove` / `RoadWritePolicy#clearTopY` end at
-  `min(road + maxClearLayers, WORLD_SURFACE_WG - 1)`, not at the first air of the
-  contiguous ceiling probe: a cave inside the cap is cleared through, so the
-  clear is exhaustive within the cap. `maxClearLayers < 0` (the default) means
-  "up to the real surface top". The contiguous-ceiling probe `ceilingSurfaceTopY`
-  stays only for the over-budget observation; the tunnel-roof lining is decided
-  against the real surface top now.
+- **Clearing re-reads the column at write time and runs to `min(clear cap,
+  fresh column top)` (user decision 2026-10-17, refining 2026-10-15).**
+  `RoadWriter#clearAbove` / `RoadWritePolicy#clearTopY` end at
+  `min(road + maxClearLayers, highest collision/fluid block Y)`, not at the stale
+  heightmap top and not at the first air of the contiguous ceiling probe. A cave
+  inside the cap is cleared through, so the clear is exhaustive within the cap.
+  `maxClearLayers` defaults to **4** (so the cap-formed ceiling is visible);
+  `< 0` means unlimited. A block inside a protected building box is never
+  cleared; road-generated kerbs/railings/leaves outside those boxes are fair
+  game. The contiguous-ceiling probe `ceilingSurfaceTopY` stays only for the
+  over-budget observation.
 - **Railing at water (user decision 2026-10-15).** Beside a water side column the
   drop threshold is overridden: no railing while the road walk surface is **not
   above** the water surface, and a railing as soon as it is above it - even half
@@ -275,8 +278,10 @@ Rules:
   free residual. "Try harder to keep the old residual" is not an acceptable fix:
   move the movable interval instead; plan B (even-level plaza flattening) stays
   rejected as a default.
-- **Debug door signs are always on (user request 2026-10-16; main-door narrowing
-  and NO FRONT by the door/basis fix plan 2026-10-17, D2/D4).** Every movable
+- **Debug door signs are opt-in, default off (user request 2026-10-16, gated
+  2026-10-17; main-door narrowing and NO FRONT by the door/basis fix plan
+  2026-10-17, D2/D4).** `debug.doorSigns` must be true; both the sign list and
+  the writer are gated, so the off state costs nothing. Every movable
   building's **main door** gets one standing oak sign: line 1 the door X/Z with
   `baseWalkY + dy` (the main piece's `bbox.minY + getGroundLevelDelta`), line 2
   the selected road cell's X/Z and its solved walk surface (x.0/x.5, numbers
@@ -294,9 +299,11 @@ Rules:
   after the road cells of their own chunk. Debug visibility beats fidelity (user
   decision 2026-10-16): the sign replaces whatever occupies the target cell and
   may float, so EVERY main door gets its sign; `door signs placed / no road` in
-  `/vps stats` now means main doors without an eligible front. No config gate;
-  the water-seat base rules are deliberately untouched by it.
-- **Debug seam signs are always on (user request 2026-10-16).** `SeamSigns`
+  `/vps stats` now means main doors without an eligible front. The water-seat
+  base rules are deliberately untouched by it.
+- **Debug seam signs are opt-in, default off (user request 2026-10-16, gated
+  2026-10-17).** `debug.seamSigns` must be true; both the sign list and the
+  writer are gated. `SeamSigns`
   (pure) walks every 4-adjacency edge of the solved mask and emits one sign per
   "seam cell": an edge whose two cells come from different sources - two
   different `street/terminator` pieces (`pieceIndex` differs), a plaza cell next
@@ -346,19 +353,34 @@ Rules:
   road's railing. Do not reintroduce a single-writer gate "to keep kerb and
   railing apart" - that combination is the point. The drop metric still counts a
   column once (`countedEdgeColumns`).
-- **The kerb wall wraps from one above the road block to the column's top
-  (user decision 2026-10-15).** The wrap starts at `roadTopBlockY + 1` (never at
-  the road block's own level - a level side gets nothing), skips air gaps,
-  replaces the Q07 dirt set only, and stops at the side column's topmost block
-  ("the height-spectrum top"). `kerb.minDropHeight` is **kept**: a side rising
-  exactly one block still gets no kerb. The bottom course level with the road
-  block stays vanilla - that is the chosen start level, not a bug.
-- **The ceiling above the walk surface is fully lined with the kerb material
-  (user decision 2026-10-15).** `RoadWriter#lineCeiling` coats the contiguous
-  run directly above the road block - the old tunnel-roof lining generalised to
-  the whole run and decoupled from `maxClearLayers` (with the default unlimited
-  clear it is a no-op because the clear removed the run). Plaza cells never
-  reach it - the run above a plaza platform is the fountain.
+- **The kerb probes two cells outward but wraps only the first (user decision
+  2026-10-17, reworking 2026-10-15).** The wrap still starts at
+  `roadTopBlockY + 1` and skips air gaps. The trigger is now: at every layer
+  from one above the road to the highest collision/fluid block in either of the
+  two outward columns, if **either** cell has a non-empty collision shape or a
+  fluid, the first cell gets the kerb material. An air first cell is filled up
+  to the probe top, so a one-block setback becomes a retaining wall. The
+  material is no longer restricted to `#minecraft:dirt`; only a protected
+  building box is never replaced (road-generated kerbs/railings/leaves may be
+  overwritten). `kerb.minDropHeight` is **kept**: the two-column probe top must
+  still rise more than the threshold above the road. The bottom course level
+  with the road block stays vanilla - that is the chosen start level, not a bug.
+  A leaf **kerb railing** is placed at the top of every contiguous wrapped run
+  (terrain top and mid-column air-gap tops); a run is not cut at the road's
+  clear cap, so there is no artificial cutoff top.
+- **The ceiling above the walk surface is the collision/fluid run, with
+  cap-aware lighting (user decision 2026-10-15, extended 2026-10-17).**
+  `RoadWriter#lineCeiling` still probes only the road's own column, now with the
+  collision/fluid predicate. At a cap-formed ceiling the bottom block becomes
+  **glowstone** on the middle cell of a straight 3-wide road (not at a
+  corner/junction, never on a side cell or a non-3-wide road); the rest of the
+  run keeps the kerb material, and no lantern is placed. If the next block is
+  air and a natural cave roof lies above, the roof keeps the kerb material and
+  the clear-cap cell gets a hanging **lantern** plus an **iron chain** up to the
+  roof (no glowstone). Building blocks are never replaced. `RoadNetwork#
+  threeWideMiddleCells` implements the straight-3-wide test on the arm slices.
+  Plaza cells never reach the ceiling code - the run above a plaza platform is
+  the fountain.
 - **Building shift rules (user decisions 2026-10-14 and 2026-10-15):**
   - a movable piece is a RIGID `SinglePoolElement` (a building) and nothing
     else (`BuildingComponents#isMovable`). The hay pile is **not** moved any
@@ -570,9 +592,17 @@ Rules:
   untouched (so our own probes stay consistent).
 - `ScaffoldingBlock` re-computes `distance` on its first tick; unsupported
   spans decay. That is a documented known issue - do **not** "fix" it silently.
-- Kerbs replace only `#minecraft:dirt` (plus configured ids). Do not widen the
-  set silently; sand/snow/dirt_path are excluded on purpose (README documents
-  it and the config can extend it).
+- Kerbs and the ceiling use the collision/fluid rule, not a material whitelist:
+  any block with a non-empty collision shape or a fluid counts, and the kerb
+  replaces any non-building block in its first column (including air). Do not
+  reintroduce the dirt-tag-only restriction. `kerb.replaceableBlocks` is kept
+  only for config compatibility and is no longer read.
+- **The written road surface is mud bricks for the non-desert styles (user
+  decision 2026-10-17).** The half-step slabs stay `mud_brick_slab`, the support
+  fill below the road stays the vanilla `dirt_path`, and the desert
+  `smooth_sandstone` road/slab are unchanged. Do not retexture the fill or any
+  plaza/street-decor/building dirt path: `RoadMaterialTable` keeps separate
+  `roadBlock` (surface) and `fillBlock` (support) materials for exactly this.
 - Slabs are always **bottom** slabs; no stairs, no orientation states - road
   placement must stay rotation-independent.
 - Water-crossing cells carry the water surface as their PREFERRED height (their

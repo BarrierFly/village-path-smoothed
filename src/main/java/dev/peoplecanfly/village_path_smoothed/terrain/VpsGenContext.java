@@ -363,6 +363,45 @@ public final class VpsGenContext implements VpsProbe {
 		return isClearableTerrain(x, y, z);
 	}
 
+	/**
+	 * The kerb/ceiling criterion (user decision 2026-10-17): a block counts when
+	 * it has a non-empty collision shape or carries a fluid, regardless of its
+	 * material. This is deliberately not a dirt/terrain whitelist: a leaf canopy,
+	 * a slab or water all decide the wrap.
+	 */
+	public boolean hasCollisionOrFluid(int x, int y, int z) {
+		BlockPos pos = new BlockPos(x, y, z);
+		BlockState state = this.level.getBlockState(pos);
+		if (!state.getFluidState().isEmpty()) {
+			return true;
+		}
+		return !state.getCollisionShape(this.level, pos).isEmpty();
+	}
+
+	/**
+	 * Highest block at/above {@code fromY} whose collision shape is non-empty or
+	 * which is a fluid, re-read at write time. Returns {@code fromY - 1} when the
+	 * column has no such block above the start.
+	 */
+	public int highestCollisionOrFluidY(int x, int z, int fromY) {
+		for (int y = getMaxY(); y >= fromY; y--) {
+			if (hasCollisionOrFluid(x, y, z)) {
+				return y;
+			}
+		}
+		return fromY - 1;
+	}
+
+	/** Lowest collision/fluid block at/above {@code fromY}, or {@code Integer.MIN_VALUE} when there is none. */
+	public int firstCollisionOrFluidY(int x, int z, int fromY) {
+		for (int y = Math.max(fromY, getMinY()); y <= getMaxY(); y++) {
+			if (hasCollisionOrFluid(x, y, z)) {
+				return y;
+			}
+		}
+		return Integer.MIN_VALUE;
+	}
+
 	/** Terrain the road writes over: not air, not fluid, not replaceable. */
 	private boolean isClearableTerrain(int x, int y, int z) {
 		BlockState state = this.level.getBlockState(new BlockPos(x, y, z));

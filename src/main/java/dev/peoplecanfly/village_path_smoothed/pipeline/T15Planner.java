@@ -154,7 +154,7 @@ public final class T15Planner {
 			List<List<DoorSigns.DoorTarget>> targets = collectDoorTargets(components, pieces, scan,
 					solution.network, true);
 			solution.doorFronts = buildDoorFronts(components, pieces, targets, solution.network);
-			solution.doorSigns = computeDoorSigns(components, targets, solution.network);
+			solution.doorSigns = computeDoorSigns(components, targets, solution.network, config);
 			solution.seamSigns = computeSeamSigns(solution.network, config);
 			return solution;
 		}
@@ -281,7 +281,7 @@ public final class T15Planner {
 		// really are, because the writer uses them to refuse a road column (plan A).
 		solution.buildingBoxes = BuildingComponents.protectedBoxes(pieces);
 		solution.doorFronts = buildDoorFronts(components, pieces, finalTargets, finalNetwork);
-		solution.doorSigns = computeDoorSigns(components, finalTargets, finalNetwork);
+		solution.doorSigns = computeDoorSigns(components, finalTargets, finalNetwork, config);
 		solution.seamSigns = computeSeamSigns(finalNetwork, config);
 		if (reSolved) {
 			VpsPipeline.DOOR_TARGET_CHANGED_BY_RESOLVE.addAndGet(countDoorTargetChanges(firstTargets, finalTargets));
@@ -570,7 +570,7 @@ public final class T15Planner {
 	}
 
 	/**
-	 * Debug door signs (user request 2026-10-16, always on): one standing sign
+	 * Debug door signs (user request 2026-10-16, opt-in since 2026-10-17): one standing sign
 	 * per MAIN door - the template's real door nearest {@code building_entrance}
 	 * (door/basis fix plan 2026-10-17, D2). Line 1 is the door X/Z with the
 	 * component's {@code baseWalkY + dy}; line 2 the selected road cell and its
@@ -580,7 +580,11 @@ public final class T15Planner {
 	 * the surface the writer will actually render.
 	 */
 	static int[][] computeDoorSigns(List<BuildingComponents.Component> components,
-			List<List<DoorSigns.DoorTarget>> targetsPerComponent, RoadNetwork net) {
+			List<List<DoorSigns.DoorTarget>> targetsPerComponent, RoadNetwork net,
+			VillagePathSmoothedConfig config) {
+		if (!config.debug.doorSigns) {
+			return new int[0][];
+		}
 		int[] baseWalkY = new int[components.size()];
 		for (int c = 0; c < components.size(); c++) {
 			BuildingComponents.Component component = components.get(c);
@@ -596,12 +600,15 @@ public final class T15Planner {
 	}
 
 	/**
-	 * Debug seam signs (user request 2026-10-16, always on): one sign per seam
-	 * cell of the solved mask, so the half-block guarantee can be verified on
-	 * foot. The illegal edges (|dP| more than half a block) are counted as
-	 * observations; the sign itself names the cause on lines 3/4.
+	 * Debug seam signs (user request 2026-10-16, opt-in since 2026-10-17): one
+	 * sign per seam cell of the solved mask, so the half-block guarantee can be
+	 * verified on foot. The illegal edges (|dP| more than half a block) are
+	 * counted as observations; the sign itself names the cause on lines 3/4.
 	 */
 	static int[][] computeSeamSigns(RoadNetwork net, VillagePathSmoothedConfig config) {
+		if (!config.debug.seamSigns) {
+			return new int[0][];
+		}
 		int[][] signs = SeamSigns.compute(net, config.roadSmoothing.allowCutIntoTerrain);
 		VpsPipeline.SEAM_SIGNS_COMPUTED.addAndGet(signs.length);
 		VpsPipeline.SEAM_STEP_VIOLATIONS.addAndGet(SeamSigns.violationCount(signs));

@@ -639,7 +639,7 @@ public class RoadSmootherTest {
 	public void overBudgetMarksUnaffordableCellsForObservation() {
 		int groundTopY = 64;
 		int ceilingTopY = 64; // an open column has no ceiling above the road
-		// fix plan v2 R2 defaults: fill cap 3, clear cap -1 (unlimited)
+		// defaults: fill cap 3, clear cap 4 (visible cap-formed ceiling)
 		assertFalse(RoadWritePolicy.overBudget(2 * groundTopY, groundTopY, ceilingTopY, 3, -1));
 		assertFalse(RoadWritePolicy.overBudget(2 * groundTopY + 2 * 5, groundTopY, ceilingTopY, 3, -1)); // exactly cap+2: still affordable
 		assertTrue(RoadWritePolicy.overBudget(2 * groundTopY + 2 * 6, groundTopY, ceilingTopY, 3, -1));  // 6 above: over

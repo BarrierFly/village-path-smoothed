@@ -158,6 +158,25 @@ public final class RoadWritePolicy {
 	}
 
 	/**
+	 * True when the exact block lies inside one of the protected building boxes
+	 * {minX, maxX, minY, maxY, minZ, maxZ}. The kerb, the clear above the road and
+	 * the ceiling lining use this exact test so no building block is replaced or
+	 * removed, while road-generated decorations outside the boxes stay fair game.
+	 */
+	public static boolean insideBuildingAt(int[][] buildingBoxes, int x, int y, int z) {
+		if (buildingBoxes == null) {
+			return false;
+		}
+		for (int[] box : buildingBoxes) {
+			if (x >= box[0] && x <= box[1] && z >= box[4] && z <= box[5]
+					&& y >= box[2] && y <= box[3]) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
 	 * Plan 2026-10-17 (door/basis fix, section 3.3): true when the column lies
 	 * inside a protected piece's 2D footprint. A vanilla side street routed
 	 * through a house is still in the road network but the writer skips it

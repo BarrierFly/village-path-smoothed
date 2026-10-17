@@ -169,7 +169,7 @@ public final class VpsPipeline {
 	// exemption now anchors on the road direction; this is the frequency of the
 	// mismatch that made the old front miss the real doorway.
 	public static final AtomicLong DOOR_FRONT_DIR_MISMATCH = new AtomicLong();
-	// Debug door signs (user request 2026-10-16, always on): one standing sign
+	// Debug door signs (user request 2026-10-16, opt-in since 2026-10-17): one standing sign
 	// per template door of a movable building. WITHOUT_ROAD counts doors whose
 	// village network held no road cell at all (no second line, no sign).
 	public static final AtomicLong DOOR_SIGNS_PLACED = new AtomicLong();
@@ -564,7 +564,7 @@ public final class VpsPipeline {
 			t5Targets.add(T15Planner.doorTargetsFor(component, start.getPieces(), t5Scan, network, t5Boxes, true));
 		}
 		solution.doorFronts = T15Planner.doorFrontsFor(t5Components, start.getPieces(), t5Targets, network);
-		solution.doorSigns = T15Planner.computeDoorSigns(t5Components, t5Targets, network);
+		solution.doorSigns = T15Planner.computeDoorSigns(t5Components, t5Targets, network, config);
 		solution.seamSigns = T15Planner.computeSeamSigns(network, config);
 
 		long nanos = System.nanoTime() - begin;

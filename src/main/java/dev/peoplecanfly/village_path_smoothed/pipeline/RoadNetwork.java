@@ -165,6 +165,57 @@ public final class RoadNetwork {
 	}
 
 	/**
+	 * Middle cells of straight 3-wide road sections (user decision 2026-10-17:
+	 * the ceiling lights go on the middle cell only, and only on a straight
+	 * 3-wide stretch - not at junctions or corners).
+	 *
+	 * <p>An arm slice is the cross-section of the road: exactly three cells and
+	 * this cell in the middle. The slices one step before and after it must also
+	 * be exactly three cells wide, with the same perpendicular coordinate and
+	 * adjacent sweep coordinates. A corner shifts the middle cell, and a junction
+	 * widens at least one slice, so both are excluded by construction.
+	 */
+	public BitSet threeWideMiddleCells() {
+		BitSet out = new BitSet(cells.size());
+		for (Arm arm : arms) {
+			for (int k = 1; k + 1 < arm.slices.size(); k++) {
+				int[] slice = arm.slices.get(k);
+				if (slice.length != 3) {
+					continue;
+				}
+				int[] before = arm.slices.get(k - 1);
+				int[] after = arm.slices.get(k + 1);
+				if (before.length != 3 || after.length != 3) {
+					continue;
+				}
+				int middle = slice[1];
+				if (regionCells.get(middle)) {
+					continue; // a junction/region core
+				}
+				RoadCell mid = cells.get(middle);
+				RoadCell prev = cells.get(before[1]);
+				RoadCell next = cells.get(after[1]);
+				if (sameCrossAxis(arm.sweepAxis, mid, prev) && sameCrossAxis(arm.sweepAxis, mid, next)
+						&& sweepStep(arm.sweepAxis, mid, prev) == 1
+						&& sweepStep(arm.sweepAxis, mid, next) == 1) {
+					out.set(middle);
+				}
+			}
+		}
+		return out;
+	}
+
+	/** True when the two cells share the coordinate across the sweep axis. */
+	private static boolean sameCrossAxis(int sweepAxis, RoadCell a, RoadCell b) {
+		return sweepAxis == 0 ? a.x == b.x : a.z == b.z;
+	}
+
+	/** Absolute step along the sweep axis (0 = z, 1 = x). */
+	private static int sweepStep(int sweepAxis, RoadCell a, RoadCell b) {
+		return Math.abs(sweepAxis == 0 ? a.z - b.z : a.x - b.x);
+	}
+
+	/**
 	 * Widest break in the mask: the largest number of consecutive missing
 	 * columns between two road cells that belong to <em>different</em> 4-connected
 	 * components, in blocks. Zero when the mask is one component.

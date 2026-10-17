@@ -12,10 +12,12 @@ import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 
 /**
- * Village style -> material mapping (plan sections 2.1-A5, 5.5):
- * road slabs are mud_brick_slab for the dirt roads and smooth_sandstone_slab
- * for the desert road; kerb stones follow the Q06 decisions (savanna uses
- * terracotta); railings use persistent leaves per Q09.
+ * Village style -> material mapping (plan sections 2.1-A5, 5.5, updated
+ * 2026-10-17): full-block dirt roads are mud bricks, their half-step slabs stay
+ * mud_brick_slab, and the fill below the walk surface stays dirt_path. The
+ * desert road keeps smooth_sandstone / smooth_sandstone_slab. Kerb stones follow
+ * the Q06 decisions (savanna uses terracotta); railings use persistent leaves
+ * per Q09.
  */
 public final class RoadMaterialTable {
 	public enum Style {
@@ -23,13 +25,21 @@ public final class RoadMaterialTable {
 	}
 
 	public static final class StyleMaterials {
+		/** The block written at the walk surface (a full-block road cell). */
 		public final Block roadBlock;
+		/**
+		 * The block written as support fill below the walk surface. It stays the
+		 * vanilla road material even where the surface changed (dirt path for the
+		 * non-desert styles, smooth sandstone for the desert).
+		 */
+		public final Block fillBlock;
 		public final Block slabBlock;
 		public final Block kerbBlock;
 		public final Block leavesBlock;
 
-		StyleMaterials(Block roadBlock, Block slabBlock, Block kerbBlock, Block leavesBlock) {
+		StyleMaterials(Block roadBlock, Block fillBlock, Block slabBlock, Block kerbBlock, Block leavesBlock) {
 			this.roadBlock = roadBlock;
+			this.fillBlock = fillBlock;
 			this.slabBlock = slabBlock;
 			this.kerbBlock = kerbBlock;
 			this.leavesBlock = leavesBlock;
@@ -58,23 +68,23 @@ public final class RoadMaterialTable {
 
 	public static RoadMaterialTable create(VillagePathSmoothedConfig config) {
 		StyleMaterials plains = new StyleMaterials(
-				Blocks.DIRT_PATH, Blocks.MUD_BRICK_SLAB,
+				Blocks.MUD_BRICKS, Blocks.DIRT_PATH, Blocks.MUD_BRICK_SLAB,
 				resolve(config.kerb.blockByStyle.plains, Blocks.COBBLESTONE),
 				resolve(config.railing.leavesByStyle.plains, Blocks.OAK_LEAVES));
 		StyleMaterials desert = new StyleMaterials(
-				Blocks.SMOOTH_SANDSTONE, Blocks.SMOOTH_SANDSTONE_SLAB,
+				Blocks.SMOOTH_SANDSTONE, Blocks.SMOOTH_SANDSTONE, Blocks.SMOOTH_SANDSTONE_SLAB,
 				resolve(config.kerb.blockByStyle.desert, Blocks.SMOOTH_SANDSTONE),
 				resolve(config.railing.leavesByStyle.desert, Blocks.ACACIA_LEAVES));
 		StyleMaterials savanna = new StyleMaterials(
-				Blocks.DIRT_PATH, Blocks.MUD_BRICK_SLAB,
+				Blocks.MUD_BRICKS, Blocks.DIRT_PATH, Blocks.MUD_BRICK_SLAB,
 				resolve(config.kerb.blockByStyle.savanna, Blocks.TERRACOTTA),
 				resolve(config.railing.leavesByStyle.savanna, Blocks.ACACIA_LEAVES));
 		StyleMaterials snowy = new StyleMaterials(
-				Blocks.DIRT_PATH, Blocks.MUD_BRICK_SLAB,
+				Blocks.MUD_BRICKS, Blocks.DIRT_PATH, Blocks.MUD_BRICK_SLAB,
 				resolve(config.kerb.blockByStyle.snowy, Blocks.COBBLESTONE),
 				resolve(config.railing.leavesByStyle.snowy, Blocks.SPRUCE_LEAVES));
 		StyleMaterials taiga = new StyleMaterials(
-				Blocks.DIRT_PATH, Blocks.MUD_BRICK_SLAB,
+				Blocks.MUD_BRICKS, Blocks.DIRT_PATH, Blocks.MUD_BRICK_SLAB,
 				resolve(config.kerb.blockByStyle.taiga, Blocks.COBBLESTONE),
 				resolve(config.railing.leavesByStyle.taiga, Blocks.SPRUCE_LEAVES));
 		return new RoadMaterialTable(plains, desert, savanna, snowy, taiga);

@@ -52,7 +52,7 @@ public final class VillagePathSmoothedConfig {
 		 * Max layers cleared above the road when it sits below the ground; beyond it the cell tunnels and the kerb lines the roof (< 0 = unlimited).
 		 * Writer-side only, see maxFillLayers (fix plan v2 R2).
 		 */
-		public int maxClearLayers = -1;
+		public int maxClearLayers = 4;
 		public Objective objective = Objective.SMOOTH_FIRST;
 		/** T1.5 forward decision: solve the road profile (and shift RIGID building components) during structure assembly; T5 = legacy solve at feature placement (no building move). */
 		public RoadShapeStage roadShapeStage = RoadShapeStage.T1_5;
@@ -239,6 +239,17 @@ public final class VillagePathSmoothedConfig {
 	public static class Debug {
 		/** Debug: villagers skip their brain tick (stand still, trading still works). */
 		public boolean disableVillagerBrains = false;
+		/**
+		 * Debug seam signs: one standing sign per solved-mask seam. Off by default;
+		 * when enabled the signs are placed after the road cells of their own chunk.
+		 */
+		public boolean seamSigns = false;
+		/**
+		 * Debug door signs: one standing sign per movable building's main door.
+		 * Off by default; when enabled the signs are placed after the road cells of
+		 * their own chunk.
+		 */
+		public boolean doorSigns = false;
 	}
 
 	public static class BlockByStyle {

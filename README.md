@@ -34,9 +34,12 @@ water use scaffolding, and dangerous edges get leaf railings.
 1. **Road smoothing / 路面平滑化** — the road mask is rebuilt from the street
    templates of every village style, then a per-column profile is solved:
    - forward and lateral steps are at most half a block (`|ΔP| ≤ 1` in half units);
-   - `dirt_path` roads use **mud brick slabs**, the desert `smooth_sandstone`
-     road uses **smooth sandstone slabs**; slabs are always bottom slabs and
-     only appear where a half-step is needed;
+   - full-block `dirt_path` road cells are written as **mud bricks**; the
+     half-step slabs stay **mud brick slabs**, and the support fill below the
+     road stays the vanilla **dirt path**. The desert `smooth_sandstone` road and
+     slab are unchanged. Only the mod-written road surface changes: dirt paths
+     in plazas, street decor, buildings and the fill under the road are not
+     retextured;
    - the default objective (`SMOOTH_FIRST`) ranks *cliff penalty > total step
      count > deviation from the terrain* — so "smooth" means "as few half-block
      steps as possible": short bumps are levelled wherever the candidate band
@@ -65,7 +68,8 @@ water use scaffolding, and dangerous edges get leaf railings.
    (tall grass/ferns no longer do), and a double door keeps both leaves. The
    selected road cell is outside every protected building footprint, is not a
    decor seat, and lies on the outward side of the door wall; if there is no
-   such cell the component is not moved (`NO FRONT` on its debug sign). The
+   such cell the component is not moved (`NO FRONT` on its debug sign, when
+   `debug.doorSigns` is enabled). The
    shift is applied to the whole rigid component at once and its jigsaw
    junctions are synced, so bearding stays around the building; the shift is a
    pure function of the seed. After the buildings move, the road is re-solved
@@ -73,33 +77,48 @@ water use scaffolding, and dangerous edges get leaf railings.
    aligns the components to that final network and the road is frozen.
    Floating/buried components are only counted (`/vps stats`), never repaired
    (`buildingGuard`).
-4. **Kerbs and leaf railings / 路肩包边与树叶护栏** — each side column is probed
-   **from the road block's own height**, in the direction that decides the
-   detail:
-   - the **kerb wall**: scan **up** from the road block's level, skipping air
-     gaps, to the side column's topmost block (its height-spectrum top). When
-     that is **at least 2 whole blocks** above the road (`kerb.minDropHeight`,
-     strictly more than 1), every block from one above the road block up to that
-     topmost block that belongs to the vanilla `#minecraft:dirt` tag is replaced
-     with a village-style stone (plains/snowy/taiga `cobblestone`, desert
-     `smooth_sandstone`, savanna `terracotta`). A side does **not** have to be
-     solid at the road level any more - an open edge with a shelf higher up is
-     wrapped too;
-   - the **railing**: scan **down** to the first standable ground. When the road
-     is **at least 2 whole blocks** above it, persistent leaves (plains `oak`,
-     desert/savanna `acacia`, snowy/taiga `spruce`) are placed on the road edge
-     at the road block's height plus one.
+4. **Kerbs, kerb railings and the ceiling / 路肩包边、包边护栏与包顶** — each
+   side is probed **from the road block's own height**, and the two kerb columns
+   are probed together ("探2包1"):
+   - the **kerb wall** probes the first **and** the second cell outward, but
+     still wraps only the first. The old drop threshold is kept
+     (`kerb.minDropHeight`), and the highest block is re-read at write time as
+     "collision shape non-empty or fluid". At every layer where either of the
+     two probed cells has such a block, the first cell gets the village-style
+     stone (plains/snowy/taiga `cobblestone`, desert `smooth_sandstone`, savanna
+     `terracotta`). An air first cell is filled up to the probed top, so a
+     one-block setback becomes a retaining wall; the material is no longer
+     limited to the dirt tag. Building blocks are never replaced, but
+     road-generated kerbs/railings/leaves may be overwritten;
+   - the **kerb railing** puts one persistent-leaf layer on top of every
+     contiguous wrapped run - the natural terrain top and every mid-column
+     air-gap top - never into a building; the run is not cut at the road's clear
+     cap, so there is no artificial cutoff top;
+   - the **drop railing** (the original leaf railing): scan **down** to the first
+     standable ground. When the road is **at least 2 whole blocks** above it,
+     persistent leaves (plains `oak`, desert/savanna `acacia`, snowy/taiga
+     `spruce`) are placed on the road edge at the road block's height plus one;
+   - the **ceiling lining** (包顶) still probes only the road's own column, now
+     with the same collision/fluid rule. The clear end is re-read at write time
+     from the real column (up to the clear cap, default 4). When the cap forms
+     the ceiling, the bottom block becomes **glowstone** on the middle cell of a
+     straight 3-wide road; a natural cave roof beyond the cap keeps the kerb
+     material and instead gets a hanging **lantern** in the clear-cap cell,
+     connected to the roof by an **iron chain**. Side cells, non-3-wide roads,
+     corners and junctions get no light.
 
    Every road cell dresses its own edges: a column shared by a low and a high
    road gets the low road's kerb AND the high road's railing (2026-10-15).
 5. **Directional terrain probes / 双向地形探测** — the fill/cut decision is made
    per cell too, never from the heightmap top: a **downward** probe finds the
-   ground the road is built up from (fill versus bridge deck), an **upward** probe
-   finds the top of the contiguous terrain the road has to clear (open cut versus
-   tunnel). A canopy or a floating layer above an open road therefore no longer
-   forces a fill, and an overhang above a solid one no longer forces a cut. The
-   raw heightmap is still read for the model-vs-terrain deviation statistics and
-   the floating/buried guard, which are observations only.
+   ground the road is built up from (fill versus bridge deck), while the clear
+   end is re-read at write time as the highest block with a collision or a fluid
+   (still clamped by `maxClearLayers`). A canopy or a floating layer above an
+   open road therefore no longer forces a fill, and an overhang above a solid one
+   no longer forces a cut. Neither the clear nor the kerb replaces a protected
+   building block. The raw heightmap is still read for the model-vs-terrain
+   deviation statistics and the floating/buried guard, which are observations
+   only.
 6. **Scaffolding water crossings / 过水段脚手架** — every column with water at or
    just below the road block becomes `scaffolding` with `waterlogged=true` when
    water is present, `distance=0` when the block below fully supports it and
@@ -169,10 +188,12 @@ ModMenu is installed) but optional. / 无必装依赖；装有 ModMenu 时会出
 | `roadSmoothing.maxExactSectionWidth` | `4` | slice width solved by the exact DP; wider areas use iterative minimisation |
 | `roadSmoothing.roadSurfaceDetection` | `TEMPLATE_Y0_SOLID` | `TEMPLATE_Y0_ROAD_MATERIAL` only accepts the style's own road block |
 | `roadSmoothing.maxFillLayers` | `3` | max consecutive fill layers when the road sits above the ground; beyond it the cell becomes a bridge deck instead (`< 0` = unlimited). Writer-side only (fix plan v2 R2): it decides how a road whose height is already fixed is put out (landfill vs bridge deck) and never influences the solve |
-| `roadSmoothing.maxClearLayers` | `-1` | max layers cleared above the road when it sits below the ground; beyond it the cell tunnels and the kerb material lines the roof (`< 0` = unlimited clear up to the vanilla surface). Writer-side only, same as `maxFillLayers` (fix plan v2 R2) |
+| `roadSmoothing.maxClearLayers` | `4` | max layers cleared above the road when it sits below the ground; beyond it the cell tunnels and a ceiling is formed (`< 0` = unlimited clear up to the vanilla surface). Writer-side only, same as `maxFillLayers` (fix plan v2 R2). Default 4 makes the cap-formed ceiling/lighting visible |
 | `kerb.minDropHeight` | `1` | "side terrain at least N+1 whole blocks above the road" triggers a kerb (walk surfaces compared in half-block units) |
-| `kerb.replaceableBlocks` | `["#minecraft:dirt"]` | blocks the kerb may replace; add e.g. `minecraft:sand` for desert walls |
+| `kerb.replaceableBlocks` | `["#minecraft:dirt"]` | legacy/compatibility list; the kerb's per-layer trigger and replacement now use the collision/fluid rule and no longer restrict the replaced material |
 | `waterCrossing.enabled` | `true` | scaffolding bridges; disable to keep the vanilla road over water |
+| `debug.doorSigns` | `false` | opt-in debug door signs (main door → road cell, solved surface, actual floor, `NO FRONT`) |
+| `debug.seamSigns` | `false` | opt-in debug seam signs (one per solved-mask seam, with the residual cause when the half-block guarantee breaks) |
 | `diagnostics.dumpRoadNetwork` | `false` | log one line per solved village |
 
 ## Commands / 命令
@@ -270,9 +291,13 @@ Two things are worth spelling out:
 3. **Desert villages have no water-crossing rule** — vanilla never replaces
    desert roads with planks over water, so there is nothing to convert; the
    sandstone road is left at its vanilla height there.
-4. **Kerbs only replace `#minecraft:dirt` blocks** — desert sand walls, snow
-   layers and `dirt_path` are not in the tag, so they stay. Add them in
-   `kerb.replaceableBlocks` if you want them replaced.
+4. **Kerbs wrap any colliding/fluid block** — sand walls, snow layers and
+   `dirt_path` are all wrapped now (the dirt-only rule is gone), and the first
+   cell outward is filled even when it was air. Only protected building boxes
+   are never replaced; road-generated kerbs/railings/leaves may be overwritten.
+   The ceiling light is only placed on straight 3-wide road middle cells, never
+   at a corner/junction, and needs a ceiling (raise `maxClearLayers` above 0 to
+   see the cap-formed case).
 5. **Cliffs get a vanilla-style jump** — where the terrain drops too fast for
    half steps, the road takes the shortest jump allowed by the soft constraint
    instead of building giant landfills. The residual is counted in
@@ -339,10 +364,15 @@ Two things are worth spelling out:
 
 - **功能**：路面平滑化（半砖台阶，顺向/横向 ≤ 半格；默认 `SMOOTH_FIRST` 目标函数按
   **断崖 > 总台阶数 > 对地形的偏差** 排序，坡地下沉路段 + 包边收壁，断崖软约束
-  兜底且计数）；地形追线候选带（无独立参考剖面，偏差直接对地形量，接缝带向区域
-  侧延伸保证合法坡道可达）；路肩包边（从路块上一层起，越过空腔一直包到侧列最高块，
-  土类方块换村庄风格石材，侧比路高 >1 格才触发，不再要求路面处固体）；路面列上方
-  的连续顶板整段铺包边材质（不再依赖清理上限）；树叶护栏（条件不变；每条路各管
+  兜底且计数）；整格土径路面改铺**泥砖**，半砖仍是泥砖台阶，路面下方垫的土径、
+  广场/街件/房屋的土径均不改；地形追线候选带（无独立参考剖面，偏差直接对地形量，
+  接缝带向区域侧延伸保证合法坡道可达）；路肩包边（**探2包1**：向外探测两格、只包
+  第1格；写入时重读最高碰撞/液体方块，保留侧比路高 >1 格阈值，逐层只要两格中任一格
+  有碰撞或液体就包第1格，空气也补成挡土墙，不再限土类，不替换房屋）；包边护栏
+  （每个连续包边段顶端——地形顶端和空隙顶端——放一层树叶，不进入房屋）；包顶（仍只
+  探测路面本列，改用碰撞/液体判据；清格终点写入时重读，默认上限 4；到达上限形成的
+  顶板在三格宽直路中间格换**荧石**，超过上限的自然洞顶保留包边材质并在上限格放
+  **灯笼 + 铁链**，路口/拐角/非三格宽不做）；树叶落差护栏（条件不变；每条路各管
   各的边缘，同侧列可同时出现矮路的包边和高路的护栏）；过水段脚手架（`distance` 有
   支撑 0 / 无支撑 1，`waterlogged=true`；过水锚点为软约束，偏离水面会被计数）。
   广场（town_centers）进路网并钉定为水平（T1.5 把广场件整体移到解出的高度，写入端
@@ -359,9 +389,12 @@ Two things are worth spelling out:
 - **配置**：`config/village_path_smoothed.json`，`/vps config reload` 热重载；
   ModMenu 提供配置屏幕（可选）。
 - **原理**：见上方 "How it works"。
-- **已知问题**：脚手架无支撑段会按原版规则衰减；沙漠村过水不处理；包边只认
-  `#minecraft:dirt`（沙壁/雪层不换，可配置追加）；断崖处出现与原版一致的大台阶
-  （计数可见）；`beard_thin` 核的密度-方块换算系数尚未实机标定，默认仍用 `step` 核。
+- **已知问题**：脚手架无支撑段会按原版规则衰减；沙漠村过水不处理；包边现已接受
+  任意有碰撞/液体方块（沙壁、雪层、土径都会包，第1格为空时补墙），仅房屋结构不替换，
+  已生成的包边/护栏可被后续包边覆盖；包顶照明只在三格宽直路中间格、且存在顶板时
+  出现（`maxClearLayers` 默认 4，调到 0/负数会改变可见性）；断崖处出现与原版一致
+  的大台阶（计数可见）；`beard_thin` 核的密度-方块换算系数尚未实机标定，默认仍用
+  `step` 核。
 
 ## 开源协议
 

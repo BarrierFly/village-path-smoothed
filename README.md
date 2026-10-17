@@ -105,10 +105,12 @@ water use scaffolding, and dangerous edges get leaf railings.
      jigsaw holes, which are not road cells) gets no kerb or railing. The kerb
      used to wrap the central well's water column and plug the well shut; the
      plaza's outer boundary is unaffected;
-   - the **kerb end cap** closes the wall's along-road end: when the next side
-     column in that direction already sees open sky, one kerb column is mirrored
-     into it up to the wall top and the leaf railing continues over it, so the
-     top turns a closed corner instead of ending in a raw face;
+   - the **kerb end cap** closes the wall's along-road end where the road keeps
+     going: when the next road cell's side column already sees open sky, the cap
+     starts ABOVE the existing wall top (`wallTop + 1`, always one layer) and
+     continues upward with the same probe-2-wrap-1 rule, with the leaf railing on
+     top. It never re-fills the column from the road, and an end wall across the
+     road gets no sideways column;
    - the **drop railing** (the original leaf railing): scan **down** to the first
      standable ground. When the road is **at least 2 whole blocks** above it,
      persistent leaves (plains `oak`, desert/savanna `acacia`, snowy/taiga
@@ -413,8 +415,9 @@ Two things are worth spelling out:
   作物/藤蔓/家具/灯具等**所有非地形装饰**逐格跳过，包边遇到装饰断开而不攀爬；有顶板时包边在
   顶板下一格截止，不再沿山坡包到顶板之上；开放天空仍包到侧列探测顶）；**广场件自身的
   y=0 足迹（井口/喷泉水格、jigsaw 格，均非路格）不向里包边**，避免把中心水井糊住，
-  广场外边界不受影响；包边墙沿道路方向遇到前方已是天空的侧面时，**向该侧格补一列到墙顶
-  同高并延续包边护栏**，给墙顶收口；包边护栏
+  广场外边界不受影响；包边墙沿道路方向（且道路确实继续）遇到前方侧格已是天空时，
+  **从墙顶+1 起向上按“探2包1”继续包**（至少补一层，顶上放包边护栏），不再从路面重铺整列，
+  道路端墙也不会往横向长列；包边护栏
   （每个连续包边段顶端——地形顶端和空隙顶端——放一层树叶，不进入房屋；因顶板或世界
   边界被截断的段不放截断顶叶）；包顶（仍只探测路面本列，改用碰撞/液体判据；清格终点
   写入时重读，默认上限 4；**只处理顶板最低一格**，其上厚度保持原样；最低格若是非地形

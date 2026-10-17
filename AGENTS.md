@@ -414,11 +414,13 @@ Rules:
   `RoadNetwork#plazaFootprint`. The writer skips a side whose outward cell is
   in that footprint, so the central well/fountain mouth is never wrapped and
   plugged; the plaza's outer boundary (outside the piece footprint) still gets
-  its kerb. Separately, when a placed kerb column's along-road neighbour
-  already sees open sky above the road (the next road cell places no kerb
-  there), the writer mirrors one kerb column into that neighbour-side cell up
-  to the wall top and puts the leaf railing on it, so the wall top closes
-  instead of ending in a raw face.
+  its kerb. Separately, when the road actually continues along the wall (a
+  road cell exists at `cell + T`) and the next road cell's side cell
+  already sees open sky above the road, the writer closes the run's end ABOVE
+  the existing wall top: {@code wallTop + 1} is always placed, the layers above
+  it use the same probe-2-wrap-1 rule (probe the cap cell and its outward cell),
+  and the leaf railing goes on top. It never re-fills the column from the road,
+  and an end wall (the road's forward side) never grows a cross-road column.
 - **Only the lowest block of the ceiling is lined, and only above the road
   (user decision 2026-10-15, restricted 2026-10-17).**
   `RoadWriter#lineCeiling` probes only the road's own column with the

@@ -40,6 +40,12 @@ water use scaffolding, and dangerous edges get leaf railings.
      slab are unchanged. Only the mod-written road surface changes: dirt paths
      in plazas, street decor, buildings and the fill under the road are not
      retextured;
+   - the road mask is the **connected street surface**: the y0 cells reachable
+     from the street jigsaw connectors (plus the decor seats) are road.
+     Farmland, water channels and terracotta trim inside a street template are
+     scenery, not road: they keep their vanilla block and the writer builds no
+     kerb or railing into them. A connector base that is plain dirt still counts,
+     so a crossroad seam keeps its column;
    - the default objective (`SMOOTH_FIRST`) ranks *cliff penalty > total step
      count > deviation from the terrain* — so "smooth" means "as few half-block
      steps as possible": short bumps are levelled wherever the candidate band
@@ -77,6 +83,16 @@ water use scaffolding, and dangerous edges get leaf railings.
    aligns the components to that final network and the road is frozen.
    Floating/buried components are only counted (`/vps stats`), never repaired
    (`buildingGuard`).
+
+   **Street decor** is part of this building pass, not a plan-A bbox obstacle:
+   the writer protects the decor's **actual template blocks** (including its
+   cobblestone/snow bases) and still writes the road and the support fill
+   below/around them, so a 3×3 lamp no longer leaves holes under its empty bbox
+   columns. At T5 a multi-block decor pins its seat and actual footprint at
+   `baseWalkY`; at T1.5 the same pin is applied after the first shift and the
+   second alignment does not move that decor again, so the seat and the decor
+   cannot drift apart. 1×1 decor (lamp/cat) still rides the seat exactly like
+   before.
 4. **Kerbs, kerb railings and the ceiling / 路肩包边、包边护栏与包顶** — each
    side is probed **from the road block's own height**, and the two kerb columns
    are probed together ("探2包1"):
@@ -166,6 +182,12 @@ water use scaffolding, and dangerous edges get leaf railings.
    the skipped blocks are broken down in the `/vps stats` `feature` line. Debug
    door/seam signs are the one exception - they replace whatever they need to be
    visible.
+   **Street decor and piles use the same rule with exact positions:** a decor's
+   real template blocks (cobblestone/snow included) and the blocks a village
+   pile really placed are protected by position, not by a bounding box or the
+   5×5/7×7 potential box. The pile is recorded when it places; the old
+   whole-bbox plan-A skip for decor and the hay 1×1 box are gone, so the road
+   and its support fill run under/around the decoration.
 
 ## The mod writes the road; it does not overwrite it
 
@@ -223,7 +245,7 @@ ModMenu is installed) but optional. / 无必装依赖；装有 ModMenu 时会出
 | `roadSmoothing.stepViolationPenalty` | `32` | soft-constraint penalty per half block of excess drop (cliff escape hatch); the residual is counted in `/vps stats` |
 | `roadSmoothing.dpWindowHalfUnits` | `16` | per-cell candidate half window in half blocks (auto-shrunk for wide slices) |
 | `roadSmoothing.maxExactSectionWidth` | `4` | slice width solved by the exact DP; wider areas use iterative minimisation |
-| `roadSmoothing.roadSurfaceDetection` | `TEMPLATE_Y0_SOLID` | `TEMPLATE_Y0_ROAD_MATERIAL` only accepts the style's own road block |
+| `roadSmoothing.roadSurfaceDetection` | `TEMPLATE_Y0_SOLID` | street surface rule: `TEMPLATE_Y0_SOLID` = the y0 surface connected to the street jigsaw connectors (farmland/water/terracotta stay vanilla); `TEMPLATE_Y0_ROAD_MATERIAL` = only the style's own road block (connector cells still join) |
 | `roadSmoothing.maxFillLayers` | `3` | max consecutive fill layers when the road sits above the ground; beyond it the cell becomes a bridge deck instead (`< 0` = unlimited). Writer-side only (fix plan v2 R2): it decides how a road whose height is already fixed is put out (landfill vs bridge deck) and never influences the solve |
 | `roadSmoothing.maxClearLayers` | `4` | max layers cleared above the road when it sits below the ground; beyond it the cell tunnels and a ceiling is formed (`< 0` = unlimited clear up to the vanilla surface). Writer-side only, same as `maxFillLayers` (fix plan v2 R2). Default 4 makes the cap-formed ceiling/lighting visible |
 | `kerb.minDropHeight` | `1` | "side terrain at least N+1 whole blocks above the road" triggers a kerb (walk surfaces compared in half-block units) |
@@ -243,7 +265,9 @@ ModMenu is installed) but optional. / 无必装依赖；装有 ModMenu 时会出
   contradictions, residual step violations and their worst step, water anchor
    deviations), the vanilla-block suppression counters, the `feature` line
    (protected decoration blocks kept, broken down by road/fill/clear/kerb/
-   ceiling/railing), and villages that degenerated into a single region
+   ceiling/railing), the `decor` line (identified decor pieces/blocks, protected
+   writes, pile blocks, pin cells and T1.5 seat-sync mismatches), and villages
+   that degenerated into a single region
 - `/vps dump [radius]` — rebuild + re-solve the road network of villages near
   you and print cell/arm/region counts (diagnostics)
 - `/vps debug villagerbrain freeze on|off` — debug: freeze villagers (they
@@ -269,6 +293,9 @@ component onto the solved profile at its main door (syncing jigsaw junctions,
 clamping to the world height and guarding against overlaps with **other
 buildings** - streets and terminators are not obstacles), and then re-solves the
 road once more so the height probe compensates the buildings' new footprints.
+The mask itself is the street surface **connected to the y1 street jigsaw
+connectors**: farmland, water and terracotta inside a street template stay
+vanilla, while a connector base that is plain dirt still counts.
 The second authoritative alignment then runs against that final network and the
 road is frozen. The solution is cached on the structure start.
 
@@ -296,7 +323,9 @@ Two things are worth spelling out:
 原版街道用 `terrain_matching` 投影，每列独立贴到高度图上，于是地形一跳路面就
 跳。本 mod 在村庄拼装期（`Structure#generate` 内、包围盒冻结前）做一次
 **T1.5 前移决策**：从街道模板重建"路面掩膜"（而不是扫描世界里的 `dirt_path`
-——原版处理器会随机把路面挖成草方块洞），探测**噪声**地形（x/z 的纯函数，
+——原版处理器会随机把路面挖成草方块洞），掩膜只取与 y1 街道 jigsaw 连接点连通的
+街面（农田/水渠/陶瓦不进掩膜，保留原版；连接点下的普通 dirt 仍算路），探测**噪声**
+地形（x/z 的纯函数，
 因此决策确定），把掩膜分解为窄**臂**（精确切片 DP）与宽**域**（平台初始化 +
 行列迭代优化），求出相邻格落差 ≤ 半格的剖面，再把每个 RIGID 建筑刚性分量整体
 平移到剖面上（同步 jigsaw junction、世界高度钳制、重叠守卫），随后**按平移后的
@@ -380,6 +409,13 @@ Two things are worth spelling out:
     the cells between them keep their vanilla blocks (`split masks` in
     `/vps stats`). Before 2026-10-14 a split mask handed the whole village back
     to vanilla, which made the mod look like it did nothing in real worlds.
+12. **Street scenery is deliberately not dressed** — farmland, water channels
+    and terracotta trim inside a street template are not road (decision
+    2026-10-20). They keep their vanilla blocks and get no kerb or railing, so
+    a road cut beside a field can show a raw edge by design. Decor and piles are
+    protected by their actual blocks; a multi-block decor's T5/T1.5 pin can
+    still force a counted step where the surrounding free road cannot meet the
+    rigid base (`decor` line in `/vps stats`).
 
 ## Credits / 致谢
 
@@ -408,7 +444,10 @@ Two things are worth spelling out:
 - **功能**：路面平滑化（半砖台阶，顺向/横向 ≤ 半格；默认 `SMOOTH_FIRST` 目标函数按
   **断崖 > 总台阶数 > 对地形的偏差** 排序，坡地下沉路段 + 包边收壁，断崖软约束
   兜底且计数）；整格土径路面改铺**泥砖**，半砖仍是泥砖台阶，路面下方垫的土径、
-  广场/街件/房屋的土径均不改；地形追线候选带（无独立参考剖面，偏差直接对地形量，
+  广场/街件/房屋的土径均不改；**路面掩膜只取与街道 jigsaw 连接点连通的街面**
+  （2026-10-20 决策）：savanna 农田/水渠、desert 陶瓦镶边视为街面景物，不进掩膜、
+  保留原版方块，writer 也不向其包边/护栏；连接点下的普通 dirt 仍算路，接缝不破洞；
+  地形追线候选带（无独立参考剖面，偏差直接对地形量，
   接缝带向区域侧延伸保证合法坡道可达）；路肩包边（**探2包1**：向外探测两格、只包
   第1格；写入时重读最高碰撞/液体方块，保留侧比路高 >1 格阈值，逐层只要两格中任一格
   有碰撞或液体就包第1格，空气也补成挡土墙，不再限土类，不替换房屋；原木/树叶/花草/
@@ -433,10 +472,15 @@ Two things are worth spelling out:
   非座格且写入端不会跳过者；没有合格外侧路时房屋不动，门牌第四行写 `NO FRONT`。
   重解后再做一次权威对齐并冻结道路。位移取门邻路格的合法区间内离 0 最近者；解算结果
   按（维度+结构+锚点区块）跨实例共享。
+  **街件装饰**按实际方块保护（含圆石/雪底座），plan A 不再整 bbox 跳过，路块与垫方
+  仍写在装饰下方/周围；多格装饰在 T5 把 seat + 实际 footprint 钉在 `baseWalkY`，
+  T1.5 首轮平移后同样钉住、强制最终重解，纯多格装饰组件不再被二次对齐搬动，座位与
+  装饰不脱节；**pile 在放置时记录真正放下的方块**并按位置保护，不再按 5×5/7×7
+  潜在盒保护，也不再给干草堆单独的 1×1 保护盒。
   清格、路块、填方、包边、包顶、灯笼/铁链和护栏遇到非地形装饰都**逐格跳过**，只处理
   自然地形和本 mod 自己的路面结构（泥砖、平滑砂岩、默认圆石包边、脚手架、土径填方；
   这些保持可替换，以便同侧列“低路包边 + 高路护栏”仍成立）；跳过的方块数按类别显示在
-  `/vps stats` 的 `feature` 行。调试门牌/缝牌仍然为了可见性替换目标格。
+  `/vps stats` 的 `feature` / `decor` 行。调试门牌/缝牌仍然为了可见性替换目标格。
   路面由本 mod **写入**而非覆盖：认领列上的原版街道路块在放置链里被丢弃，未认领列
   保留原版路，因此不会再出现上下两层路。写入端只渲染不解题（R3）：超预算格保留
   解算高度并计数，不再吸附回真实地表。
@@ -447,7 +491,9 @@ Two things are worth spelling out:
 - **已知问题**：脚手架无支撑段会按原版规则衰减；沙漠村过水不处理；包边现已接受
   任意有碰撞/液体方块（沙壁、雪层、土径都会包，第1格为空时补墙），但房屋结构和所有
   非地形装饰都不替换，遇到装饰时包边断开并跳过该格；因此树/装饰正好长在路块、填方或
-  清格列时会在那里留下缺格，这是“装饰赢”的既定行为，不是漏写路；包边止于道路顶板下
+  清格列时会在那里留下缺格，这是“装饰赢”的既定行为，不是漏写路；街面景物（农田/水渠/
+  陶瓦）按 2026-10-20 决策不进路网、不包边，路切过田边时可能露出原始断面；多格装饰的
+  T5/T1.5 钉可能在与自由路格衔接处留下计数可见的台阶；包边止于道路顶板下
   一格，开放天空才包到侧列顶；
   包顶只包道路正上方最低一格；最低格是装饰时整列不包顶、不挂灯/链；包顶照明只在
   三格宽直路中间格、且存在顶板时

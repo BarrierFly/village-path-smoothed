@@ -18,6 +18,7 @@ import dev.peoplecanfly.village_path_smoothed.terrain.WaterCrossings;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.tags.BlockTags;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.Blocks;
@@ -31,10 +32,14 @@ import net.minecraft.world.level.levelgen.structure.templatesystem.StructurePlac
 import net.minecraft.world.level.levelgen.structure.templatesystem.StructureTemplate;
 import net.minecraft.world.level.levelgen.structure.templatesystem.StructureTemplateManager;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Pattern;
 
@@ -121,8 +126,10 @@ public final class RoadCollector {
 	/**
 	 * Decor seats taken into the mask (原版多向道路结构调查 2026-10-15, reworked
 	 * 2026-10-16): a street piece's up-facing y=0 jigsaw whose final_state is
-	 * one of the base materials. 167 such seats exist per vanilla version
-	 * (survey section 5.2).
+	 * one of the base materials. The vanilla data carries 248 such seats per
+	 * version (196 grass, 30 sand, 12 dirt, 6 smooth sandstone, 4 dirt path and
+	 * 0 cobblestone); 16 more y0-up jigsaws render {@code structure_void} and do
+	 * not join the mask (audit 2026-10-20, section 1.3).
 	 */
 	public static final AtomicLong SEAT_CELLS = new AtomicLong();
 	/**
@@ -140,14 +147,24 @@ public final class RoadCollector {
 	 * plan asks for.
 	 */
 	public static final AtomicLong TEMPLATE_Y0_NON_SOLID_SKIPPED = new AtomicLong();
+	/**
+	 * Audit 2026-10-20, decision 6: y=0 street cells that are scenery rather
+	 * than road - farmland, water and terracotta inside a street template, plus
+	 * the {@code structure_void} seat columns. They keep their vanilla block and
+	 * the writer does not dress a road side toward them. The rule reads the
+	 * vanilla road generation: only the road path connected to the street
+	 * jigsaws is road; fields, channels and trim are not.
+	 */
+	public static final AtomicLong TEMPLATE_Y0_SCENERY_SKIPPED = new AtomicLong();
 
 	/**
 	 * The base materials a street seat's jigsaw renders ({@code final_state}).
-	 * The four terrain bases plus the two road-material bases: the 44 dirt_path
-	 * + 2 cobblestone y=0 up-facing jigsaws per version used to stay OUT of the
+	 * The four terrain bases plus the two road-material bases: the 4 dirt_path
+	 * + 0 cobblestone y=0 up-facing jigsaws per version used to stay OUT of the
 	 * mask (agent-recorded "user decision 2026-10-15"), and join it since the
 	 * user decision of 2026-10-16 (report §2.3): a base connected to the road
-	 * belongs to the solve, whatever block it renders.
+	 * belongs to the solve, whatever block it renders. The whitelist keeps
+	 * cobblestone for custom pools even though the vanilla data audits to zero.
 	 */
 	private static final java.util.Set<String> SEAT_BASE_MATERIALS = java.util.Set.of(
 			"grass_block",
@@ -206,6 +223,25 @@ public final class RoadCollector {
 		return out;
 	}
 
+	/** Decision 6: y=0 street scenery left vanilla, by id (for /vps debug y0). */
+	private static final java.util.concurrent.ConcurrentHashMap<String, AtomicLong> Y0_SCENERY_SKIPPED_BLOCKS =
+			new java.util.concurrent.ConcurrentHashMap<>();
+
+	private static void recordY0ScenerySkip(BlockState state) {
+		String id = net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString();
+		Y0_SCENERY_SKIPPED_BLOCKS.computeIfAbsent(id, k -> new AtomicLong()).incrementAndGet();
+	}
+
+	/** Decision 6: the y=0 scenery blocks left vanilla, most frequent first. */
+	public static List<String> y0ScenerySkipReport() {
+		List<String> out = new ArrayList<>();
+		Y0_SCENERY_SKIPPED_BLOCKS.entrySet().stream()
+				.sorted((a, b) -> Long.compare(b.getValue().get(), a.getValue().get()))
+				.limit(24)
+				.forEach(entry -> out.add(entry.getKey() + " x" + entry.getValue()));
+		return out;
+	}
+
 	/** The rejected {@code town_centers} blocks, most frequent first (for /vps debug towncenters). */
 	public static List<String> townCenterSkipReport() {
 		List<String> out = new ArrayList<>();
@@ -228,6 +264,9 @@ public final class RoadCollector {
 		Map<Long, RoadCell> cellsByPos = new HashMap<>();
 		List<Seat> seats = new ArrayList<>();
 		java.util.Set<Long> plazaFootprint = new java.util.HashSet<>();
+		Set<Long> streetScenery = new HashSet<>();
+		Set<Long> allSeatColumns = new HashSet<>();
+		Set<String> decorPools = new HashSet<>();
 		int pieceCount = 0;
 
 		// RIGID piece boxes are the beard sources: vanilla adapts the noise
@@ -275,7 +314,8 @@ public final class RoadCollector {
 				continue;
 			}
 			pieceCount++;
-			collectPiece(poolPiece, singleElement, location, style, townCentre, pieceIndex, templateManager, ctx, config, cellsByPos, seats, plazaFootprint);
+			collectPiece(poolPiece, singleElement, location, style, townCentre, pieceIndex, templateManager, ctx, config,
+					cellsByPos, seats, plazaFootprint, streetScenery, allSeatColumns, decorPools);
 		}
 
 		// Decor seats join the mask AFTER the road cells and WIN a shared column
@@ -317,6 +357,9 @@ public final class RoadCollector {
 		alignProbeBoundaries(cells);
 		RoadNetwork network = RoadNetwork.build(cells, config.roadSmoothing.maxExactSectionWidth);
 		network.plazaFootprint.addAll(plazaFootprint);
+		network.streetScenery.addAll(streetScenery);
+		network.allSeatColumns.addAll(allSeatColumns);
+		network.decorPools.addAll(decorPools);
 		recordIntegrity(network);
 		// Fix plan v4 D1-e used to hand a split mask back to vanilla whole "instead
 		// of smoothing half of it". Real village masks split routinely, though, and
@@ -457,7 +500,10 @@ public final class RoadCollector {
 			VillagePathSmoothedConfig config,
 			Map<Long, RoadCell> cellsByPos,
 			List<Seat> seats,
-			java.util.Set<Long> plazaFootprint
+			java.util.Set<Long> plazaFootprint,
+			Set<Long> streetScenery,
+			Set<Long> allSeatColumns,
+			Set<String> decorPools
 	) {
 		StructureTemplate template;
 		try {
@@ -475,6 +521,12 @@ public final class RoadCollector {
 		StructureTemplate.Palette palette = settings.getRandomPalette(palettes, piece.getPosition());
 
 		BlockPos offset = piece.getPosition();
+		// Decision 6 (audit 2026-10-20): a street is not "every solid y0 block".
+		// Only the street surface CONNECTED to the y1 street jigsaw connectors is
+		// road; farmland, water and terracotta inside the template are scenery and
+		// stay vanilla. Connector bases (a few are plain dirt) are seeds and stay
+		// road, so a crossroad seam never opens a hole.
+		Set<Long> accepted = townCentre ? null : scanStreetSurface(palette, style, config, settings, offset, streetScenery);
 		for (StructureTemplate.StructureBlockInfo info : palette.blocks()) {
 			//#if MC >= 12001
 			//$$ BlockPos infoPos = info.pos();
@@ -505,10 +557,11 @@ public final class RoadCollector {
 				// must not be paved over. Qualifying seats join the mask as NORMAL
 				// solver cells that ride the solved profile (2026-10-16); other
 				// jigsaws stay excluded exactly as before.
-				collectSeat(infoState, info, infoPos, settings, offset, pieceIndex, style, seats);
+				collectSeat(infoState, info, infoPos, settings, offset, pieceIndex, style, seats,
+						allSeatColumns, decorPools);
 				continue;
-			} else if (!isRoadSurfaceCell(infoState, style, config)) {
-				continue;
+			} else if (accepted != null && !accepted.contains(RoadCell.packedXZ(infoPos.getX(), infoPos.getZ()))) {
+				continue; // scenery (farmland/water/terracotta or disconnected decoration)
 			}
 			// world position of the template cell for this piece (pivot ZERO, no mirror,
 			// exactly like SinglePoolElement.getSettings)
@@ -619,9 +672,15 @@ public final class RoadCollector {
 	 * joins the mask as a NORMAL solver cell - it rides the solved profile, the
 	 * writer renders the seat block at the solved height and the RIGID decor
 	 * piece on top is shifted to match (plan 2026-10-16).
+	 *
+	 * <p>The target pool and the column are recorded for EVERY up-facing y0
+	 * jigsaw, including the 16 {@code structure_void} ones that stay out of the
+	 * mask: the decor footprint resolver needs them to find the child piece (the
+	 * snowy square overlap, audit 2026-10-20 section 8).
 	 */
 	private static void collectSeat(BlockState state, StructureTemplate.StructureBlockInfo info, BlockPos infoPos,
-			StructurePlaceSettings settings, BlockPos offset, int pieceIndex, String style, List<Seat> seats) {
+			StructurePlaceSettings settings, BlockPos offset, int pieceIndex, String style, List<Seat> seats,
+			Set<Long> allSeatColumns, Set<String> decorPools) {
 		if (!state.hasProperty(BlockStateProperties.ORIENTATION)) {
 			return;
 		}
@@ -632,20 +691,23 @@ public final class RoadCollector {
 		} catch (Throwable t) {
 			return; // an unreadable orientation must cost the seat, not the village
 		}
-		String finalState;
+		CompoundTag nbt;
 		try {
 			//#if MC >= 12001
-			//$$ CompoundTag nbt = info.nbt();
+			//$$ nbt = info.nbt();
 			//#else
-			CompoundTag nbt = info.nbt;
-			//#endif
-			//#if MC >= 12110
-			//$$ finalState = nbt == null ? null : nbt.getString("final_state").orElse(null);
-			//#else
-			finalState = nbt == null ? null : nbt.getString("final_state");
+			nbt = info.nbt;
 			//#endif
 		} catch (Throwable t) {
 			return;
+		}
+		String finalState = nbtString(nbt, "final_state");
+		String pool = nbtString(nbt, "pool");
+		BlockPos worldPos = StructureTemplate.calculateRelativePosition(settings, infoPos).offset(offset);
+		long column = RoadCell.packedXZ(worldPos.getX(), worldPos.getZ());
+		allSeatColumns.add(column);
+		if (pool != null && !pool.isEmpty() && !"minecraft:empty".equals(pool)) {
+			decorPools.add(pool);
 		}
 		if (finalState == null) {
 			return;
@@ -654,9 +716,137 @@ public final class RoadCollector {
 		if (!SEAT_BASE_MATERIALS.contains(id)) {
 			return; // an unknown final_state is not a surveyed seat base
 		}
-		BlockPos worldPos = StructureTemplate.calculateRelativePosition(settings, infoPos).offset(offset);
 		seats.add(new Seat(worldPos.getX(), worldPos.getZ(), pieceIndex, style, id));
 		SEAT_CELLS.incrementAndGet();
+	}
+
+	/**
+	 * Decision 6 (audit 2026-10-20): the connected street surface of one
+	 * street/terminator template, in template-local XZ keys.
+	 *
+	 * <p>Vanilla's street connectors ({@code minecraft:street}, y=1) are the
+	 * seeds. Only the y0 cells reachable from them through road-like blocks are
+	 * road; farmland, water and terracotta inside the template are scenery and
+	 * keep their vanilla block. A few connector bases are plain dirt - they are
+	 * seeds regardless of material, so a crossroad seam never opens a hole.
+	 */
+	private static Set<Long> scanStreetSurface(StructureTemplate.Palette palette, String style,
+			VillagePathSmoothedConfig config, StructurePlaceSettings settings, BlockPos offset,
+			Set<Long> sceneryWorld) {
+		Map<Long, BlockState> y0 = new HashMap<>();
+		Set<Long> seeds = new HashSet<>();
+		for (StructureTemplate.StructureBlockInfo info : palette.blocks()) {
+			//#if MC >= 12001
+			//$$ BlockPos infoPos = info.pos();
+			//$$ BlockState infoState = info.state();
+			//#else
+			BlockPos infoPos = info.pos;
+			BlockState infoState = info.state;
+			//#endif
+			long key = RoadCell.packedXZ(infoPos.getX(), infoPos.getZ());
+			if (infoPos.getY() == 0) {
+				y0.put(key, infoState);
+			} else if (infoPos.getY() == 1 && infoState.is(Blocks.JIGSAW)
+					&& "minecraft:street".equals(jigsawName(info))) {
+				seeds.add(key);
+			}
+		}
+
+		Set<Long> accepted = new HashSet<>();
+		Deque<Long> queue = new ArrayDeque<>();
+		for (long seed : seeds) {
+			BlockState state = y0.get(seed);
+			if (state == null || !isSolidSurface(state)) {
+				continue;
+			}
+			if (accepted.add(seed)) {
+				queue.add(seed);
+			}
+		}
+		while (!queue.isEmpty()) {
+			long key = queue.poll();
+			int x = (int) (key >> 32);
+			int z = (int) key;
+			for (int dir = 0; dir < 4; dir++) {
+				long next = RoadCell.packedXZ(x + DIR_DX[dir], z + DIR_DZ[dir]);
+				if (accepted.contains(next)) {
+					continue;
+				}
+				BlockState state = y0.get(next);
+				if (state == null || !isRoadSurfaceCell(state, style, config)) {
+					continue;
+				}
+				accepted.add(next);
+				queue.add(next);
+			}
+		}
+
+		boolean countNonSolid = config.roadSmoothing.roadSurfaceDetection
+				!= VillagePathSmoothedConfig.RoadSurfaceDetection.TEMPLATE_Y0_ROAD_MATERIAL;
+		for (Map.Entry<Long, BlockState> entry : y0.entrySet()) {
+			BlockState state = entry.getValue();
+			if (state.isAir() || state.is(Blocks.STRUCTURE_VOID) || state.is(Blocks.STRUCTURE_BLOCK)) {
+				continue;
+			}
+			long key = entry.getKey();
+			if (state.is(Blocks.JIGSAW)) {
+				// Every y0-up jigsaw is a seat connection (including the
+				// structure_void ones with no mask cell). The writer must not dress
+				// a road side toward it; it is not counted as scenery because the
+				// whitelisted ones DO join the road network.
+				addSceneryColumn(sceneryWorld, settings, offset, key);
+				continue;
+			}
+			if (state.canBeReplaced() && countNonSolid) {
+				TEMPLATE_Y0_NON_SOLID_SKIPPED.incrementAndGet();
+				recordY0NonSolidSkip(state);
+			}
+			if (accepted.contains(key)) {
+				continue;
+			}
+			addSceneryColumn(sceneryWorld, settings, offset, key);
+			TEMPLATE_Y0_SCENERY_SKIPPED.incrementAndGet();
+			recordY0ScenerySkip(state);
+		}
+		return accepted;
+	}
+
+	private static void addSceneryColumn(Set<Long> sceneryWorld, StructurePlaceSettings settings, BlockPos offset, long localXZ) {
+		int localX = (int) (localXZ >> 32);
+		int localZ = (int) localXZ;
+		BlockPos world = StructureTemplate.calculateRelativePosition(settings, new BlockPos(localX, 0, localZ)).offset(offset);
+		sceneryWorld.add(RoadCell.packedXZ(world.getX(), world.getZ()));
+	}
+
+	/** A solid, non-marker y0 block: a connector seed may use any material (a few are plain dirt). */
+	private static boolean isSolidSurface(BlockState state) {
+		return !state.isAir()
+				&& !state.is(Blocks.STRUCTURE_VOID)
+				&& !state.is(Blocks.JIGSAW)
+				&& !state.is(Blocks.STRUCTURE_BLOCK)
+				&& !state.canBeReplaced();
+	}
+
+	private static String jigsawName(StructureTemplate.StructureBlockInfo info) {
+		CompoundTag nbt;
+		//#if MC >= 12001
+		//$$ nbt = info.nbt();
+		//#else
+		nbt = info.nbt;
+		//#endif
+		return nbtString(nbt, "name");
+	}
+
+	/** Version-correct {@code CompoundTag#getString} ({@code Optional<String>} from 1.21.10). */
+	private static String nbtString(CompoundTag nbt, String key) {
+		if (nbt == null) {
+			return null;
+		}
+		//#if MC >= 12110
+		//$$ return nbt.getString(key).orElse(null);
+		//#else
+		return nbt.getString(key);
+		//#endif
 	}
 
 	private static boolean isRoadSurfaceCell(BlockState state, String style, VillagePathSmoothedConfig config) {
@@ -668,22 +858,20 @@ public final class RoadCollector {
 			default:
 				// y==0 solid: LegacySinglePoolElement never overwrites terrain with
 				// template air, so anything that is not a marker block is road.
-				// R1-2 (2026-10-16): a non-solid/replaceable y=0 block (a plant
+				// R1-2 (2026-10-16): a non-solid/replaceable y0 block (a plant
 				// such as a dead bush, a torch, a snow layer) is NOT road - the old
 				// rule took it and the road writer then paved it over. Excluded by
 				// block semantics, not by a material whitelist, so a legitimate
 				// street material is never dropped.
-				if (state.canBeReplaced()) {
-					if (!state.isAir()) {
-						TEMPLATE_Y0_NON_SOLID_SKIPPED.incrementAndGet();
-						recordY0NonSolidSkip(state);
-					}
+				// Decision 6 (2026-10-20): farmland and terracotta are street
+				// scenery, not road. They are the blocks the vanilla road path does
+				// not traverse (the audit's savanna fields and desert trim); water
+				// is excluded by the replaceable test. The connected-surface pass
+				// also keeps disconnected decorative patches out.
+				if (!isSolidSurface(state)) {
 					return false;
 				}
-				return !state.isAir()
-						&& !state.is(Blocks.STRUCTURE_VOID)
-						&& !state.is(Blocks.JIGSAW)
-						&& !state.is(Blocks.STRUCTURE_BLOCK);
+				return !state.is(Blocks.FARMLAND) && !state.is(BlockTags.TERRACOTTA);
 		}
 	}
 

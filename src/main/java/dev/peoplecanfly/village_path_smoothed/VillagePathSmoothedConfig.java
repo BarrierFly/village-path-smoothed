@@ -167,6 +167,15 @@ public final class VillagePathSmoothedConfig {
 		 * fountain's cobblestone, water and bell; only the plaza joins the mask.
 		 */
 		public boolean includeTownCentersRoadMaterials = true;
+		/**
+		 * Street-surface test (decision 6, 2026-10-20). {@code TEMPLATE_Y0_SOLID}
+		 * takes the y=0 street surface CONNECTED to the y1 street connectors;
+		 * farmland, water and terracotta are scenery and stay vanilla.
+		 * {@code TEMPLATE_Y0_ROAD_MATERIAL} takes only the style's own road
+		 * material (debug/reference mode; connector cells still join so a seam
+		 * never opens a hole). Town centres always use their own material
+		 * whitelist.
+		 */
 		public RoadSurfaceDetection roadSurfaceDetection = RoadSurfaceDetection.TEMPLATE_Y0_SOLID;
 	}
 

@@ -56,6 +56,27 @@ public final class RoadNetwork {
 	 */
 	public final java.util.Set<Long> plazaFootprint = new java.util.HashSet<>();
 	/**
+	 * Target pool ids ({@code minecraft:village/plains/decor}, ...) of every
+	 * up-facing y=0 street jigsaw collected by {@link RoadCollector}. The decor
+	 * footprint resolver loads these pools to recognise the child pieces that
+	 * actually stand on a seat.
+	 */
+	public final java.util.Set<String> decorPools = new java.util.HashSet<>();
+	/**
+	 * Every up-facing y=0 street jigsaw column ({@link RoadCell#packedXZ}),
+	 * including the {@code structure_void} seats that do not join the mask. The
+	 * decor resolver uses them to find the child piece of a seat even when the
+	 * seat itself has no road cell (the snowy square overlap case).
+	 */
+	public final java.util.Set<Long> allSeatColumns = new java.util.HashSet<>();
+	/**
+	 * y=0 street columns that are deliberately NOT road: farmland, water and
+	 * terracotta scenery inside a street template, plus the {@code structure_void}
+	 * seat columns. They keep their vanilla block and the writer never dresses a
+	 * road side toward them (no kerb, no railing).
+	 */
+	public final java.util.Set<Long> streetScenery = new java.util.HashSet<>();
+	/**
 	 * Cells that belong to a region core. The region solver owns the seed of
 	 * exactly these cells; arm cells - including arms that fall back to the
 	 * region solver because their band blew the state budget - keep the phase-1

@@ -9,6 +9,7 @@ import dev.peoplecanfly.village_path_smoothed.VillagePathSmoothed;
 import dev.peoplecanfly.village_path_smoothed.VillagePathSmoothedConfig;
 import dev.peoplecanfly.village_path_smoothed.terrain.VpsNoiseContext;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.RegistryAccess;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.LevelHeightAccessor;
 import net.minecraft.world.level.chunk.ChunkGenerator;
@@ -85,7 +86,8 @@ public final class T15Planner {
 			StructureTemplateManager templateManager,
 			ChunkPos chunkPos,
 			LevelHeightAccessor heightAccessor,
-			VillagePathSmoothedConfig config
+			VillagePathSmoothedConfig config,
+			RegistryAccess registries
 	) {
 		// Fix plan v2, R1 precondition (§7.5.4 finding 1): the T1.5 path used to
 		// discard the SolveStats and never touched VILLAGES_SOLVED, so
@@ -94,7 +96,7 @@ public final class T15Planner {
 		// here, mirroring VpsPipeline#solveVillage.
 		long begin = System.nanoTime();
 		try {
-			return planInner(start, generator, randomState, templateManager, chunkPos, heightAccessor, config);
+			return planInner(start, generator, randomState, templateManager, chunkPos, heightAccessor, config, registries);
 		} finally {
 			VpsPipeline.SOLVE_NANOS.addAndGet(System.nanoTime() - begin);
 		}
@@ -107,10 +109,17 @@ public final class T15Planner {
 			StructureTemplateManager templateManager,
 			ChunkPos chunkPos,
 			LevelHeightAccessor heightAccessor,
-			VillagePathSmoothedConfig config
+			VillagePathSmoothedConfig config,
+			RegistryAccess registries
 	) {
 		VpsNoiseContext ctx = new VpsNoiseContext(generator, randomState, heightAccessor);
 		RoadNetwork network = RoadCollector.collect(start, ctx, config);
+		// Audit 2026-10-20: the decor pieces are recognised here and their actual
+		// blocks are what plan A/the writer protect. The set of pieces is stable
+		// across the vertical shifts; the block positions are refreshed below.
+		StreetDecor.Resolved decor = StreetDecor.identify(start.getPieces(), network, templateManager, registries);
+		VpsPipeline.STREET_DECOR_PIECES.addAndGet(decor.pieces.size());
+		VpsPipeline.STREET_DECOR_BLOCKS.addAndGet(decor.blocks.size());
 		if (config.roadSmoothing.enabled) {
 			// plan C phase 1: the plaza groups solve flat at the solver's own level
 			// (the group's median terrain height); the roads meet them via the
@@ -127,6 +136,8 @@ public final class T15Planner {
 		VpsPipeline.VILLAGES_SOLVED.incrementAndGet();
 
 		if (!config.roadSmoothing.enabled) {
+			solution.buildingBoxes = BuildingComponents.protectedBoxes(start.getPieces(), decor.pieceIndices);
+			solution.decorBlocks = decor.blocks;
 			return solution;
 		}
 
@@ -151,8 +162,15 @@ public final class T15Planner {
 		int maxY = ctx.getMaxY();
 		if (components.isEmpty()) {
 			settleSeats(solution.network, pieces, minY, maxY, config);
+			// 1x1 decor moved with its seat in settleSeats; refresh the footprint
+			// so the writer protects where the blocks really are.
+			decor = StreetDecor.refresh(decor, pieces, templateManager);
+			int[][] boxes = BuildingComponents.protectedBoxes(pieces, decor.pieceIndices);
+			int[][] exclusion = mergeBoxes(boxes, decor.columnBoxes);
 			List<List<DoorSigns.DoorTarget>> targets = collectDoorTargets(components, pieces, scan,
-					solution.network, true);
+					solution.network, exclusion, true);
+			solution.buildingBoxes = boxes;
+			solution.decorBlocks = decor.blocks;
 			solution.doorFronts = buildDoorFronts(components, pieces, targets, solution.network);
 			solution.doorSigns = computeDoorSigns(components, targets, solution.network, config);
 			solution.seamSigns = computeSeamSigns(solution.network, config);
@@ -161,11 +179,12 @@ public final class T15Planner {
 
 		int maxShift = config.roadSmoothing.maxBuildingShift;
 		List<int[]> shifted = new ArrayList<>();
-		int[][] firstBoxes = BuildingComponents.protectedBoxes(pieces);
+		int[][] firstBoxes = BuildingComponents.protectedBoxes(pieces, decor.pieceIndices);
+		int[][] firstExclusion = mergeBoxes(firstBoxes, decor.columnBoxes);
 		List<List<DoorSigns.DoorTarget>> firstTargets = new ArrayList<>(components.size());
 
 		for (BuildingComponents.Component component : components) {
-			List<DoorSigns.DoorTarget> targets = doorTargets(component, pieces, scan, network, firstBoxes, false);
+			List<DoorSigns.DoorTarget> targets = doorTargets(component, pieces, scan, network, firstExclusion, false);
 			firstTargets.add(targets);
 			int desired = targets.isEmpty()
 					? desiredShiftFromJunctions(network, component, pieces, config)
@@ -204,6 +223,12 @@ public final class T15Planner {
 		allShifted.addAll(plazaComponents);
 		syncJunctions(pieces, allShifted);
 
+		// Audit 2026-10-20 decision 2: a multi-block decor is a building and the
+		// first pass may have moved it. Refresh its footprint at the new position;
+		// the final solve pins its seat and footprint there, so the road meets the
+		// rigid base instead of the seat drifting away from it.
+		StreetDecor.Resolved decorAfterShift = StreetDecor.refresh(decor, pieces, templateManager);
+
 		// Review 4 section 7 (P1): close the probe gap that the move just opened.
 		// The road profile was solved against beard boxes taken BEFORE the shift,
 		// but a moved building has a different bounding box, so the noise probe
@@ -217,14 +242,20 @@ public final class T15Planner {
 		// zero leaves its phase-1 pin at the noise median, but the rigid platform
 		// still renders at its vanilla level (plazaVanillaP) - the two disagree,
 		// so the second collect+solve is exactly what corrects the plaza edge.
+		// The same holds for a multi-block decor's footprint pins: the first solve
+		// knew nothing about them, so the final solve must run to consume them.
 		RoadNetwork finalNetwork = network;
 		boolean reSolved = false;
-		if (!(shifted.isEmpty() && !plazaMoved(plazaComponents) && !plazaPinsMismatch(network))) {
+		if (!(shifted.isEmpty() && !plazaMoved(plazaComponents) && !plazaPinsMismatch(network)
+				&& !hasMultiBlockDecor(decorAfterShift))) {
 			RoadNetwork resolved = RoadCollector.collect(start, ctx, config);
 			if (config.roadSmoothing.enabled) {
 				// plan C phase 2: pin every plaza group at the level its pieces really
 				// render at after the move - the solve and the world agree by construction
 				resolved.applyPlazaPins(false);
+				int decorPins = StreetDecor.pinMultiBlockFootprints(decorAfterShift, resolved);
+				VpsPipeline.T15_DECOR_PINS.addAndGet(decorPins);
+				VpsPipeline.STREET_DECOR_PINNED_CELLS.addAndGet(decorPins);
 				VpsPipeline.accumulateSolveStats(RoadSmoother.solve(resolved, VpsPipeline.paramsFor(config)));
 			}
 			T15_RESOLVE_DELTA_CELLS.addAndGet(countProfileDelta(network, resolved));
@@ -240,10 +271,24 @@ public final class T15Planner {
 		// they must run before the alignment that consumes those heights.
 		settleSeats(finalNetwork, pieces, minY, maxY, config);
 
+		StreetDecor.Resolved finalDecor = StreetDecor.refresh(decorAfterShift, pieces, templateManager);
+
 		List<List<DoorSigns.DoorTarget>> finalTargets = new ArrayList<>(components.size());
 		for (BuildingComponents.Component component : components) {
-			int[][] boxes = BuildingComponents.protectedBoxes(pieces);
-			List<DoorSigns.DoorTarget> targets = doorTargets(component, pieces, scan, finalNetwork, boxes, true);
+			if (isMultiBlockDecorComponent(component, decor)) {
+				// Audit 2026-10-20 decision 2 (T1.5 seat sync): a pure multi-block
+				// decor component was pinned (seat + actual footprint) into the final
+				// network after the first shift. The second alignment exists to move
+				// a building onto that network; moving the decor now would drag it
+				// away from the level the road was just pinned to. Its dy is final.
+				finalTargets.add(List.of());
+				continue;
+			}
+			// Recompute per component: earlier iterations of this loop may have moved
+			// a building, and the old code read fresh boxes for exactly this reason.
+			int[][] boxes = BuildingComponents.protectedBoxes(pieces, finalDecor.pieceIndices);
+			int[][] exclusion = mergeBoxes(boxes, finalDecor.columnBoxes);
+			List<DoorSigns.DoorTarget> targets = doorTargets(component, pieces, scan, finalNetwork, exclusion, true);
 			finalTargets.add(targets);
 			int desired = targets.isEmpty()
 					? desiredShiftFromJunctions(finalNetwork, component, pieces, config)
@@ -279,7 +324,12 @@ public final class T15Planner {
 		solution.shiftedComponents = shiftedComponents(components);
 		// read after both shifts: the boxes must describe where the buildings
 		// really are, because the writer uses them to refuse a road column (plan A).
-		solution.buildingBoxes = BuildingComponents.protectedBoxes(pieces);
+		// Decor is excluded from plan A; its actual blocks are protected block by
+		// block (audit 2026-10-20 decision 1).
+		StreetDecor.Resolved decorFinal = StreetDecor.refresh(decorAfterShift, pieces, templateManager);
+		solution.buildingBoxes = BuildingComponents.protectedBoxes(pieces, decorFinal.pieceIndices);
+		solution.decorBlocks = decorFinal.blocks;
+		recordDecorSyncMismatch(decorFinal, finalNetwork);
 		solution.doorFronts = buildDoorFronts(components, pieces, finalTargets, finalNetwork);
 		solution.doorSigns = computeDoorSigns(components, finalTargets, finalNetwork, config);
 		solution.seamSigns = computeSeamSigns(finalNetwork, config);
@@ -317,13 +367,95 @@ public final class T15Planner {
 	 */
 	private static List<List<DoorSigns.DoorTarget>> collectDoorTargets(
 			List<BuildingComponents.Component> components, List<StructurePiece> pieces,
-			BuildingComponents.TemplateScan scan, RoadNetwork network, boolean countStats) {
+			BuildingComponents.TemplateScan scan, RoadNetwork network, int[][] exclusionBoxes, boolean countStats) {
 		List<List<DoorSigns.DoorTarget>> out = new ArrayList<>(components.size());
 		for (BuildingComponents.Component component : components) {
-			int[][] boxes = BuildingComponents.protectedBoxes(pieces);
-			out.add(doorTargets(component, pieces, scan, network, boxes, countStats));
+			out.add(doorTargets(component, pieces, scan, network, exclusionBoxes, countStats));
 		}
 		return out;
+	}
+
+	/** Package-visible bridge for the T5 path: building boxes + decor footprint columns. */
+	static int[][] mergeBoxesForT5(int[][] buildingBoxes, int[][] decorColumns) {
+		return mergeBoxes(buildingBoxes, decorColumns);
+	}
+
+	/** Building boxes + the decor's actual footprint columns, for door-target exclusion only. */
+	private static int[][] mergeBoxes(int[][] buildings, int[][] decorColumns) {
+		if (decorColumns == null || decorColumns.length == 0) {
+			return buildings;
+		}
+		int[][] out = new int[buildings.length + decorColumns.length][];
+		System.arraycopy(buildings, 0, out, 0, buildings.length);
+		System.arraycopy(decorColumns, 0, out, buildings.length, decorColumns.length);
+		return out;
+	}
+
+	private static boolean hasMultiBlockDecor(StreetDecor.Resolved decor) {
+		for (StreetDecor.Piece piece : decor.pieces) {
+			if (piece.multiBlock) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** True when every piece of the component is an identified multi-block decor piece. */
+	private static boolean isMultiBlockDecorComponent(BuildingComponents.Component component,
+			StreetDecor.Resolved decor) {
+		boolean hasMulti = false;
+		for (int index : component.pieceIndices) {
+			boolean multi = false;
+			for (StreetDecor.Piece piece : decor.pieces) {
+				if (piece.pieceIndex == index) {
+					multi = piece.multiBlock;
+					break;
+				}
+			}
+			if (!multi) {
+				return false;
+			}
+			hasMulti = true;
+		}
+		return hasMulti;
+	}
+
+	/**
+	 * T1.5 seat sync check (audit 2026-10-20 decision 2): after the second
+	 * alignment the decor is frozen. Its seat/footprint cells were pinned to the
+	 * pre-alignment base and the alignment should have been a no-op there; a cell
+	 * that still disagrees is counted, never patched after the road is frozen.
+	 */
+	private static void recordDecorSyncMismatch(StreetDecor.Resolved decor, RoadNetwork network) {
+		java.util.Set<Long> seen = new java.util.HashSet<>();
+		for (StreetDecor.Piece piece : decor.pieces) {
+			if (!piece.multiBlock) {
+				continue;
+			}
+			int expected = 2 * piece.baseWalkY;
+			seen.clear();
+			seen.addAll(piece.seatColumns);
+			seen.addAll(piece.columns);
+			for (long column : seen) {
+				countMismatch(network, column, expected);
+			}
+		}
+	}
+
+	private static void countMismatch(RoadNetwork network, long column, int expected) {
+		int x = (int) (column >> 32);
+		int z = (int) column;
+		int index = network.cellAt(x, z);
+		if (index < 0) {
+			return;
+		}
+		RoadCell cell = network.cells.get(index);
+		if (cell.plaza) {
+			return;
+		}
+		if (cell.solvedP != expected) {
+			VpsPipeline.DECOR_SEAT_SYNC_MISMATCH.incrementAndGet();
+		}
 	}
 
 	/** Package-visible bridge for the T5 path (no building move, same door rules). */

@@ -124,15 +124,24 @@ public final class VpsCommands {
 	 * exactly the marker-like blocks and no legitimate street material.
 	 */
 	private static int y0NonSolidReport(CommandSourceStack source) {
-		List<String> report = RoadCollector.y0NonSolidSkipReport();
-		if (report.isEmpty()) {
-			source.sendSystemMessage(Component.literal("[VPS] no y=0 non-solid street blocks skipped yet (generate a village first)"));
+		List<String> nonSolid = RoadCollector.y0NonSolidSkipReport();
+		List<String> scenery = RoadCollector.y0ScenerySkipReport();
+		if (nonSolid.isEmpty() && scenery.isEmpty()) {
+			source.sendSystemMessage(Component.literal("[VPS] no y=0 street blocks skipped yet (generate a village first)"));
 			return 0;
 		}
-		source.sendSystemMessage(Component.literal("[VPS] y=0 non-solid/replaceable street blocks NOT taken as road ("
-				+ RoadCollector.TEMPLATE_Y0_NON_SOLID_SKIPPED.get() + " cells total, most frequent first):\n  "
-				+ String.join("\n  ", report)));
-		return report.size();
+		StringBuilder message = new StringBuilder("[VPS] y=0 street blocks NOT taken as road");
+		if (!nonSolid.isEmpty()) {
+			message.append("\n  non-solid/replaceable (").append(RoadCollector.TEMPLATE_Y0_NON_SOLID_SKIPPED.get())
+					.append(" cells, most frequent first):\n    ").append(String.join("\n    ", nonSolid));
+		}
+		if (!scenery.isEmpty()) {
+			message.append("\n  scenery: farmland/water/terracotta/void seats (")
+					.append(RoadCollector.TEMPLATE_Y0_SCENERY_SKIPPED.get())
+					.append(" cells, most frequent first):\n    ").append(String.join("\n    ", scenery));
+		}
+		source.sendSystemMessage(Component.literal(message.toString()));
+		return nonSolid.size() + scenery.size();
 	}
 
 	/** G1: unambiguous verbs - the flag freezes villagers, it does not "disable their brains" in either direction. */
@@ -259,8 +268,9 @@ public final class VpsCommands {
 						+ "  suppression: vanilla road blocks dropped %d (passed through %d)%n"
 						+ "  buildings  : T1.5 applied %d (no-server %d), components %d, shifted %d, no-road %d, overlap guards %d, second align moved %d, floating %d, buried %d, re-solved after shift %d (T15 resolve delta cells %d, door targets changed %d), road cells yielded %d, main doors %d (no entrance %d, non-door lower halves skipped %d, normal ambiguous %d), door targets excluded seat/inside/behind %d/%d/%d, no front %d, front fallback %d, door anchor offsets 0/1/2/3/4+ %d/%d/%d/%d/%d, door signs placed %d (no road %d), seam signs %d computed / %d placed (step violations %d, no-BE %d), base plane mismatch %d, baseY decor %d, align fallback %d, door dir mismatch %d%n"
 						+ "  centres    : town-centre plaza cells %d (non-road cells skipped %d), vanilla-rendered %d, groups %d (shifted %d, pieces %d), plaza guards %d, decor seats %d (written %d, decor pieces moved %d, probe dropped %d, write fallback %d, edge clamped %d)%n"
+						+ "  decor      : pieces %d, actual blocks %d, protected writes skipped %d (pile %d), cells pinned %d (T1.5 %d), seat sync mismatches %d%n"
 						+ "  model gap  : written surface vs real terrain: mean %s half units, worst %d, over threshold %d, cut below terrain %d, fill above %d%n"
-						+ "  misc       : floor-garbage probes %d, probe boundary switches %d, probe mismatch columns %d, y0 non-solid skipped %d, villager freeze: %s (brain ticks skipped: %d)",
+						+ "  misc       : floor-garbage probes %d, probe boundary switches %d, probe mismatch columns %d, y0 non-solid skipped %d, y0 scenery skipped %d, villager freeze: %s (brain ticks skipped: %d)",
 				solved,
 				solved > 0 ? nanos / 1_000_000.0 / solved : 0.0,
 				VpsPipeline.ROAD_CELLS_WRITTEN.get(),
@@ -363,6 +373,13 @@ public final class VpsCommands {
 				RoadCollector.SEAT_PROBE_DROPPED.get(),
 				RoadWriter.SEAT_WRITE_FALLBACK.get(),
 				T15Planner.SEAT_EDGE_CLAMPED.get(),
+				VpsPipeline.STREET_DECOR_PIECES.get(),
+				VpsPipeline.STREET_DECOR_BLOCKS.get(),
+				RoadWriter.DECOR_BLOCKS_SKIPPED.get(),
+				RoadWriter.PILE_BLOCKS_SKIPPED.get(),
+				VpsPipeline.STREET_DECOR_PINNED_CELLS.get(),
+				VpsPipeline.T15_DECOR_PINS.get(),
+				VpsPipeline.DECOR_SEAT_SYNC_MISMATCH.get(),
 				RoadWriter.DEVIATION_CELLS.get() > 0
 					? String.format("%.1f", (double) RoadWriter.DEVIATION_SUM.get() / RoadWriter.DEVIATION_CELLS.get())
 					: "-",
@@ -374,6 +391,7 @@ public final class VpsCommands {
 				RoadCollector.PROBE_BOUNDARY_SWITCHES.get(),
 				RoadCollector.PROBE_MISMATCH_COLUMNS.get(),
 				RoadCollector.TEMPLATE_Y0_NON_SOLID_SKIPPED.get(),
+				RoadCollector.TEMPLATE_Y0_SCENERY_SKIPPED.get(),
 				VillagePathSmoothedConfig.get().debug.disableVillagerBrains ? "ACTIVE" : "INACTIVE",
 				VpsPipeline.DEBUG_VILLAGER_BRAIN_SKIPS.get());
 	}

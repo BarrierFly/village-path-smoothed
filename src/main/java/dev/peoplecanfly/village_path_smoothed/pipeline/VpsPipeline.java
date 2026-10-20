@@ -159,6 +159,17 @@ public final class VpsPipeline {
 	public static final AtomicLong SECOND_ALIGN_MOVED = new AtomicLong();
 	/** Main-door target cells whose XZ or solved surface changed between the first and the final network. */
 	public static final AtomicLong DOOR_TARGET_CHANGED_BY_RESOLVE = new AtomicLong();
+	// Audit 2026-10-20 (decisions 1/2): actual street-decor footprints.
+	/** Decor pieces recognised by a seat target pool (lamps, platforms, stairs, cats). */
+	public static final AtomicLong STREET_DECOR_PIECES = new AtomicLong();
+	/** Actual decor template blocks protected block-by-block (not the bbox). */
+	public static final AtomicLong STREET_DECOR_BLOCKS = new AtomicLong();
+	/** Road cells pinned to a multi-block decor's seat/footprint (T5 and the T1.5 final solve). */
+	public static final AtomicLong STREET_DECOR_PINNED_CELLS = new AtomicLong();
+	/** T1.5 pin cells applied after the first shift (the forced final re-solve consumes them). */
+	public static final AtomicLong T15_DECOR_PINS = new AtomicLong();
+	/** Multi-block decor whose seat/footprint level still disagrees after the second alignment. */
+	public static final AtomicLong DECOR_SEAT_SYNC_MISMATCH = new AtomicLong();
 	// R2-C (2026-10-16): a SERVED component whose door road cells span more than
 	// the half-block tolerance can bridge, so the shift came from the median
 	// fallback instead of the legal interval. Measurement for the minimax
@@ -258,7 +269,7 @@ public final class VpsPipeline {
 	) {
 		VpsVillageSolution solution = prepare(start, level, generator, chunkPos);
 		if (solution != null) {
-			VpsPlacementContext.push(solution.network);
+			VpsPlacementContext.push(solution.network, solution.pileBlocks);
 		}
 	}
 
@@ -285,7 +296,8 @@ public final class VpsPipeline {
 			runBuildingGuard(solution, ctx, config);
 		}
 		RoadWriter.write(solution.network, ctx, chunkBB, config, solution.shiftedComponents,
-				solution.buildingBoxes, solution.doorFronts, solution.doorSigns, solution.seamSigns,
+				solution.buildingBoxes, solution.decorBlocks, solution.pileBlocks,
+				solution.doorFronts, solution.doorSigns, solution.seamSigns,
 				String.valueOf(start.getChunkPos()));
 	}
 
@@ -382,7 +394,8 @@ public final class VpsPipeline {
 		if (access.village_path_smoothed$getSolution() != null) {
 			return; // idempotent (F10)
 		}
-		VpsVillageSolution solution = T15Planner.plan(start, generator, randomState, templateManager, chunkPos, heightAccessor, config);
+		VpsVillageSolution solution = T15Planner.plan(start, generator, randomState, templateManager, chunkPos, heightAccessor, config,
+				server.registryAccess());
 		access.village_path_smoothed$setSolution(solution);
 		// F10: publish the T1.5 solution under the anchor key, so every later
 		// StructureStart instance of the same village (deserialized per chunk)
@@ -417,17 +430,48 @@ public final class VpsPipeline {
 	}
 
 	/**
-	 * T5 path: nothing may move at feature placement, so a seat with a RIGID
-	 * decor piece on top pins at the level that piece actually renders at (the
+	 * T5 path: nothing may move at feature placement, so a seat with a decor
+	 * piece on top pins at the level that piece actually renders at (the
 	 * phase-2 plaza precedent: the pieces are the rigid truth); a bare seat
 	 * rides the solve freely.
+	 *
+	 * <p>Audit 2026-10-20 decision 2: the pin is {@code 2 * baseWalkY}
+	 * ({@code bbox.minY + groundLevelDelta}), never the bare {@code 2 *
+	 * bbox.minY} - the latter is one block low for {@code taiga_decoration_1}
+	 * whose platform is a sunken layer. Identified 1x1 decor uses baseWalkY;
+	 * a multi-block decor's seat and footprint are pinned by
+	 * {@link StreetDecor#pinMultiBlockFootprints}. A 1x1 feature piece
+	 * (pile/tree/flower) keeps the historical anchor-level pin.
+	 *
+	 * @return number of cells pinned
 	 */
-	private static void pinSeatsWithDecor(RoadNetwork network, List<StructurePiece> pieces) {
+	private static int pinSeatsWithDecor(RoadNetwork network, List<StructurePiece> pieces,
+			StreetDecor.Resolved decor) {
+		int pinned = 0;
 		for (RoadCell cell : network.cells) {
 			if (!cell.seat) {
 				continue;
 			}
-			for (StructurePiece piece : pieces) {
+			long column = RoadCell.packedXZ(cell.x, cell.z);
+			boolean pinnedHere = false;
+			for (StreetDecor.Piece piece : decor.pieces) {
+				if (piece.multiBlock || !piece.seatColumns.contains(column)) {
+					continue;
+				}
+				cell.plazaPinned = true;
+				cell.plazaPinP = 2 * piece.baseWalkY;
+				pinnedHere = true;
+				break;
+			}
+			if (pinnedHere) {
+				pinned++;
+				continue;
+			}
+			for (int i = 0; i < pieces.size(); i++) {
+				StructurePiece piece = pieces.get(i);
+				if (decor.pieceIndices.contains(i)) {
+					continue; // an identified 1x1 decor was handled above
+				}
 				if (!(piece instanceof PoolElementStructurePiece pool)
 						|| (!(pool.getElement() instanceof SinglePoolElement)
 								&& !(pool.getElement() instanceof FeaturePoolElement))) {
@@ -440,9 +484,11 @@ public final class VpsPipeline {
 				}
 				cell.plazaPinned = true;
 				cell.plazaPinP = 2 * box.minY();
+				pinned++;
 				break;
 			}
 		}
+		return pinned;
 	}
 
 	private static boolean hasStreetPiece(StructureStart start, VillagePathSmoothedConfig config) {
@@ -530,16 +576,26 @@ public final class VpsPipeline {
 			ctx.anchorOnVillage(start.getBoundingBox());
 		}
 		RoadNetwork network = RoadCollector.collect(start, ctx, config);
+		List<StructurePiece> pieces = start.getPieces();
+		StructureTemplateManager templateManager = templateManagerOf(pieces);
+		// Audit 2026-10-20: identify the actual decor footprint. T5 never moves a
+		// piece, so this footprint is final as-is.
+		StreetDecor.Resolved decor = StreetDecor.identify(pieces, network, templateManager, level.registryAccess());
+		STREET_DECOR_PIECES.addAndGet(decor.pieces.size());
+		STREET_DECOR_BLOCKS.addAndGet(decor.blocks.size());
 		if (config.roadSmoothing.enabled) {
 			// plan 2026-10-16: nothing may move at feature placement, so a seat
 			// with a RIGID decor piece on top pins at the level that piece
 			// actually renders at (the phase-2 plaza precedent: the pieces are
-			// the rigid truth); a bare seat rides the solve freely
-			pinSeatsWithDecor(network, start.getPieces());
+			// the rigid truth); a bare seat rides the solve freely.
+			// Audit 2026-10-20 decision 2: a multi-block decor pins its seat AND
+			// its actual footprint at baseWalkY (never the bare bbox.minY).
+			STREET_DECOR_PINNED_CELLS.addAndGet(pinSeatsWithDecor(network, pieces, decor));
 			// plan C, T5 path: nothing may move at feature placement, so the plaza
 			// groups pin at the level their rigid pieces actually render at - the
 			// solve and the world agree by construction
 			network.applyPlazaPins(false);
+			STREET_DECOR_PINNED_CELLS.addAndGet(StreetDecor.pinMultiBlockFootprints(decor, network));
 			RoadSmoother.SolveStats stats = RoadSmoother.solve(network, paramsFor(config));
 			accumulateSolveStats(stats);
 		}
@@ -550,20 +606,24 @@ public final class VpsPipeline {
 		}
 		VpsVillageSolution solution = new VpsVillageSolution(network);
 		solution.solved = true;
-		// T5 never moves buildings, so the boxes are already final here
-		solution.buildingBoxes = BuildingComponents.protectedBoxes(start.getPieces());
-		BuildingComponents.TemplateScan t5Scan = BuildingComponents.scanTemplates(start.getPieces(),
-				templateManagerOf(start.getPieces()));
-		List<BuildingComponents.Component> t5Components = BuildingComponents.group(start.getPieces());
+		// T5 never moves buildings, so the boxes are already final here. Decor is
+		// not a plan-A box any more; its actual blocks are protected by position.
+		int[][] t5BuildingBoxes = BuildingComponents.protectedBoxes(pieces, decor.pieceIndices);
+		solution.buildingBoxes = t5BuildingBoxes;
+		solution.decorBlocks = decor.blocks;
+		BuildingComponents.TemplateScan t5Scan = BuildingComponents.scanTemplates(pieces, templateManager);
+		List<BuildingComponents.Component> t5Components = BuildingComponents.group(pieces);
 		// Door/basis fix plan 2026-10-17: the T5 path uses the same main doors,
 		// the same filtered door target and the same sign format as T1.5; no
 		// building moves here, so the current boxes are the eligibility boxes.
-		int[][] t5Boxes = BuildingComponents.protectedBoxes(start.getPieces());
+		// Decor footprint columns are excluded from door targets but not from
+		// plan A (audit 2026-10-20 decision 1).
+		int[][] t5Exclusion = T15Planner.mergeBoxesForT5(t5BuildingBoxes, decor.columnBoxes);
 		List<List<DoorSigns.DoorTarget>> t5Targets = new java.util.ArrayList<>(t5Components.size());
 		for (BuildingComponents.Component component : t5Components) {
-			t5Targets.add(T15Planner.doorTargetsFor(component, start.getPieces(), t5Scan, network, t5Boxes, true));
+			t5Targets.add(T15Planner.doorTargetsFor(component, pieces, t5Scan, network, t5Exclusion, true));
 		}
-		solution.doorFronts = T15Planner.doorFrontsFor(t5Components, start.getPieces(), t5Targets, network);
+		solution.doorFronts = T15Planner.doorFrontsFor(t5Components, pieces, t5Targets, network);
 		solution.doorSigns = T15Planner.computeDoorSigns(t5Components, t5Targets, network, config);
 		solution.seamSigns = T15Planner.computeSeamSigns(network, config);
 

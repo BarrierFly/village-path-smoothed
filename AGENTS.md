@@ -23,7 +23,7 @@ src/main/java/dev/peoplecanfly/village_path_smoothed/
 │   ├── MixinGravityProcessor            # drops the vanilla street layer on claimed columns
 │   ├── MixinSinglePoolElement           # @Accessor("template")
 │   ├── MixinPoolElementStructurePiece   # @Accessor("structureTemplateManager")
-│   ├── MixinFeaturePoolElement          # @Accessor("feature") to recognise the hay pile
+│   ├── MixinBlockPileFeature            # records the blocks a village pile really places
 │   ├── MixinStructureTemplate           # @Accessor("palettes")
 │   ├── MixinCommands                    # registers /vps (no fabric-api dependency)
 │   └── MixinVillagerBrain               # debug: skip villager brain ticks
@@ -32,6 +32,7 @@ src/main/java/dev/peoplecanfly/village_path_smoothed/
 │   ├── VpsPipeline          # entry from the mixins: gate -> T1.5 plan / solve (cached) -> suppress/write
 │   ├── T15Planner           # T1.5 forward decision: solve + RIGID component shifts + post-shift re-solve
 │   ├── BuildingComponents   # RIGID pieces -> rigid connected components (junction union-find)
+│   ├── StreetDecor          # seat target pools -> actual decor block footprints (plan A / T5 pins)
 │   ├── VpsGenThread         # ThreadLocal MinecraftServer for STRUCTURE_STARTS
 │   ├── RoadCollector        # templates -> road mask (MC-touching, VpsProbe)
 │   ├── RoadNetwork          # mask -> arms/regions decomposition (pure)
@@ -78,6 +79,15 @@ Rules:
 - `CompoundTag#getString` returns `Optional<String>` from **1.21.10** (was
   `String`) - see `RoadCollector`'s jigsaw `final_state` read for the branch
   shape (`//#if MC >= 12110`).
+- `BlockPileFeature#place` takes a `FeaturePlaceContext` up to 1.21.11, but
+  **26.3** turned the class into a record whose method is
+  `place(WorldGenLevel, ChunkGenerator, RandomSource, BlockPos)`. The pile
+  recording mixin has one full handler shape per branch
+  (`//#if MC >= 260000`).
+- `RegistryAccess#registryOrThrow(...).get(ResourceLocation)` works up to
+  1.21.1; 1.21.9+ renamed the value accessor to `getValue` and 1.21.10+
+  renamed the access to `lookupOrThrow` (see `VpsCompat#templatePool`, which
+  also covers the 1.21.10 combination).
 - `SinglePoolElement#getTemplateLocation()` does not exist on 1.19.4 - always
   go through the `@Accessor("template")` mixin (the field name is stable).
 - `GravityProcessor` is added **last** by `SinglePoolElement#getSettings`
@@ -227,7 +237,12 @@ Rules:
   water/lava blocks are not decorations. **Everything else is protected** -
   logs, leaves, plants, crops, vines, furniture, lamps and unknown/modded
   blocks default to protected, so a missing tag protects too much rather than
-  destroying a feature. The mod's own road structural materials (mud bricks,
+  destroying a feature. **Context extension (audit 2026-10-20):** the classifier
+  is material-only, so a decor template's cobblestone base or a pile's snow
+  layer would count as terrain. `VpsGenContext#isProtectedDecoration` also
+  consults the identified decor block set and the exactly recorded pile blocks,
+  so those material-terrain blocks are protected as well. This is a per-write
+  lookup, not a second material table. The mod's own road structural materials (mud bricks,
   smooth sandstone, the default cobblestone kerb, scaffolding and the dirt-path
   fill) stay replaceable so the shared-column "low kerb AND high railing" rule
   still works. The road block, support fill, upward clear, kerb,
@@ -270,8 +285,10 @@ Rules:
   reworked by user decision 2026-10-16, clarified by the user the same day).**
   A street piece's up-facing y=0 jigsaw whose `final_state` is one of
   grass_block/dirt/sand/smooth_sandstone/dirt_path/cobblestone joins the mask
-  as a NORMAL solver cell (the four terrain bases plus the 44 dirt_path + 2
-  cobblestone road-material seats per version, all in since 2026-10-16): it
+  as a NORMAL solver cell (the four terrain bases plus the 4 dirt_path + 0
+  cobblestone road-material seats per version; audit 2026-10-20 section 1.3 -
+  the old "44 + 2" note was wrong, and 16 more y0-up jigsaws render
+  `structure_void` and stay out of the mask): it
   rides the solved profile with `|dP| <= 1` to its neighbours, constrained to
   EVEN walk surfaces (`candidatesFor`/`runCandidates` filter and the unit level)
   so the RIGID decor piece on top shifts by whole blocks. A 4-connected seat
@@ -289,10 +306,55 @@ Rules:
   pool element on the seat's column) is shifted to the seat's solved level by
   `T15Planner#settleSeats` (`SEAT_DECOR_PIECES_MOVED`), which REPLACES the
   lamp's old singleton-building alignment; such singletons are removed from
-  the building pass (`isSeatRider`). At T5 nothing may move, so a seat with
+  the building pass (`isSeatRider`). A **multi-block** decor (3x3/3x1/2x1/3x6
+  lamps, stairs, platforms) keeps building semantics and is NOT a seat rider;
+  see the 2026-10-20 audit bullet below. At T5 nothing may move, so a seat with
   decor pins at the decor's real render level (the phase-2 plaza precedent)
   and a bare seat rides the solve. The old "pin at the probed vanilla height"
   design is gone - a seat must never drag the road to vanilla height.
+- **Audit 2026-10-20 (street fixtures): surfaces, decor footprints, piles.**
+  The user decisions are recorded in
+  `scratch/audit_street_fixture_shapes_2026-10-20.md` §14:
+  - **Street surface = connected road only.** `RoadCollector#scanStreetSurface`
+    seeds the y1 `minecraft:street` connector columns and flood-fills the y0
+    surface through road-like blocks. Farmland, water and terracotta inside a
+    street template are `RoadNetwork#streetScenery`: not in the mask, left
+    vanilla, and the writer never dresses a side toward them (no kerb/railing,
+    including the kerb end cap). A few connector bases are plain dirt; they
+    are seeds regardless of material, so a crossroad seam never opens a hole.
+    `TEMPLATE_Y0_ROAD_MATERIAL` narrows the material test but keeps the seeds.
+  - **Decor footprint = actual blocks.** `StreetDecor` resolves the seat
+    target pools (`RoadNetwork#decorPools`) and every y0-up jigsaw column
+    (`RoadNetwork#allSeatColumns`, including `structure_void`), then computes
+    the blocks the template really renders (palette + jigsaw `final_state`).
+    An identified decor piece is NOT a plan-A bbox: its actual blocks are
+    protected block-by-block through `VpsGenContext#isProtectedDecoration`
+    (`DECOR_BLOCKS_SKIPPED`), and the road block/support fill still go
+    below/around them. That is what removes the bbox holes under 3x3 lamp air
+    columns, trapdoor rings and stairs. `BuildingComponents#protectedBoxes`
+    takes the identified decor indices and keeps only real buildings.
+  - **T5 pin = seat + footprint at `baseWalkY`.** `pinSeatsWithDecor` pins a
+    1x1 decor at `2 * baseWalkY`; `StreetDecor#pinMultiBlockFootprints` pins a
+    multi-block decor's seat columns plus actual footprint columns that are
+    road cells. Never use bare `bbox.minY`: for `taiga_decoration_1` it is one
+    block low (its plank platform is a deliberately sunken layer).
+  - **T1.5 seat sync.** After the first shift the multi-block pins are applied
+    to the re-collected final network and the final re-solve is forced. A pure
+    multi-block decor component is then skipped by the second alignment - the
+    road was pinned to its final base, so moving it again would break the
+    sync. The second alignment remains the authority for buildings. Residuals
+    are counted (`DECOR_SEAT_SYNC_MISMATCH`, `T15_DECOR_PINS`); do not patch
+    the network after the freeze.
+  - **Piles = exactly placed blocks.** `MixinBlockPileFeature` snapshots the
+    potential 7x7x2 box at HEAD and records the blocks the feature actually
+    placed at RETURN into `VpsVillageSolution#pileBlocks`; the writer protects
+    exactly those (`PILE_BLOCKS_SKIPPED`). Do not protect the whole potential
+    box and do not reintroduce the hay 1x1 plan-A box - the hay special case
+    and its `FeaturePoolElement` accessor mixin are gone.
+  - **structure_void seats**: the large-base overlap (snowy square_01) is
+    covered by the decor footprint/pin above; the void seats themselves stay
+    out of the mask (audit §8, user decision 5). The savanna `]` NBT typo is
+    not fixed (the parser ignores it, audit §10.1).
 - **The polish never moves a physically fixed cell, but it DOES move a movable
   unit before placement (2026-10-15, reworked 2026-10-17).** A T5 decor-seat pin
   and a T5/phase-2 plaza pin are immovable: the free side takes the correction
@@ -355,11 +417,11 @@ Rules:
   world edge), `NO-CUT FLOOR` (a `baseP` hard floor with `allowCutIntoTerrain=false`),
   else `POLISH RESID`. `seam signs placed / step violations` in `/vps stats`
   documents the volume and the illegal seams.
-- **Plan A: a building always wins its column (user decision 2026-10-15).**
-  `VpsVillageSolution#buildingBoxes` carries the 3D boxes of every protected
-  piece - movable buildings plus the immovable hay piles
-  (`BuildingComponents#protectedBoxes`; read after the T1.5 shift, so they
-  describe where the pieces really are).
+- **Plan A: a building always wins its column (user decision 2026-10-15;
+  decor split out by the 2026-10-20 audit).**
+  `VpsVillageSolution#buildingBoxes` carries the 3D boxes of every movable
+  BUILDING (identified decor pieces are excluded; their actual blocks are
+  protected block-by-block, see the audit bullet).
   `RoadWriter#insideBuilding` skips a claimed column whose road block lands inside
   one - no road block, no support fill, no clear - so smoothing can never
   overwrite a building body (`BUILDING_CELLS_SKIPPED`, and the column yields).
@@ -442,9 +504,10 @@ Rules:
     else (`BuildingComponents#isMovable`). The hay pile is **not** moved any
     more (user decision 2026-10-16, report §3.3-2 "非预期，干草堆不应搬动" -
     reverting the 2026-10-14 rule): a standalone pile stays where vanilla put
-    it and keeps its protected box (`BuildingComponents#protectedBoxes`), so
-    the road still yields to it; only a pile standing ON a mask seat still
-    moves, because it rides the seat (see the seat bullet). The decor pool's
+    it and the blocks it really places are protected at write time (audit
+    2026-10-20; the old 1x1 plan-A box is gone); only a pile standing ON a
+    mask seat still moves, because it rides the seat (see the seat bullet).
+    The decor pool's
     trees and flowers are still deliberately **not** moved - a moved tree
     fights the vanilla terrain adaptation that raises the ground under it. A
     `town_centers` piece is **not** a movable building any more (plan C): the

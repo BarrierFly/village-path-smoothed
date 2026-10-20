@@ -11,7 +11,7 @@
     "MixinChunkGenerator",
     "MixinSinglePoolElement",
     "MixinPoolElementStructurePiece",
-    "MixinFeaturePoolElement",
+    "MixinBlockPileFeature",
     "MixinStructureTemplate",
     "MixinCommands",
     "MixinVillagerBrain"

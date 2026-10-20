@@ -29,13 +29,24 @@ public final class VpsVillageSolution {
 	/** Moved RIGID component footprints {minX,maxX,minZ,maxZ,baseY(shifted)}; empty when nothing moved. */
 	public int[][] shiftedComponents = new int[0][];
 	/**
-	 * 3D bounding boxes {minX,maxX,minY,maxY,minZ,maxZ} of every PROTECTED piece
-	 * (movable buildings + the immovable hay piles, user decision 2026-10-16).
-	 * The writer skips a claimed road column whose road block lands inside one,
-	 * so a smoothed road can never overwrite a building or a hay pile (plan A,
-	 * user decision 2026-10-15).
+	 * 3D bounding boxes {minX,maxX,minY,maxY,minZ,maxZ} of every movable
+	 * BUILDING (decor pieces excluded; audit 2026-10-20 decision 1). The writer
+	 * skips a claimed road column whose road block lands inside one, so a
+	 * smoothed road can never overwrite a building body (plan A, user decision
+	 * 2026-10-15). Decor is protected block-by-block through
+	 * {@link #decorBlocks} instead of a whole bbox.
 	 */
 	public int[][] buildingBoxes = new int[0][];
+	/** Actual decor template blocks of the identified street decor ({@link RoadCell#packedXYZ}). */
+	public java.util.Set<Long> decorBlocks = java.util.Set.of();
+	/**
+	 * Blocks the village pile features really placed during this start's
+	 * placement ({@link RoadCell#packedXYZ}). Recorded by the BlockPileFeature
+	 * hook; the writer protects exactly these instead of the 5x5/7x7 potential
+	 * box. Mutable on purpose: chunks record while the village places.
+	 */
+	public final java.util.Set<Long> pileBlocks =
+			java.util.concurrent.ConcurrentHashMap.newKeySet();
 	/** Door-front cells {frontX,frontZ,outwardDX,outwardDZ}; the writer suppresses the railing there. */
 	public int[][] doorFronts = new int[0][];
 	/**

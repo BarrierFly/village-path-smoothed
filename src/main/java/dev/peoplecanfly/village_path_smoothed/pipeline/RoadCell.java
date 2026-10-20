@@ -98,4 +98,13 @@ public final class RoadCell {
 	public static long packedXZ(int x, int z) {
 		return ((long) x << 32) | (z & 0xFFFFFFFFL);
 	}
+
+	/**
+	 * World position key with the same layout {@code BlockPos.asLong} uses, kept
+	 * here so the pure pipeline (context + writer) can key protected decoration
+	 * blocks without importing Minecraft.
+	 */
+	public static long packedXYZ(int x, int y, int z) {
+		return ((long) (x & 0x3FFFFFF) << 38) | ((long) (z & 0x3FFFFFF) << 12) | (y & 0xFFF);
+	}
 }

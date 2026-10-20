@@ -63,6 +63,15 @@ public final class VpsGenContext implements VpsProbe {
 	/** {minX, maxX, minZ, maxZ, minY, groundLevelDelta} of RIGID piece boxes (beard sources), used to compensate the noise probe next to buildings. */
 	private int[][] beardBoxes;
 	/**
+	 * Exact decor-template block positions and pile blocks recorded at placement
+	 * (audit 2026-10-20 decisions 1/4), keyed like {@code RoadCell#packedXYZ}.
+	 * They extend {@link FeatureProtection} with context: a cobblestone decor
+	 * base or a pile's snow layer is terrain by material, but it belongs to a
+	 * decoration and must keep its block.
+	 */
+	private java.util.Set<Long> decorBlocks;
+	private java.util.Set<Long> pileBlocks;
+	/**
 	 * Memoised RAW {@code getBaseHeight} results. Outside the +/-1 chunk window
 	 * every road cell falls through to the noise probe, and the collector asks
 	 * for each column up to three times (the height itself plus the two halves
@@ -114,6 +123,12 @@ public final class VpsGenContext implements VpsProbe {
 	/** Late-sets the beard source boxes once the collector has walked the pieces. */
 	public void setBeardBoxes(int[][] boxes) {
 		this.beardBoxes = boxes;
+	}
+
+	/** Write-time context protection for the identified decor and the recorded pile blocks. */
+	public void setProtectedBlocks(java.util.Set<Long> decorBlocks, java.util.Set<Long> pileBlocks) {
+		this.decorBlocks = decorBlocks;
+		this.pileBlocks = pileBlocks;
 	}
 
 	public int getMinY() {
@@ -382,7 +397,39 @@ public final class VpsGenContext implements VpsProbe {
 
 	/** True when the writer must leave this block alone (see {@link FeatureProtection}). */
 	public boolean isProtectedDecoration(int x, int y, int z) {
-		return FeatureProtection.isProtectedDecoration(blockState(x, y, z));
+		BlockState state = blockState(x, y, z);
+		if (FeatureProtection.isProtectedDecoration(state)) {
+			return true;
+		}
+		return isRecordedProtected(state, x, y, z);
+	}
+
+	/** True when the position is an identified decor template block that is really there. */
+	public boolean isDecorFootprint(int x, int y, int z) {
+		return containsPresent(this.decorBlocks, x, y, z);
+	}
+
+	/** True when the position is a block a village pile feature really placed. */
+	public boolean isPileBlock(int x, int y, int z) {
+		return containsPresent(this.pileBlocks, x, y, z);
+	}
+
+	private boolean isRecordedProtected(BlockState state, int x, int y, int z) {
+		if (state.isAir()) {
+			return false;
+		}
+		long key = packedXYZ(x, y, z);
+		return (this.decorBlocks != null && this.decorBlocks.contains(key))
+				|| (this.pileBlocks != null && this.pileBlocks.contains(key));
+	}
+
+	private boolean containsPresent(java.util.Set<Long> set, int x, int y, int z) {
+		return set != null && set.contains(packedXYZ(x, y, z)) && !blockState(x, y, z).isAir();
+	}
+
+	/** Same layout as {@code BlockPos.asLong}/{@code RoadCell#packedXYZ}; terrain must not import pipeline. */
+	private static long packedXYZ(int x, int y, int z) {
+		return ((long) (x & 0x3FFFFFF) << 38) | ((long) (z & 0x3FFFFFF) << 12) | (y & 0xFFF);
 	}
 
 	/**
@@ -409,7 +456,7 @@ public final class VpsGenContext implements VpsProbe {
 		for (int y = getMaxY(); y >= fromY; y--) {
 			BlockPos pos = new BlockPos(x, y, z);
 			BlockState state = this.level.getBlockState(pos);
-			if (FeatureProtection.isProtectedDecoration(state)) {
+			if (isProtectedDecoration(x, y, z)) {
 				continue;
 			}
 			if (hasCollisionOrFluid(state, pos)) {

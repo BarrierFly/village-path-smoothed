@@ -8,7 +8,6 @@ package dev.peoplecanfly.village_path_smoothed.pipeline;
 import dev.peoplecanfly.village_path_smoothed.VillagePathSmoothed;
 import dev.peoplecanfly.village_path_smoothed.VillagePathSmoothedConfig;
 import dev.peoplecanfly.village_path_smoothed.compat.VpsCompat;
-import dev.peoplecanfly.village_path_smoothed.terrain.FeatureProtection;
 import dev.peoplecanfly.village_path_smoothed.terrain.VpsGenContext;
 import dev.peoplecanfly.village_path_smoothed.terrain.WaterCrossings;
 import net.minecraft.core.BlockPos;
@@ -121,6 +120,13 @@ public final class RoadWriter {
 	public static final AtomicLong FEATURE_CEILING_BLOCKS_SKIPPED = new AtomicLong();
 	public static final AtomicLong FEATURE_RAILING_BLOCKS_SKIPPED = new AtomicLong();
 	/**
+	 * Audit 2026-10-20 decision 1: writes skipped because the target is an
+	 * identified decor template block (the actual footprint, not the bbox).
+	 */
+	public static final AtomicLong DECOR_BLOCKS_SKIPPED = new AtomicLong();
+	/** Audit 2026-10-20 decision 4: writes skipped because the target is a block a village pile really placed. */
+	public static final AtomicLong PILE_BLOCKS_SKIPPED = new AtomicLong();
+	/**
 	 * User decision 2026-10-15: water-crossing cells whose solved surface is
 	 * above the water surface. They are rendered as a bridge deck with no support
 	 * fill from the waterbed (never a dirt causeway), unlike an at-water crossing
@@ -187,9 +193,16 @@ public final class RoadWriter {
 	 *        cell may take the single-cell surface nudge (never at a building door)
 	 */
 	public static void write(RoadNetwork net, VpsGenContext ctx, BoundingBox chunkBB, VillagePathSmoothedConfig config,
-			int[][] shiftedComponents, int[][] buildingBoxes, int[][] doorFronts, int[][] doorSigns,
+			int[][] shiftedComponents, int[][] buildingBoxes, java.util.Set<Long> decorBlocks,
+			java.util.Set<Long> pileBlocks, int[][] doorFronts, int[][] doorSigns,
 			int[][] seamSigns, String village) {
 		RoadMaterialTable table = RoadMaterialTable.create(config);
+		// Audit 2026-10-20 decisions 1/4: protect the actual decor template blocks
+		// and the blocks the village piles really placed. The context check extends
+		// FeatureProtection without changing its material rules, so a cobblestone
+		// decor base or a pile snow layer keeps its block while the road and its
+		// support fill still go below/around it.
+		ctx.setProtectedBlocks(decorBlocks, pileBlocks);
 		// User decision 2026-10-15: every road cell applies its own edge details
 		// - the one-owner-per-side-column rule is gone. A shared column now gets
 		// the low road's kerb AND the high road's railing, which is the point:
@@ -871,6 +884,12 @@ public final class RoadWriter {
 			if (net.plazaFootprint.contains(RoadCell.packedXZ(outX, outZ))) {
 				continue;
 			}
+			// Decision 6 (audit 2026-10-20): farmland, water, terracotta and the
+			// structure_void seat columns are street scenery, not road. They keep
+			// their vanilla block, and a kerb/railing must not grow into them.
+			if (net.streetScenery.contains(RoadCell.packedXZ(outX, outZ))) {
+				continue;
+			}
 			// User decision 2026-10-17 ("探2包1"): probe the first and the second
 			// cell outward, but still wrap only the first cell. The second cell can
 			// be the one that carries the terrain (a one-block gap between road and
@@ -1100,6 +1119,9 @@ public final class RoadWriter {
 			if (net.plazaFootprint.contains(RoadCell.packedXZ(capX, capZ))) {
 				continue; // town-centre interior
 			}
+			if (net.streetScenery.contains(RoadCell.packedXZ(capX, capZ))) {
+				continue; // street scenery (farmland/water/terracotta/void seat)
+			}
 			SideFacts capFacts = sideFacts.computeIfAbsent(new SideKey(capX, capZ, roadTopBlockY),
 					k -> probeSideFacts(ctx, k.x(), k.z(), k.roadTopBlockY()));
 			if (capFacts == null || capFacts.topmostY() > roadTopBlockY) {
@@ -1174,7 +1196,15 @@ public final class RoadWriter {
 
 	private static void placeRailing(VpsGenContext ctx, int x, int z, int walkSurfaceY, RoadMaterialTable.StyleMaterials materials) {
 		BlockState existing = ctx.blockState(x, walkSurfaceY, z);
-		if (!RoadWritePolicy.mayOverwrite(FeatureProtection.isProtectedDecoration(existing))) {
+		if (ctx.isDecorFootprint(x, walkSurfaceY, z)) {
+			DECOR_BLOCKS_SKIPPED.incrementAndGet();
+			return;
+		}
+		if (ctx.isPileBlock(x, walkSurfaceY, z)) {
+			PILE_BLOCKS_SKIPPED.incrementAndGet();
+			return;
+		}
+		if (!RoadWritePolicy.mayOverwrite(ctx.isProtectedDecoration(x, walkSurfaceY, z))) {
 			FEATURE_RAILING_BLOCKS_SKIPPED.incrementAndGet();
 			return;
 		}
@@ -1428,6 +1458,14 @@ public final class RoadWriter {
 	 */
 	private static boolean setBlockUnlessProtected(VpsGenContext ctx, int x, int y, int z, BlockState state,
 			AtomicLong skipped) {
+		if (ctx.isDecorFootprint(x, y, z)) {
+			DECOR_BLOCKS_SKIPPED.incrementAndGet();
+			return false;
+		}
+		if (ctx.isPileBlock(x, y, z)) {
+			PILE_BLOCKS_SKIPPED.incrementAndGet();
+			return false;
+		}
 		if (!RoadWritePolicy.mayOverwrite(ctx.isProtectedDecoration(x, y, z))) {
 			skipped.incrementAndGet();
 			return false;
@@ -1439,6 +1477,14 @@ public final class RoadWriter {
 	/** {@link #setBlockUnlessProtected} for waterloggable road slabs. */
 	private static boolean setWaterloggableBlockUnlessProtected(VpsGenContext ctx, int x, int y, int z,
 			BlockState state, AtomicLong skipped) {
+		if (ctx.isDecorFootprint(x, y, z)) {
+			DECOR_BLOCKS_SKIPPED.incrementAndGet();
+			return false;
+		}
+		if (ctx.isPileBlock(x, y, z)) {
+			PILE_BLOCKS_SKIPPED.incrementAndGet();
+			return false;
+		}
 		if (!RoadWritePolicy.mayOverwrite(ctx.isProtectedDecoration(x, y, z))) {
 			skipped.incrementAndGet();
 			return false;

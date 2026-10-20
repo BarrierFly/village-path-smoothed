@@ -29,6 +29,11 @@ import net.minecraft.world.level.block.state.BlockState;
  * shared side column keeps the documented "low kerb AND high railing" rule.
  * Water/lava are intentionally not protected: the writer treats fluids as
  * terrain for the clear/ceiling rules.
+ *
+ * <p>This class answers the MATERIAL question only. The write-time context
+ * ({@code VpsGenContext#isProtectedDecoration}) additionally protects the
+ * identified street-decor blocks and the exactly recorded pile blocks, which
+ * can be terrain by material (a decor's cobblestone base, a pile's snow layer).
  */
 public final class FeatureProtection {
 	private FeatureProtection() {

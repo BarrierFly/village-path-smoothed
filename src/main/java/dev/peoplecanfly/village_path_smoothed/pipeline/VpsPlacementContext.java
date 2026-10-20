@@ -26,14 +26,22 @@ package dev.peoplecanfly.village_path_smoothed.pipeline;
  */
 public final class VpsPlacementContext {
 	private static final ThreadLocal<RoadNetwork> NETWORK = new ThreadLocal<>();
+	/**
+	 * Sink for the blocks a village pile feature really places during this
+	 * placement. It is the solution's set, so blocks recorded while one chunk
+	 * places stay visible to the writers of the other chunks (audit 2026-10-20,
+	 * decision 4).
+	 */
+	private static final ThreadLocal<java.util.Set<Long>> PILE_BLOCKS = new ThreadLocal<>();
 	private static final ThreadLocal<int[]> DEPTH = ThreadLocal.withInitial(() -> new int[1]);
 
 	private VpsPlacementContext() {
 	}
 
-	public static void push(RoadNetwork network) {
+	public static void push(RoadNetwork network, java.util.Set<Long> pileBlocks) {
 		DEPTH.get()[0]++;
 		NETWORK.set(network);
+		PILE_BLOCKS.set(pileBlocks);
 	}
 
 	public static void pop() {
@@ -42,12 +50,21 @@ public final class VpsPlacementContext {
 		if (depth[0] <= 0) {
 			DEPTH.remove();
 			NETWORK.remove();
+			PILE_BLOCKS.remove();
 		}
 	}
 
 	/** The road mask of the village currently being placed on this thread, or null. */
 	public static RoadNetwork current() {
 		return NETWORK.get();
+	}
+
+	/** Records one block the current village's pile feature really placed. */
+	public static void recordPileBlock(int x, int y, int z) {
+		java.util.Set<Long> sink = PILE_BLOCKS.get();
+		if (sink != null) {
+			sink.add(RoadCell.packedXYZ(x, y, z));
+		}
 	}
 
 	/**

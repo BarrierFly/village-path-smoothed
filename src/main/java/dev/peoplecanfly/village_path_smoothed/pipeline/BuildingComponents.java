@@ -6,12 +6,10 @@
 package dev.peoplecanfly.village_path_smoothed.pipeline;
 
 import dev.peoplecanfly.village_path_smoothed.compat.VpsCompat;
-import dev.peoplecanfly.village_path_smoothed.duck.FeaturePoolElementVpsAccess;
 import dev.peoplecanfly.village_path_smoothed.duck.SinglePoolElementVpsAccess;
 import dev.peoplecanfly.village_path_smoothed.duck.StructureTemplateVpsAccess;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
-import net.minecraft.core.Holder;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.tags.BlockTags;
 import net.minecraft.world.level.block.JigsawBlock;
@@ -21,7 +19,6 @@ import net.minecraft.world.level.block.state.properties.DoubleBlockHalf;
 import net.minecraft.world.level.levelgen.structure.BoundingBox;
 import net.minecraft.world.level.levelgen.structure.PoolElementStructurePiece;
 import net.minecraft.world.level.levelgen.structure.StructurePiece;
-import net.minecraft.world.level.levelgen.structure.pools.FeaturePoolElement;
 import net.minecraft.world.level.levelgen.structure.pools.JigsawJunction;
 import net.minecraft.world.level.levelgen.structure.pools.SinglePoolElement;
 import net.minecraft.world.level.levelgen.structure.pools.StructureTemplatePool;
@@ -35,6 +32,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Groups the RIGID pieces of a jigsaw structure into rigid connected
@@ -82,8 +80,9 @@ public final class BuildingComponents {
 	 * The only hay that still moves is one standing ON a mask seat, and only
 	 * because it rides the seat's own solved level ({@code T15Planner#settleSeats})
 	 * - the 2026-10-16 seat decision keeps the decor on a seat following the
-	 * base. A standalone hay pile stays where vanilla put it and keeps its
-	 * protected box ({@link #protectedBoxes}), so the road still yields to it.
+	 * base. A standalone hay pile stays where vanilla put it; the pile's really
+	 * placed blocks are recorded at placement and protected at write time
+	 * (audit 2026-10-20), so the road still yields to it block by block.
 	 * The decorative trees and flowers are still left alone - a moved tree would
 	 * fight the vanilla terrain adaptation, which raises the ground it stands on.
 	 *
@@ -113,49 +112,36 @@ public final class BuildingComponents {
 		}
 	}
 
-	/** The village decor hay pile; anything else in the decor pool is left where vanilla put it. */
-	public static boolean isHayPile(FeaturePoolElement element) {
-		try {
-			Holder<?> holder = ((FeaturePoolElementVpsAccess) element).village_path_smoothed$getFeature();
-			return holder != null && holder.unwrapKey()
-					.map(VpsCompat::registryKeyId)
-					.map("minecraft:pile_hay"::equals)
-					.orElse(false);
-		} catch (Throwable t) {
-			return false; // an accessor failure must cost the hay pile, not the village
-		}
-	}
-
 	/**
-	 * The hay pile feature piece. It is NOT movable (user decision 2026-10-16),
-	 * but it still wins its column: {@link #protectedBoxes} keeps its box so the
-	 * writer's plan-A skip keeps the road off the pile.
+	 * 3D bounding boxes {minX, maxX, minY, maxY, minZ, maxZ} of every movable
+	 * building that is NOT an identified decor piece. The writer refuses to
+	 * write a road column whose road block would land inside one of these: the
+	 * building always wins (plan A, user decision 2026-10-15).
+	 *
+	 * <p>Audit 2026-10-20 decisions 1/4: decor pieces are excluded here (their
+	 * actual blocks are protected individually by {@link StreetDecor}, so the
+	 * bbox no longer creates holes), and the old hay-pile 1x1 box is gone - a
+	 * pile's really placed blocks are recorded by the placement hook and
+	 * protected by position. {@code excludedDecorPieces} are piece indices from
+	 * {@link StreetDecor.Resolved#pieceIndices}; an unidentified decor piece
+	 * stays in this list and keeps the old bbox fallback.
 	 */
-	public static boolean isHayPile(StructurePiece piece) {
-		return piece instanceof PoolElementStructurePiece pool
-				&& pool.getElement() instanceof FeaturePoolElement feature
-				&& isHayPile(feature);
-	}
-
-	/**
-	 * 3D bounding boxes {minX, maxX, minY, maxY, minZ, maxZ} of every PROTECTED
-	 * piece: the movable buildings plus the immovable hay piles (user decision
-	 * 2026-10-16 - the pile itself no longer moves, but it still wins its
-	 * column). The writer refuses to write a road column whose road block would
-	 * land inside one of these: the piece always wins (plan A, user decision
-	 * 2026-10-15). The boxes are read live off the pieces, so on the T1.5 path
-	 * they already reflect any vertical shift (a hay pile on a seat rides the
-	 * seat via {@code T15Planner#settleSeats}).
-	 */
-	public static int[][] protectedBoxes(List<StructurePiece> pieces) {
+	public static int[][] protectedBoxes(List<StructurePiece> pieces, Set<Integer> excludedDecorPieces) {
 		List<int[]> out = new ArrayList<>();
-		for (StructurePiece piece : pieces) {
-			if (isMovable(piece) || isHayPile(piece)) {
-				BoundingBox box = piece.getBoundingBox();
-				out.add(new int[]{box.minX(), box.maxX(), box.minY(), box.maxY(), box.minZ(), box.maxZ()});
+		for (int i = 0; i < pieces.size(); i++) {
+			StructurePiece piece = pieces.get(i);
+			if (!isMovable(piece) || excludedDecorPieces.contains(i)) {
+				continue;
 			}
+			BoundingBox box = piece.getBoundingBox();
+			out.add(new int[]{box.minX(), box.maxX(), box.minY(), box.maxY(), box.minZ(), box.maxZ()});
 		}
 		return out.toArray(new int[0][]);
+	}
+
+	/** No identified decoration: the historical building-only boxes. */
+	public static int[][] protectedBoxes(List<StructurePiece> pieces) {
+		return protectedBoxes(pieces, Set.of());
 	}
 
 	private static final int[][] NONE = new int[0][];

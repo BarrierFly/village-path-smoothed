@@ -40,6 +40,13 @@ public final class VpsVillageSolution {
 	/** Actual decor template blocks of the identified street decor ({@link RoadCell#packedXYZ}). */
 	public java.util.Set<Long> decorBlocks = java.util.Set.of();
 	/**
+	 * Expected jigsaw-final base block id per packed XYZ of the identified
+	 * street decor. Vanilla placement can leave the lowest decor block air at a
+	 * street seat (the 2026-10-21 lamp-base gap); the writer restores exactly
+	 * these cells when they are still air.
+	 */
+	public java.util.Map<Long, String> decorBaseBlocks = java.util.Map.of();
+	/**
 	 * Blocks the village pile features really placed during this start's
 	 * placement ({@link RoadCell#packedXYZ}). Recorded by the BlockPileFeature
 	 * hook; the writer protects exactly these instead of the 5x5/7x7 potential

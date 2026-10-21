@@ -86,4 +86,12 @@ public class StreetFixtureConnectionTest {
 		assertEquals(Set.of(column(2, 0), column(2, 1), column(3, 0)),
 				net.connectedColumns(footprint, Set.of(column(3, 0))));
 	}
+
+	@Test
+	public void packedBlockPositionsRoundTrip() {
+		long key = RoadCell.packedXYZ(-2439, 168, -2127);
+		assertEquals(-2439, RoadCell.unpackX(key));
+		assertEquals(168, RoadCell.unpackY(key));
+		assertEquals(-2127, RoadCell.unpackZ(key));
+	}
 }

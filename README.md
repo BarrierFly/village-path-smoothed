@@ -100,7 +100,15 @@ water use scaffolding, and dangerous edges get leaf railings.
    against the half-block rule; a piece with no external neighbour is counted
    isolated. The decor's base group is the **4-connected component** of its
    footprint that contains the seat/actual base cells; a disconnected bbox ring
-   is a different structure and cannot pull the decor off its seat.
+   is a different structure and cannot pull the decor off its seat. Vanilla can
+   leave the lowest decor block (the child jigsaw's final base) air at a street
+   seat; the writer restores exactly that cell (`base restored` in `/vps
+   stats`), which closes the lamp-base gap without moving the piece. Decor used
+   outside a street seat (a house lamp) is a **pinned non-road fixture base
+   cell**: the solver re-solves the four surrounding roads to the base within
+   half a block (`fixture base cells` in `/vps stats`), which is what makes a
+   corner lamp base smooth when its west road is half a block lower and the
+   other three are one block higher.
    Diagonal/lawn seats are therefore isolated, not height-linked.
 4. **Kerbs, kerb railings and the ceiling / 路肩包边、包边护栏与包顶** — each
    side is probed **from the road block's own height**, and the two kerb columns
@@ -493,7 +501,11 @@ Two things are worth spelling out:
   装饰不脱节；**街件与路网的连接**按 2026-10-21 语义：只认求解方块的水平（4）邻接；
   装饰以自身 base footprint 内的求解格为端点，对 footprint 外的每个 4 邻接格检查高度差
   ≤ 半格，没有外部邻格计为孤立（seat 也算格/邻格）；base group 只取与 seat/实际底座格
-  4 连通的那部分 footprint，不连通的外圈不能把装饰拉离座位；**pile 在放置时记录真正放下的方块**并按位置保护，不再按 5×5/7×7
+  4 连通的那部分 footprint，不连通的外圈不能把装饰拉离座位；原版若把灯座最底层 jigsaw final 方块
+  留成空气，writer 只补这一格（`base restored`），不移动装饰、不写道路；街道座位之外的装饰
+  （房屋灯座）作为**固定的非道路 fixture base cell** 加入求解（writer 跳过该格），求解器把四周道路
+  重解到基座 ±半格（`fixture base cells`）——西侧低半格、另外三侧高 1 格时，调的是道路，不是只补基座；
+  **pile 在放置时记录真正放下的方块**并按位置保护，不再按 5×5/7×7
   潜在盒保护，也不再给干草堆单独的 1×1 保护盒。
   清格、路块、填方、包边、包顶、灯笼/铁链和护栏遇到非地形装饰都**逐格跳过**，只处理
   自然地形和本 mod 自己的路面结构（泥砖、平滑砂岩、默认圆石包边、脚手架、土径填方；

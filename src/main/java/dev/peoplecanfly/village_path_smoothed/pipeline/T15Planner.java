@@ -118,6 +118,7 @@ public final class T15Planner {
 		// blocks are what plan A/the writer protect. The set of pieces is stable
 		// across the vertical shifts; the block positions are refreshed below.
 		StreetDecor.Resolved decor = StreetDecor.identify(start.getPieces(), network, templateManager, registries);
+		network = StreetDecor.addFixtureBases(network, decor, config.roadSmoothing.maxExactSectionWidth);
 		VpsPipeline.STREET_DECOR_PIECES.addAndGet(decor.pieces.size());
 		VpsPipeline.STREET_DECOR_BLOCKS.addAndGet(decor.blocks.size());
 		if (config.roadSmoothing.enabled) {
@@ -138,6 +139,7 @@ public final class T15Planner {
 		if (!config.roadSmoothing.enabled) {
 			solution.buildingBoxes = BuildingComponents.protectedBoxes(start.getPieces(), decor.pieceIndices);
 			solution.decorBlocks = decor.blocks;
+			solution.decorBaseBlocks = decor.baseBlocks;
 			return solution;
 		}
 
@@ -171,6 +173,9 @@ public final class T15Planner {
 					solution.network, exclusion, true);
 			solution.buildingBoxes = boxes;
 			solution.decorBlocks = decor.blocks;
+			java.util.Map<Long, String> emptyBase = new java.util.HashMap<>(decor.fixtureBaseBlocks);
+			emptyBase.putAll(decor.baseBlocks);
+			solution.decorBaseBlocks = emptyBase;
 			StreetDecor.recordIsolatedSeats(solution.network);
 			StreetDecor.recordRoadMismatch(decor, solution.network);
 			solution.doorFronts = buildDoorFronts(components, pieces, targets, solution.network);
@@ -248,10 +253,15 @@ public final class T15Planner {
 		// movable FULL base group, so it must run whenever such a decor exists.
 		RoadNetwork finalNetwork = network;
 		boolean reSolved = false;
+		StreetDecor.Resolved fixtures = decor;
 		if (!(shifted.isEmpty() && !plazaMoved(plazaComponents) && !plazaPinsMismatch(network)
 				&& !hasMultiBlockDecor(decorAfterShift))) {
 			RoadNetwork resolved = RoadCollector.collect(start, ctx, config);
 			if (config.roadSmoothing.enabled) {
+				// The house/street fixture bases are re-identified at the moved
+				// pieces' current positions and pinned in the final solve.
+				fixtures = StreetDecor.identify(start.getPieces(), resolved, templateManager, registries);
+				resolved = StreetDecor.addFixtureBases(resolved, fixtures, config.roadSmoothing.maxExactSectionWidth);
 				// plan C phase 2: pin every plaza group at the level its pieces really
 				// render at after the move - the solve and the world agree by construction
 				resolved.applyPlazaPins(false);
@@ -338,6 +348,9 @@ public final class T15Planner {
 		StreetDecor.Resolved decorFinal = StreetDecor.refresh(settledDecor, pieces, templateManager);
 		solution.buildingBoxes = BuildingComponents.protectedBoxes(pieces, decorFinal.pieceIndices);
 		solution.decorBlocks = decorFinal.blocks;
+		java.util.Map<Long, String> finalBase = new java.util.HashMap<>(fixtures.fixtureBaseBlocks);
+		finalBase.putAll(decorFinal.baseBlocks);
+		solution.decorBaseBlocks = finalBase;
 		recordDecorSyncMismatch(decorFinal, finalNetwork);
 		// Audit 2026-10-21 / user decision: connection is the 4-adjacency between
 		// solve cells; count adjacent residuals and pieces with no external edge.

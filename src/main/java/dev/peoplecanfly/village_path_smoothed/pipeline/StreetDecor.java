@@ -70,6 +70,8 @@ public final class StreetDecor {
 		public final Map<Long, int[]> columnYRanges = new HashMap<>();
 		/** Seat columns inside the piece's bbox (whether the template has a block there or not). */
 		public final Set<Long> seatColumns = new LinkedHashSet<>();
+		/** Jigsaw-final base block id per packed XYZ; restored if placement left that cell air. */
+		public final Map<Long, String> baseBlocks = new HashMap<>();
 
 		private Piece(int pieceIndex, String templateLocation, boolean multiBlock) {
 			this.pieceIndex = pieceIndex;
@@ -83,20 +85,35 @@ public final class StreetDecor {
 		public final Set<Integer> pieceIndices;
 		public final Set<Long> blocks;
 		public final Set<Long> columns;
+		/** Jigsaw-final base block id per packed XYZ, merged from the pieces. */
+		public final Map<Long, String> baseBlocks;
+		/**
+		 * Fixture base cells for decor used outside a street seat: packed XZ to
+		 * the base walk Y. The solve pins these non-road cells so the adjacent
+		 * roads are re-solved within half a block of the real base.
+		 */
+		public final Map<Long, Integer> fixtureBases;
+		/** Base block ids of the fixture pieces (house decor), for the writer restore. */
+		public final Map<Long, String> fixtureBaseBlocks;
 		/** One tight box per actual block column: {minX,maxX,minY,maxY,minZ,maxZ}. */
 		public final int[][] columnBoxes;
 
 		private Resolved(List<Piece> pieces, Set<Integer> pieceIndices, Set<Long> blocks,
-				Set<Long> columns, int[][] columnBoxes) {
+				Set<Long> columns, Map<Long, String> baseBlocks, Map<Long, Integer> fixtureBases,
+				Map<Long, String> fixtureBaseBlocks, int[][] columnBoxes) {
 			this.pieces = pieces;
 			this.pieceIndices = pieceIndices;
 			this.blocks = blocks;
 			this.columns = columns;
+			this.baseBlocks = baseBlocks;
+			this.fixtureBases = fixtureBases;
+			this.fixtureBaseBlocks = fixtureBaseBlocks;
 			this.columnBoxes = columnBoxes;
 		}
 	}
 
-	private static final Resolved EMPTY = new Resolved(List.of(), Set.of(), Set.of(), Set.of(), new int[0][]);
+	private static final Resolved EMPTY = new Resolved(List.of(), Set.of(), Set.of(), Set.of(),
+			Map.of(), Map.of(), Map.of(), new int[0][]);
 
 	private StreetDecor() {
 	}
@@ -116,6 +133,8 @@ public final class StreetDecor {
 			return EMPTY;
 		}
 		List<Piece> found = new ArrayList<>();
+		Map<Long, String> baseOnly = new HashMap<>();
+		Map<Long, Integer> fixtureBases = new HashMap<>();
 		for (int i = 0; i < pieces.size(); i++) {
 			StructurePiece piece = pieces.get(i);
 			if (!(piece instanceof PoolElementStructurePiece pool)
@@ -133,9 +152,6 @@ public final class StreetDecor {
 			}
 			BoundingBox box = piece.getBoundingBox();
 			Set<Long> seats = seatColumnsIn(box, network.allSeatColumns);
-			if (seats.isEmpty()) {
-				continue; // the same template used outside a seat connection is not decor
-			}
 			boolean multiBlock = box.minX() != box.maxX() || box.minZ() != box.maxZ();
 			Piece decor = new Piece(i, location, multiBlock);
 			decor.minX = box.minX();
@@ -147,9 +163,20 @@ public final class StreetDecor {
 				VpsPipeline.DECOR_RESOLVE_FAILED.incrementAndGet();
 				continue; // unloadable template: leave the piece to the old bbox fallback
 			}
+			if (seats.isEmpty()) {
+				// 2026-10-21: the same template used outside a street seat (a
+				// house lamp) is not road-network decor, but its jigsaw-final
+				// base block is still restored if placement left it air.
+				baseOnly.putAll(decor.baseBlocks);
+				for (long key : decor.baseBlocks.keySet()) {
+					fixtureBases.put(RoadCell.packedXZ(RoadCell.unpackX(key), RoadCell.unpackZ(key)),
+							decor.baseWalkY);
+				}
+				continue;
+			}
 			found.add(decor);
 		}
-		return assemble(found, pieces);
+		return assemble(found, pieces, baseOnly, fixtureBases);
 	}
 
 	/** Recomputes the blocks of an already identified decor set at the pieces' current positions. */
@@ -157,6 +184,12 @@ public final class StreetDecor {
 			StructureTemplateManager templateManager) {
 		if (previous.pieces.isEmpty()) {
 			return previous;
+		}
+		// Keep the base-only (house decor) cells; only the street pieces move.
+		Map<Long, String> baseOnly = new HashMap<>(previous.baseBlocks);
+		Map<Long, Integer> fixtureBases = new HashMap<>(previous.fixtureBases);
+		for (Piece old : previous.pieces) {
+			baseOnly.keySet().removeAll(old.baseBlocks.keySet());
 		}
 		List<Piece> refreshed = new ArrayList<>(previous.pieces.size());
 		for (Piece old : previous.pieces) {
@@ -181,7 +214,7 @@ public final class StreetDecor {
 				VpsPipeline.DECOR_RESOLVE_FAILED.incrementAndGet();
 			}
 		}
-		return assemble(refreshed, pieces);
+		return assemble(refreshed, pieces, baseOnly, fixtureBases);
 	}
 
 	/**
@@ -292,6 +325,44 @@ public final class StreetDecor {
 			VpsPipeline.DECOR_BASE_GROUPS.incrementAndGet();
 			VpsPipeline.DECOR_BASE_GROUP_CELLS.addAndGet(indices.length);
 		}
+	}
+
+	/**
+	 * 2026-10-21: adds fixture base cells (decor used outside a street seat,
+	 * e.g. a house lamp) to the network as pinned non-road solve cells. The
+	 * solver then re-solves the 4-adjacent roads within half a block of the
+	 * real base; the writer skips these cells. The network is rebuilt only
+	 * when at least one cell is new.
+	 */
+	public static RoadNetwork addFixtureBases(RoadNetwork network, Resolved resolved, int maxWidth) {
+		if (resolved.fixtureBases.isEmpty()) {
+			return network;
+		}
+		List<RoadCell> cells = new ArrayList<>(network.cells);
+		int added = 0;
+		for (Map.Entry<Long, Integer> entry : resolved.fixtureBases.entrySet()) {
+			long column = entry.getKey();
+			int x = (int) (column >> 32);
+			int z = (int) column;
+			if (network.cellAt(x, z) >= 0) {
+				continue; // already a road/seat cell (street fixture)
+			}
+			RoadCell cell = new RoadCell(x, z, "plains", 2 * entry.getValue(), false);
+			cell.fixtureBase = true;
+			cell.plazaPinned = true;
+			cell.plazaPinP = 2 * entry.getValue();
+			cells.add(cell);
+			added++;
+		}
+		if (added == 0) {
+			return network;
+		}
+		RoadNetwork rebuilt = RoadNetwork.build(cells, maxWidth);
+		rebuilt.plazaFootprint.addAll(network.plazaFootprint);
+		rebuilt.streetScenery.addAll(network.streetScenery);
+		rebuilt.allSeatColumns.addAll(network.allSeatColumns);
+		rebuilt.decorPools.addAll(network.decorPools);
+		return rebuilt;
 	}
 
 	/**
@@ -422,9 +493,15 @@ public final class StreetDecor {
 		return 1;
 	}
 
-	private static Resolved assemble(List<Piece> found, List<StructurePiece> pieces) {
+	private static Resolved assemble(List<Piece> found, List<StructurePiece> pieces,
+			Map<Long, String> baseOnly, Map<Long, Integer> fixtureBases) {
+		Map<Long, String> baseBlocks = new HashMap<>(baseOnly);
 		if (found.isEmpty()) {
-			return EMPTY;
+			if (baseBlocks.isEmpty() && fixtureBases.isEmpty()) {
+				return EMPTY;
+			}
+			return new Resolved(List.of(), Set.of(), Set.of(), Set.of(), baseBlocks,
+					fixtureBases, baseOnly, new int[0][]);
 		}
 		Set<Integer> indices = new HashSet<>();
 		Set<Long> blocks = new HashSet<>();
@@ -434,6 +511,7 @@ public final class StreetDecor {
 			indices.add(piece.pieceIndex);
 			blocks.addAll(piece.blocks);
 			columns.addAll(piece.columns);
+			baseBlocks.putAll(piece.baseBlocks);
 			for (Map.Entry<Long, int[]> entry : piece.columnYRanges.entrySet()) {
 				int[] range = ranges.get(entry.getKey());
 				if (range == null) {
@@ -452,7 +530,8 @@ public final class StreetDecor {
 			int z = (int) column;
 			boxes[n++] = new int[]{x, x, entry.getValue()[0], entry.getValue()[1], z, z};
 		}
-		return new Resolved(List.copyOf(found), indices, blocks, columns, boxes);
+		return new Resolved(List.copyOf(found), indices, blocks, columns, baseBlocks,
+				fixtureBases, baseOnly, boxes);
 	}
 
 	/** Loads every template location that any collected decor pool can produce. */
@@ -520,7 +599,18 @@ public final class StreetDecor {
 				// The jigsaw itself is replaced by its final_state at placement.
 				String finalState = nbtString(info, "final_state");
 				if (isRendered(finalState)) {
-					addBlock(decor, StructureTemplate.calculateRelativePosition(settings, infoPos).offset(origin));
+					BlockPos world = StructureTemplate.calculateRelativePosition(settings, infoPos).offset(origin);
+					addBlock(decor, world);
+					String id = finalState.startsWith("minecraft:")
+							? finalState.substring("minecraft:".length())
+							: finalState;
+					int bracket = id.indexOf('[');
+					if (bracket >= 0) {
+						id = id.substring(0, bracket);
+					}
+					if (!id.isEmpty()) {
+						decor.baseBlocks.put(RoadCell.packedXYZ(world.getX(), world.getY(), world.getZ()), id);
+					}
 				}
 				continue;
 			}

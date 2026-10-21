@@ -124,6 +124,10 @@ public final class RoadWriter {
 	 * identified decor template block (the actual footprint, not the bbox).
 	 */
 	public static final AtomicLong DECOR_BLOCKS_SKIPPED = new AtomicLong();
+	/** 2026-10-21: identified decor base cells restored because placement left them air. */
+	public static final AtomicLong DECOR_BASE_RESTORED = new AtomicLong();
+	/** 2026-10-21: non-road fixture base solve cells skipped by the writer. */
+	public static final AtomicLong FIXTURE_BASE_CELLS = new AtomicLong();
 	/** Audit 2026-10-20 decision 4: writes skipped because the target is a block a village pile really placed. */
 	public static final AtomicLong PILE_BLOCKS_SKIPPED = new AtomicLong();
 	/**
@@ -194,7 +198,8 @@ public final class RoadWriter {
 	 */
 	public static void write(RoadNetwork net, VpsGenContext ctx, BoundingBox chunkBB, VillagePathSmoothedConfig config,
 			int[][] shiftedComponents, int[][] buildingBoxes, java.util.Set<Long> decorBlocks,
-			java.util.Set<Long> pileBlocks, int[][] doorFronts, int[][] doorSigns,
+			java.util.Map<Long, String> decorBaseBlocks, java.util.Set<Long> pileBlocks,
+			int[][] doorFronts, int[][] doorSigns,
 			int[][] seamSigns, String village) {
 		RoadMaterialTable table = RoadMaterialTable.create(config);
 		// Audit 2026-10-20 decisions 1/4: protect the actual decor template blocks
@@ -203,6 +208,10 @@ public final class RoadWriter {
 		// decor base or a pile snow layer keeps its block while the road and its
 		// support fill still go below/around it.
 		ctx.setProtectedBlocks(decorBlocks, pileBlocks);
+		// 2026-10-21: vanilla placement can leave the lowest decor block (the
+		// child jigsaw's final_state) air on a street seat. Restore exactly those
+		// base cells before the seat writer runs.
+		restoreDecorBaseBlocks(ctx, chunkBB, decorBaseBlocks);
 		// User decision 2026-10-15: every road cell applies its own edge details
 		// - the one-owner-per-side-column rule is gone. A shared column now gets
 		// the low road's kerb AND the high road's railing, which is the point:
@@ -237,6 +246,40 @@ public final class RoadWriter {
 		}
 		if (config.debug.seamSigns) {
 			writeSeamSigns(ctx, chunkBB, seamSigns);
+		}
+	}
+
+	/**
+	 * Restores the identified decor's jigsaw-final base blocks when vanilla
+	 * placement left the cell air. Only the exact expected cell is filled, and
+	 * only in this chunk's write window; a block already placed by vanilla or
+	 * another structure wins. This closes the 2026-10-21 lamp-base gap (the
+	 * lamp's lowest fence/wall missing at a street seat) without moving any
+	 * piece or writing a road block.
+	 */
+	private static void restoreDecorBaseBlocks(VpsGenContext ctx, BoundingBox chunkBB,
+			java.util.Map<Long, String> decorBaseBlocks) {
+		if (decorBaseBlocks == null || decorBaseBlocks.isEmpty()) {
+			return;
+		}
+		for (java.util.Map.Entry<Long, String> entry : decorBaseBlocks.entrySet()) {
+			long key = entry.getKey();
+			int x = RoadCell.unpackX(key);
+			int y = RoadCell.unpackY(key);
+			int z = RoadCell.unpackZ(key);
+			if (x < chunkBB.minX() || x > chunkBB.maxX()
+					|| z < chunkBB.minZ() || z > chunkBB.maxZ()) {
+				continue;
+			}
+			if (!ctx.blockState(x, y, z).isAir()) {
+				continue;
+			}
+			Block block = VpsCompat.blockById(entry.getValue());
+			if (block == null) {
+				continue;
+			}
+			setBlock(ctx, x, y, z, block.defaultBlockState());
+			DECOR_BASE_RESTORED.incrementAndGet();
 		}
 	}
 
@@ -380,6 +423,14 @@ public final class RoadWriter {
 			int[][] buildingBoxes, int[][] doorFronts, java.util.BitSet threeWideMiddles, String village) {
 		int x = cell.x;
 		int z = cell.z;
+
+		// 2026-10-21: a house/street fixture base cell solves and pins the
+		// surrounding roads but is not a road column: the base itself (floor,
+		// lamp base) is rendered by its own structure.
+		if (cell.fixtureBase) {
+			FIXTURE_BASE_CELLS.incrementAndGet();
+			return;
+		}
 
 		// ---- plan C (user decision 2026-10-15): the plaza renders itself. The
 		// rigid piece's platform IS the solved surface (pinned in phase 2), so

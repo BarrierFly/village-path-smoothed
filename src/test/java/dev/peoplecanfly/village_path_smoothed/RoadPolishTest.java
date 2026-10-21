@@ -176,6 +176,35 @@ public class RoadPolishTest {
 		assertTrue("the pair stays within half a block", worstStep(net) <= 1);
 	}
 
+	/**
+	 * 2026-10-21: a fixture base is a pinned non-road cell. The solver must
+	 * re-solve the four roads around it within half a block of the base, even
+	 * when the west side sits one half-block lower and the other three sides
+	 * one block higher (the lamp-base corner reported in game).
+	 */
+	@Test
+	public void aPinnedFixtureBasePullsTheSurroundingRoadsWithinHalfABlock() {
+		List<RoadCell> cells = new ArrayList<>();
+		for (int x = -2; x <= 2; x++) {
+			for (int z = -2; z <= 2; z++) {
+				if (x == 0 && z == 0) {
+					continue;
+				}
+				int walk = x < 0 ? 168 : (x > 0 || z != 0 ? 169 : 168);
+				cells.add(new RoadCell(x, z, "plains", 2 * walk, false));
+			}
+		}
+		RoadCell fixture = new RoadCell(0, 0, "plains", 2 * 168, false);
+		fixture.fixtureBase = true;
+		fixture.plazaPinned = true;
+		fixture.plazaPinP = 2 * 168;
+		cells.add(fixture);
+		RoadNetwork net = RoadNetwork.build(cells, 4);
+		RoadSmoother.solve(net, params());
+		assertEquals("the pinned fixture is one more 4-adjacency edge", 0, violations(net));
+		assertTrue("the four sides stay within half a block (" + worstStep(net) + ")", worstStep(net) <= 1);
+	}
+
 	/** Running the solver twice must give the same profile: the polish is a fixed point. */
 	@Test
 	public void thePolishIsAFixedPoint() {

@@ -314,8 +314,8 @@ public final class VpsPipeline {
 			runBuildingGuard(solution, ctx, config);
 		}
 		RoadWriter.write(solution.network, ctx, chunkBB, config, solution.shiftedComponents,
-				solution.buildingBoxes, solution.decorBlocks, solution.pileBlocks,
-				solution.doorFronts, solution.doorSigns, solution.seamSigns,
+				solution.buildingBoxes, solution.decorBlocks, solution.decorBaseBlocks,
+				solution.pileBlocks, solution.doorFronts, solution.doorSigns, solution.seamSigns,
 				String.valueOf(start.getChunkPos()));
 	}
 
@@ -602,6 +602,7 @@ public final class VpsPipeline {
 		STREET_DECOR_PIECES.addAndGet(decor.pieces.size());
 		STREET_DECOR_BLOCKS.addAndGet(decor.blocks.size());
 		if (config.roadSmoothing.enabled) {
+			network = StreetDecor.addFixtureBases(network, decor, config.roadSmoothing.maxExactSectionWidth);
 			// plan 2026-10-16: nothing may move at feature placement, so a seat
 			// with a RIGID decor piece on top pins at the level that piece
 			// actually renders at (the phase-2 plaza precedent: the pieces are
@@ -635,6 +636,9 @@ public final class VpsPipeline {
 		int[][] t5BuildingBoxes = BuildingComponents.protectedBoxes(pieces, decor.pieceIndices);
 		solution.buildingBoxes = t5BuildingBoxes;
 		solution.decorBlocks = decor.blocks;
+		java.util.Map<Long, String> t5BaseBlocks = new java.util.HashMap<>(decor.fixtureBaseBlocks);
+		t5BaseBlocks.putAll(decor.baseBlocks);
+		solution.decorBaseBlocks = t5BaseBlocks;
 		BuildingComponents.TemplateScan t5Scan = BuildingComponents.scanTemplates(pieces, templateManager);
 		List<BuildingComponents.Component> t5Components = BuildingComponents.group(pieces);
 		// Door/basis fix plan 2026-10-17: the T5 path uses the same main doors,

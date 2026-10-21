@@ -79,6 +79,13 @@ public final class RoadCell {
 	/** The seat's final_state block id (e.g. "grass_block"); rendered by the writer. */
 	public String seatBlock;
 	/**
+	 * 2026-10-21: a non-road fixture base column (a house/street lamp's floor
+	 * cell). It is included in the solve with a fixed pin so its 4-adjacent
+	 * roads are constrained to the base's real walk surface; the writer never
+	 * writes a road block, fill, clear or seat on it.
+	 */
+	public boolean fixtureBase;
+	/**
 	 * R1-4 / seam reason: set when {@code settleSeats} had to clamp a seat's
 	 * solved level at the world edge, so the decor piece could not reach the pin.
 	 * Diagnostic only; the seam signs name it as a known smoothing blocker.
@@ -106,5 +113,20 @@ public final class RoadCell {
 	 */
 	public static long packedXYZ(int x, int y, int z) {
 		return ((long) (x & 0x3FFFFFF) << 38) | ((long) (z & 0x3FFFFFF) << 12) | (y & 0xFFF);
+	}
+
+	public static int unpackX(long key) {
+		int x = (int) (key >> 38);
+		return x >= 0x2000000 ? x - 0x4000000 : x;
+	}
+
+	public static int unpackY(long key) {
+		int y = (int) (key & 0xFFF);
+		return y >= 0x800 ? y - 0x1000 : y;
+	}
+
+	public static int unpackZ(long key) {
+		int z = (int) ((key >> 12) & 0x3FFFFFF);
+		return z >= 0x2000000 ? z - 0x4000000 : z;
 	}
 }

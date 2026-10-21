@@ -369,7 +369,16 @@ Rules:
     nearest-seat search is gone: it treated diagonal/lawn seats as connected
     and could miss a road beside a multi-block footprint far from the seat.
     The seat writer clears only the old seat material above a moved seat; a
-    decor base block there wins (`RoadWriter`, 2026-10-21).
+    decor base block there wins (`RoadWriter`, 2026-10-21). The writer also
+    restores the identified decor's **jigsaw-final base block** when vanilla
+    placement left that exact cell air (`DECOR_BASE_RESTORED`); this is the
+    2026-10-21 lamp-base gap fix and never moves a piece or writes a road.
+    **Decor used outside a street seat (a house lamp) is a fixture base cell**
+    (`StreetDecor#addFixtureBases`): the column is added to the solve as a
+    pinned non-road cell at the piece's real `baseWalkY`, and the writer skips
+    it (`FIXTURE_BASE_CELLS`). The solver's 4-adjacency edges then re-solve the
+    surrounding road to the base within half a block - a single base block can
+    never smooth a west side 0.5 below and three sides 1 block above on its own.
   - **Drop railings win over our own kerb.** `RoadWriter#placeRailing` may
     replace the mod's own kerb material at its target cell (the documented
     "low kerb + high railing" rule). The end cap no longer writes into the

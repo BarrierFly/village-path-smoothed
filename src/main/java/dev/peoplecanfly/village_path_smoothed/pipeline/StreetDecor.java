@@ -57,6 +57,11 @@ public final class StreetDecor {
 		public final boolean multiBlock;
 		/** Walk surface the decor's base sits on: {@code bbox.minY + groundLevelDelta}. */
 		public int baseWalkY;
+		/** The piece's XZ bounding box: the full base footprint lives inside it. */
+		public int minX;
+		public int maxX;
+		public int minZ;
+		public int maxZ;
 		/** World columns with at least one real template block ({@link RoadCell#packedXZ}). */
 		public final Set<Long> columns = new LinkedHashSet<>();
 		/** World block positions of the real template blocks ({@link RoadCell#packedXYZ}). */
@@ -133,8 +138,13 @@ public final class StreetDecor {
 			}
 			boolean multiBlock = box.minX() != box.maxX() || box.minZ() != box.maxZ();
 			Piece decor = new Piece(i, location, multiBlock);
+			decor.minX = box.minX();
+			decor.maxX = box.maxX();
+			decor.minZ = box.minZ();
+			decor.maxZ = box.maxZ();
 			decor.seatColumns.addAll(seats);
 			if (!computeBlocks(decor, pool, templateManager)) {
+				VpsPipeline.DECOR_RESOLVE_FAILED.incrementAndGet();
 				continue; // unloadable template: leave the piece to the old bbox fallback
 			}
 			found.add(decor);
@@ -159,20 +169,29 @@ public final class StreetDecor {
 				continue;
 			}
 			Piece decor = new Piece(old.pieceIndex, old.templateLocation, old.multiBlock);
+			BoundingBox box = piece.getBoundingBox();
+			decor.minX = box.minX();
+			decor.maxX = box.maxX();
+			decor.minZ = box.minZ();
+			decor.maxZ = box.maxZ();
 			decor.seatColumns.addAll(old.seatColumns);
 			if (computeBlocks(decor, pool, templateManager)) {
 				refreshed.add(decor);
+			} else {
+				VpsPipeline.DECOR_RESOLVE_FAILED.incrementAndGet();
 			}
 		}
 		return assemble(refreshed, pieces);
 	}
 
 	/**
-	 * Pins every multi-block decor's seat columns and actual footprint columns
-	 * that are road cells at its base walk level (T5 and the T1.5 final solve).
+	 * T5 flat-base replacement for the old actual-block pin: every road cell in
+	 * the decor's XZ bbox (seat, planks/stairs and the air columns over road) is
+	 * pinned to the same even walk level. The full footprint is what makes a
+	 * 3x3 lamp or a 3x6 platform read as one flat base instead of a pin island.
 	 * Returns the number of cells pinned.
 	 */
-	public static int pinMultiBlockFootprints(Resolved resolved, RoadNetwork network) {
+	public static int pinBaseFootprints(Resolved resolved, RoadNetwork network) {
 		int pinned = 0;
 		java.util.Set<Long> seen = new HashSet<>();
 		for (Piece piece : resolved.pieces) {
@@ -180,14 +199,194 @@ public final class StreetDecor {
 				continue;
 			}
 			int pinP = 2 * piece.baseWalkY;
-			seen.clear();
-			seen.addAll(piece.seatColumns);
-			seen.addAll(piece.columns);
-			for (long column : seen) {
-				pinned += pinCell(network, column, pinP);
+			for (int x = piece.minX; x <= piece.maxX; x++) {
+				for (int z = piece.minZ; z <= piece.maxZ; z++) {
+					long column = RoadCell.packedXZ(x, z);
+					if (seen.add(column)) {
+						pinned += pinCell(network, column, pinP);
+					}
+				}
 			}
 		}
 		return pinned;
+	}
+
+	/**
+	 * T1.5 replacement for the immovable pin: the FULL base footprint of each
+	 * multi-block decor becomes one MOVABLE flat unit in the final solve. The
+	 * polish flattens it to one even level and may move it as a whole, exactly
+	 * like a small plaza; the rigid decor is moved to that level afterwards by
+	 * {@link #settleBases}. Air columns inside the bbox are included because
+	 * they are part of the base the player sees.
+	 */
+	public static void buildBaseGroups(Resolved resolved, RoadNetwork network) {
+		if (resolved.pieces.isEmpty()) {
+			return;
+		}
+		network.decorBaseGroupsMovable = true;
+		java.util.Set<Long> used = new HashSet<>();
+		for (Piece piece : resolved.pieces) {
+			if (!piece.multiBlock) {
+				continue; // a 1x1 seat is the seat rider / T5 pin
+			}
+			List<Integer> cells = new ArrayList<>();
+			for (int x = piece.minX; x <= piece.maxX; x++) {
+				for (int z = piece.minZ; z <= piece.maxZ; z++) {
+					long column = RoadCell.packedXZ(x, z);
+					if (used.contains(column)) {
+						continue;
+					}
+					int index = network.cellAt(x, z);
+					if (index < 0) {
+						continue;
+					}
+					RoadCell cell = network.cells.get(index);
+					if (cell.plaza) {
+						continue; // the plaza group owns this cell
+					}
+					cells.add(index);
+				}
+			}
+			if (cells.isEmpty()) {
+				continue;
+			}
+			int[] indices = new int[cells.size()];
+			for (int i = 0; i < indices.length; i++) {
+				indices[i] = cells.get(i);
+				RoadCell cell = network.cells.get(indices[i]);
+				used.add(RoadCell.packedXZ(cell.x, cell.z));
+			}
+			network.decorBaseGroups.add(new RoadNetwork.DecorBaseGroup(piece.pieceIndex, indices));
+			VpsPipeline.DECOR_BASE_GROUPS.incrementAndGet();
+			VpsPipeline.DECOR_BASE_GROUP_CELLS.addAndGet(indices.length);
+		}
+	}
+
+	/**
+	 * Moves every multi-block decor to the level its base group settled on.
+	 * The group is flat and even, so this is a whole-block move; the refreshed
+	 * footprint then matches the road/seat the writer renders. A world-height
+	 * clamp is counted, never silently ignored.
+	 */
+	public static Resolved settleBases(Resolved resolved, RoadNetwork network, List<StructurePiece> pieces,
+			StructureTemplateManager templateManager, int minY, int maxY) {
+		if (resolved.pieces.isEmpty() || network.decorBaseGroups.isEmpty()) {
+			return resolved;
+		}
+		Map<Integer, Integer> groupLevels = new HashMap<>();
+		for (RoadNetwork.DecorBaseGroup group : network.decorBaseGroups) {
+			if (group.cells.length > 0) {
+				groupLevels.put(group.pieceIndex, network.cells.get(group.cells[0]).solvedP);
+			}
+		}
+		for (Piece piece : resolved.pieces) {
+			if (!piece.multiBlock) {
+				continue;
+			}
+			Integer level = groupLevels.get(piece.pieceIndex);
+			if (level == null || piece.pieceIndex < 0 || piece.pieceIndex >= pieces.size()) {
+				continue;
+			}
+			int desiredWalk = level >> 1; // the group is even; arithmetic shift also floors correctly below Y=0
+			int dy = desiredWalk - piece.baseWalkY;
+			if (dy == 0) {
+				continue;
+			}
+			BoundingBox box = pieces.get(piece.pieceIndex).getBoundingBox();
+			int lo = minY - box.minY();
+			int hi = maxY - box.maxY();
+			int clamped = lo > hi ? 0 : Math.max(lo, Math.min(hi, dy));
+			if (clamped != dy) {
+				VpsPipeline.DECOR_SETTLE_CLAMPED.incrementAndGet();
+			}
+			if (clamped != 0) {
+				pieces.get(piece.pieceIndex).move(0, clamped, 0);
+				VpsPipeline.DECOR_SETTLED_PIECES.incrementAndGet();
+			}
+		}
+		return refresh(resolved, pieces, templateManager);
+	}
+
+	/**
+	 * Counts the remaining fixture-to-road mismatches after the solve/settle.
+	 * The nearest road/seat cell OUTSIDE the decor's own base footprint is the
+	 * connection the player sees; a difference of more than half a block is
+	 * counted even when the two cells are diagonal (the solver's edge walk only
+	 * sees 4-adjacency, which is exactly the blind spot this counter covers).
+	 */
+	public static void recordRoadMismatch(Resolved resolved, RoadNetwork network) {
+		for (Piece piece : resolved.pieces) {
+			java.util.Set<Long> own = new HashSet<>();
+			own.addAll(piece.seatColumns);
+			own.addAll(piece.columns);
+			for (int x = piece.minX; x <= piece.maxX; x++) {
+				for (int z = piece.minZ; z <= piece.maxZ; z++) {
+					own.add(RoadCell.packedXZ(x, z));
+				}
+			}
+			RoadCell nearest = null;
+			int bestDistance = Integer.MAX_VALUE;
+			for (long column : piece.seatColumns) {
+				int seatX = (int) (column >> 32);
+				int seatZ = (int) column;
+				for (int radius = 1; radius <= 3 && nearest == null; radius++) {
+					for (int dx = -radius; dx <= radius; dx++) {
+						for (int dz = -radius; dz <= radius; dz++) {
+							if (Math.max(Math.abs(dx), Math.abs(dz)) != radius) {
+								continue;
+							}
+							int x = seatX + dx;
+							int z = seatZ + dz;
+							if (own.contains(RoadCell.packedXZ(x, z))) {
+								continue;
+							}
+							int index = network.cellAt(x, z);
+							if (index < 0) {
+								continue;
+							}
+							int distance = Math.abs(dx) + Math.abs(dz);
+							if (distance < bestDistance) {
+								bestDistance = distance;
+								nearest = network.cells.get(index);
+							}
+						}
+					}
+				}
+				if (nearest != null) {
+					break;
+				}
+			}
+			if (nearest == null) {
+				VpsPipeline.DECOR_ROAD_ISOLATED_PIECES.incrementAndGet();
+				continue;
+			}
+			int diff = Math.abs(nearest.solvedP - 2 * piece.baseWalkY);
+			if (diff > 1) {
+				VpsPipeline.DECOR_ROAD_MISMATCH_PIECES.incrementAndGet();
+				VpsPipeline.DECOR_ROAD_MISMATCH_WORST.accumulateAndGet(diff, Math::max);
+			}
+		}
+	}
+
+	/** Seat cells with no 4-adjacent mask cell at all: the solvable-network blind spot. */
+	public static void recordIsolatedSeats(RoadNetwork network) {
+		for (RoadCell cell : network.cells) {
+			if (!cell.seat) {
+				continue;
+			}
+			boolean linked = false;
+			if (cell.index >= 0 && cell.index < network.neighbors.length) {
+				for (int dir = 0; dir < 4; dir++) {
+					if (network.neighbors[cell.index][dir] >= 0) {
+						linked = true;
+						break;
+					}
+				}
+			}
+			if (!linked) {
+				VpsPipeline.DECOR_SEATS_ISOLATED.incrementAndGet();
+			}
+		}
 	}
 
 	private static int pinCell(RoadNetwork network, long column, int pinP) {

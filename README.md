@@ -88,11 +88,14 @@ water use scaffolding, and dangerous edges get leaf railings.
    the writer protects the decor's **actual template blocks** (including its
    cobblestone/snow bases) and still writes the road and the support fill
    below/around them, so a 3×3 lamp no longer leaves holes under its empty bbox
-   columns. At T5 a multi-block decor pins its seat and actual footprint at
-   `baseWalkY`; at T1.5 the same pin is applied after the first shift and the
-   second alignment does not move that decor again, so the seat and the decor
-   cannot drift apart. 1×1 decor (lamp/cat) still rides the seat exactly like
-   before.
+   columns. At T5 a multi-block decor pins its **full base footprint** (seat,
+   actual blocks and the air columns over road) flat at `baseWalkY`; at T1.5
+   that same footprint is one **movable flat unit** in the final solve, and the
+   decor is moved onto the level it settles on. The base is therefore part of
+   the solve (the user's "fixed shape, vertically movable, even surface"),
+   not a frozen anchor. 1×1 decor (lamp/cat) still rides the seat exactly like
+   before. Diagonal/isolated seats are exposed by the `road mismatches` /
+   `isolated seats` counters; they are deliberately not height-linked yet.
 4. **Kerbs, kerb railings and the ceiling / 路肩包边、包边护栏与包顶** — each
    side is probed **from the road block's own height**, and the two kerb columns
    are probed together ("探2包1"):
@@ -265,9 +268,10 @@ ModMenu is installed) but optional. / 无必装依赖；装有 ModMenu 时会出
   contradictions, residual step violations and their worst step, water anchor
    deviations), the vanilla-block suppression counters, the `feature` line
    (protected decoration blocks kept, broken down by road/fill/clear/kerb/
-   ceiling/railing), the `decor` line (identified decor pieces/blocks, protected
-   writes, pile blocks, pin cells and T1.5 seat-sync mismatches), and villages
-   that degenerated into a single region
+   ceiling/railing), the `decor` line (identified decor pieces/blocks, base
+   groups and cells, settled pieces, protected writes, pile blocks, pin cells,
+   seat-sync and road-mismatch counters, isolated seats and resolve failures),
+   and villages that degenerated into a single region
 - `/vps dump [radius]` — rebuild + re-solve the road network of villages near
   you and print cell/arm/region counts (diagnostics)
 - `/vps debug villagerbrain freeze on|off` — debug: freeze villagers (they

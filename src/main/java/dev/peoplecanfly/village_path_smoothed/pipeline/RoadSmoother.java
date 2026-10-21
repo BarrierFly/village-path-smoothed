@@ -526,14 +526,40 @@ public record SolveParams(
 			}
 			units.add(group, movable);
 		}
+		// Decor base footprints (audit 2026-10-21): the FULL base of a multi-block
+		// decor - seat, actual blocks and the air columns over road - is one flat
+		// body. On T1.5 it is movable, so the polish flattens it to one even level
+		// and moves it as a whole; the rigid decor is then moved to that level.
+		// A cell already claimed by a plaza group is left to the plaza; the group
+		// itself was built without plaza cells.
+		for (RoadNetwork.DecorBaseGroup group : net.decorBaseGroups) {
+			if (group.cells.length == 0) {
+				continue;
+			}
+			boolean claimed = false;
+			boolean movable = net.decorBaseGroupsMovable;
+			for (int idx : group.cells) {
+				if (units.unitOf[idx] >= 0) {
+					claimed = true;
+					break;
+				}
+				if (pinnedCells.get(idx)) {
+					movable = false;
+				}
+			}
+			if (!claimed) {
+				units.add(group.cells, movable);
+			}
+		}
 		// Bare seats: a 4-connected seat component cannot contain a legal step at
 		// all (both ends are full blocks, so an even difference must be 0), hence
 		// it is one flat unit. Pinned T5 seats are excluded: their decor pieces
-		// are the rigid truth and must not be dragged.
+		// are the rigid truth and must not be dragged. Decor-group seats are
+		// excluded too: they already belong to the decor base body.
 		boolean[] seen = new boolean[n];
 		for (int start = 0; start < n; start++) {
 			RoadCell cell = net.cells.get(start);
-			if (!cell.seat || pinnedCells.get(start) || seen[start]) {
+			if (!cell.seat || pinnedCells.get(start) || seen[start] || units.unitOf[start] >= 0) {
 				continue;
 			}
 			List<Integer> component = new ArrayList<>();
@@ -545,7 +571,7 @@ public record SolveParams(
 				component.add(i);
 				for (int dir = 0; dir < 4; dir++) {
 					int j = net.neighbors[i][dir];
-					if (j >= 0 && !seen[j] && net.cells.get(j).seat && !pinnedCells.get(j)) {
+					if (j >= 0 && !seen[j] && units.unitOf[j] < 0 && net.cells.get(j).seat && !pinnedCells.get(j)) {
 						seen[j] = true;
 						stack.push(j);
 					}

@@ -124,6 +124,40 @@ public class RoadPolishTest {
 		assertEquals(0, stats.polishConflicts());
 	}
 
+	/**
+	 * Audit 2026-10-21: a multi-block decor's FULL base footprint (including its
+	 * air columns over road) is one movable flat unit. The polish must flatten it
+	 * to one even level and still legalise the road it meets - this is what the
+	 * old per-actual-block pin could not guarantee at a terrace edge.
+	 */
+	@Test
+	public void aDecorBaseGroupIsFlatEvenAndLegal() {
+		List<RoadCell> cells = new ArrayList<>();
+		// The base footprint: three road cells at different terrain heights.
+		for (int x = 0; x < 3; x++) {
+			cells.add(new RoadCell(x, 0, "plains", 2 * (64 + 2 * x), false));
+		}
+		// A lower road band in front of the fixture.
+		for (int x = -2; x <= 4; x++) {
+			cells.add(new RoadCell(x, 1, "plains", 2 * 61, false));
+			cells.add(new RoadCell(x, 2, "plains", 2 * 61, false));
+		}
+		RoadNetwork net = RoadNetwork.build(cells, 4);
+		int[] group = {net.cellAt(0, 0), net.cellAt(1, 0), net.cellAt(2, 0)};
+		net.decorBaseGroups.add(new RoadNetwork.DecorBaseGroup(0, group));
+		net.decorBaseGroupsMovable = true;
+
+		RoadSmoother.solve(net, params());
+
+		int level = net.cells.get(group[0]).solvedP;
+		assertTrue("the base group levels on an even walk surface (" + level + ")", (level & 1) == 0);
+		for (int idx : group) {
+			assertEquals("the full base footprint is flat", level, net.cells.get(idx).solvedP);
+		}
+		assertEquals("the base group and the road meet legally", 0, violations(net));
+		assertTrue("the profile stays within half a block (" + worstStep(net) + ")", worstStep(net) <= 1);
+	}
+
 	/** Running the solver twice must give the same profile: the polish is a fixed point. */
 	@Test
 	public void thePolishIsAFixedPoint() {

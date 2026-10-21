@@ -48,6 +48,34 @@ public final class RoadNetwork {
 	 */
 	public final List<int[]> plazaGroups = new ArrayList<>();
 	/**
+	 * The FULL base footprint of one multi-block street decor piece: every road
+	 * cell inside the decor's XZ bounding box, including air columns (audit
+	 * 2026-10-21). The seats and planks/stair columns are a subset; the air
+	 * columns are what the old actual-block pin missed, so a 3x3 lamp or 3x6
+	 * platform could still slope through its own base.
+	 *
+	 * <p>On T1.5 the group is a MOVABLE flat unit: the polish flattens it to one
+	 * EVEN level and may move it as a whole, then the rigid decor piece is moved
+	 * to that level. That is the user's "fixed shape, vertically movable,
+	 * even-surface local structure". On T5 no piece may move, so the same
+	 * footprint is pinned flat instead ({@code StreetDecor#pinBaseFootprints}).
+	 */
+	public final List<DecorBaseGroup> decorBaseGroups = new ArrayList<>();
+	/** True on the T1.5 final solve: decor base groups may move as whole flat bodies. */
+	public boolean decorBaseGroupsMovable;
+
+	/** One decor piece's full base footprint (cell indices into {@link #cells}). */
+	public static final class DecorBaseGroup {
+		public final int pieceIndex;
+		public final int[] cells;
+
+		public DecorBaseGroup(int pieceIndex, int[] cells) {
+			this.pieceIndex = pieceIndex;
+			this.cells = cells;
+		}
+	}
+
+	/**
 	 * World XZ columns ({@link RoadCell#packedXZ}) of every y=0 block of a
 	 * {@code town_centers} piece - the plaza piece's own footprint, including the
 	 * well/fountain water and jigsaw cells that are not road cells. The writer

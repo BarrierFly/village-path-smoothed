@@ -32,7 +32,7 @@ src/main/java/dev/peoplecanfly/village_path_smoothed/
 │   ├── VpsPipeline          # entry from the mixins: gate -> T1.5 plan / solve (cached) -> suppress/write
 │   ├── T15Planner           # T1.5 forward decision: solve + RIGID component shifts + post-shift re-solve
 │   ├── BuildingComponents   # RIGID pieces -> rigid connected components (junction union-find)
-│   ├── StreetDecor          # seat target pools -> actual decor block footprints (plan A / T5 pins)
+│   ├── StreetDecor          # seat pools -> decor blocks, base groups, T5 base pins
 │   ├── VpsGenThread         # ThreadLocal MinecraftServer for STRUCTURE_STARTS
 │   ├── RoadCollector        # templates -> road mask (MC-touching, VpsProbe)
 │   ├── RoadNetwork          # mask -> arms/regions decomposition (pure)
@@ -333,18 +333,32 @@ Rules:
     below/around them. That is what removes the bbox holes under 3x3 lamp air
     columns, trapdoor rings and stairs. `BuildingComponents#protectedBoxes`
     takes the identified decor indices and keeps only real buildings.
-  - **T5 pin = seat + footprint at `baseWalkY`.** `pinSeatsWithDecor` pins a
-    1x1 decor at `2 * baseWalkY`; `StreetDecor#pinMultiBlockFootprints` pins a
-    multi-block decor's seat columns plus actual footprint columns that are
-    road cells. Never use bare `bbox.minY`: for `taiga_decoration_1` it is one
-    block low (its plank platform is a deliberately sunken layer).
-  - **T1.5 seat sync.** After the first shift the multi-block pins are applied
-    to the re-collected final network and the final re-solve is forced. A pure
-    multi-block decor component is then skipped by the second alignment - the
-    road was pinned to its final base, so moving it again would break the
-    sync. The second alignment remains the authority for buildings. Residuals
-    are counted (`DECOR_SEAT_SYNC_MISMATCH`, `T15_DECOR_PINS`); do not patch
-    the network after the freeze.
+  - **T5 pin = FULL base footprint at `baseWalkY`.** `pinSeatsWithDecor` pins a
+    1x1 decor at `2 * baseWalkY`; `StreetDecor#pinBaseFootprints` pins every
+    road cell in a multi-block decor's XZ bbox - seat, actual blocks AND the
+    air columns over road - so the whole base reads flat. Never use bare
+    `bbox.minY`: for `taiga_decoration_1` it is one block low (its plank
+    platform is a deliberately sunken layer).
+  - **T1.5 base = movable full-footprint flat unit.** `StreetDecor#buildBaseGroups`
+    adds the same full bbox footprint as one MOVABLE `RoadNetwork.DecorBaseGroup`;
+    `RoadSmoother` flattens it to one even level and may move it as a whole.
+    After the final solve `StreetDecor#settleBases` moves the rigid decor onto
+    that level (whole blocks), then refreshes the footprint. The old T1.5
+    immovable pin is gone: the base is part of the solve, not a frozen anchor.
+    A pure multi-block decor component is still skipped by the second
+    alignment because the settle is its authority. `DECOR_BASE_GROUPS` /
+    `DECOR_BASE_GROUP_CELLS` / `DECOR_SETTLED_PIECES` / `DECOR_SETTLE_CLAMPED`
+    and the seam-sync counter `DECOR_SEAT_SYNC_MISMATCH` are the observation
+    set; do not patch the network after the freeze.
+  - **Fixture-to-road counter (audit 2026-10-21).** The mask edge walk only
+    sees 4-adjacency. `StreetDecor#recordRoadMismatch` compares each decor's
+    `baseWalkY` with the nearest non-own road/seat cell within Chebyshev 3
+    (`DECOR_ROAD_MISMATCH_PIECES` / `_WORST`), and
+    `StreetDecor#recordIsolatedSeats` counts seats with no 4-adjacent mask cell
+    (`DECOR_SEATS_ISOLATED`). `DECOR_ROAD_ISOLATED_PIECES` counts roadside
+    pieces with no road within 3. A diagonal/isolated seat (the taiga campfire
+    case) is still NOT height-linked to the road; the counters expose it, the
+    solver does not constrain it.
   - **Piles = exactly placed blocks.** `MixinBlockPileFeature` snapshots the
     potential 7x7x2 box at HEAD and records the blocks the feature actually
     placed at RETURN into `VpsVillageSolution#pileBlocks`; the writer protects

@@ -268,7 +268,7 @@ public final class VpsCommands {
 						+ "  suppression: vanilla road blocks dropped %d (passed through %d)%n"
 						+ "  buildings  : T1.5 applied %d (no-server %d), components %d, shifted %d, no-road %d, overlap guards %d, second align moved %d, floating %d, buried %d, re-solved after shift %d (T15 resolve delta cells %d, door targets changed %d), road cells yielded %d, main doors %d (no entrance %d, non-door lower halves skipped %d, normal ambiguous %d), door targets excluded seat/inside/behind %d/%d/%d, no front %d, front fallback %d, door anchor offsets 0/1/2/3/4+ %d/%d/%d/%d/%d, door signs placed %d (no road %d), seam signs %d computed / %d placed (step violations %d, no-BE %d), base plane mismatch %d, baseY decor %d, align fallback %d, door dir mismatch %d%n"
 						+ "  centres    : town-centre plaza cells %d (non-road cells skipped %d), vanilla-rendered %d, groups %d (shifted %d, pieces %d), plaza guards %d, decor seats %d (written %d, decor pieces moved %d, probe dropped %d, write fallback %d, edge clamped %d)%n"
-						+ "  decor      : pieces %d, actual blocks %d, protected writes skipped %d (pile %d), cells pinned %d (T1.5 %d), seat sync mismatches %d%n"
+						+ "  decor      : pieces %d, actual blocks %d, base groups %d (cells %d), settled %d (clamped %d), protected writes skipped %d (pile %d), cells pinned %d, seat sync mismatches %d, road mismatches %d (worst %d, isolated pieces %d, isolated seats %d), resolve failed %d%n"
 						+ "  model gap  : written surface vs real terrain: mean %s half units, worst %d, over threshold %d, cut below terrain %d, fill above %d%n"
 						+ "  misc       : floor-garbage probes %d, probe boundary switches %d, probe mismatch columns %d, y0 non-solid skipped %d, y0 scenery skipped %d, villager freeze: %s (brain ticks skipped: %d)",
 				solved,
@@ -375,11 +375,19 @@ public final class VpsCommands {
 				T15Planner.SEAT_EDGE_CLAMPED.get(),
 				VpsPipeline.STREET_DECOR_PIECES.get(),
 				VpsPipeline.STREET_DECOR_BLOCKS.get(),
+				VpsPipeline.DECOR_BASE_GROUPS.get(),
+				VpsPipeline.DECOR_BASE_GROUP_CELLS.get(),
+				VpsPipeline.DECOR_SETTLED_PIECES.get(),
+				VpsPipeline.DECOR_SETTLE_CLAMPED.get(),
 				RoadWriter.DECOR_BLOCKS_SKIPPED.get(),
 				RoadWriter.PILE_BLOCKS_SKIPPED.get(),
 				VpsPipeline.STREET_DECOR_PINNED_CELLS.get(),
-				VpsPipeline.T15_DECOR_PINS.get(),
 				VpsPipeline.DECOR_SEAT_SYNC_MISMATCH.get(),
+				VpsPipeline.DECOR_ROAD_MISMATCH_PIECES.get(),
+				VpsPipeline.DECOR_ROAD_MISMATCH_WORST.get(),
+				VpsPipeline.DECOR_ROAD_ISOLATED_PIECES.get(),
+				VpsPipeline.DECOR_SEATS_ISOLATED.get(),
+				VpsPipeline.DECOR_RESOLVE_FAILED.get(),
 				RoadWriter.DEVIATION_CELLS.get() > 0
 					? String.format("%.1f", (double) RoadWriter.DEVIATION_SUM.get() / RoadWriter.DEVIATION_CELLS.get())
 					: "-",

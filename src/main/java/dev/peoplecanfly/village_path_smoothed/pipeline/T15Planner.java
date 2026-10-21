@@ -171,6 +171,8 @@ public final class T15Planner {
 					solution.network, exclusion, true);
 			solution.buildingBoxes = boxes;
 			solution.decorBlocks = decor.blocks;
+			StreetDecor.recordIsolatedSeats(solution.network);
+			StreetDecor.recordRoadMismatch(decor, solution.network);
 			solution.doorFronts = buildDoorFronts(components, pieces, targets, solution.network);
 			solution.doorSigns = computeDoorSigns(components, targets, solution.network, config);
 			solution.seamSigns = computeSeamSigns(solution.network, config);
@@ -242,8 +244,8 @@ public final class T15Planner {
 		// zero leaves its phase-1 pin at the noise median, but the rigid platform
 		// still renders at its vanilla level (plazaVanillaP) - the two disagree,
 		// so the second collect+solve is exactly what corrects the plaza edge.
-		// The same holds for a multi-block decor's footprint pins: the first solve
-		// knew nothing about them, so the final solve must run to consume them.
+		// Audit 2026-10-21: the final solve also owns the multi-block decor's
+		// movable FULL base group, so it must run whenever such a decor exists.
 		RoadNetwork finalNetwork = network;
 		boolean reSolved = false;
 		if (!(shifted.isEmpty() && !plazaMoved(plazaComponents) && !plazaPinsMismatch(network)
@@ -253,9 +255,11 @@ public final class T15Planner {
 				// plan C phase 2: pin every plaza group at the level its pieces really
 				// render at after the move - the solve and the world agree by construction
 				resolved.applyPlazaPins(false);
-				int decorPins = StreetDecor.pinMultiBlockFootprints(decorAfterShift, resolved);
-				VpsPipeline.T15_DECOR_PINS.addAndGet(decorPins);
-				VpsPipeline.STREET_DECOR_PINNED_CELLS.addAndGet(decorPins);
+				// Audit 2026-10-21: the decor base is not an immovable pin any more.
+				// Its full footprint (seat + actual blocks + air columns over road)
+				// is one MOVABLE flat unit; the polish flattens it to one even level
+				// and the rigid decor is moved onto that level after the solve.
+				StreetDecor.buildBaseGroups(decorAfterShift, resolved);
 				VpsPipeline.accumulateSolveStats(RoadSmoother.solve(resolved, VpsPipeline.paramsFor(config)));
 			}
 			T15_RESOLVE_DELTA_CELLS.addAndGet(countProfileDelta(network, resolved));
@@ -271,16 +275,21 @@ public final class T15Planner {
 		// they must run before the alignment that consumes those heights.
 		settleSeats(finalNetwork, pieces, minY, maxY, config);
 
-		StreetDecor.Resolved finalDecor = StreetDecor.refresh(decorAfterShift, pieces, templateManager);
+		// Audit 2026-10-21: the multi-block decor follows the base group the final
+		// solve chose, exactly like a 1x1 lamp follows its seat. This replaces the
+		// old immovable pin: the base stays movable in the solve, so the road and
+		// the fixture can meet instead of freezing one side.
+		StreetDecor.Resolved settledDecor = StreetDecor.settleBases(decorAfterShift, finalNetwork,
+				pieces, templateManager, minY, maxY);
+
+		StreetDecor.Resolved finalDecor = settledDecor;
 
 		List<List<DoorSigns.DoorTarget>> finalTargets = new ArrayList<>(components.size());
 		for (BuildingComponents.Component component : components) {
 			if (isMultiBlockDecorComponent(component, decor)) {
-				// Audit 2026-10-20 decision 2 (T1.5 seat sync): a pure multi-block
-				// decor component was pinned (seat + actual footprint) into the final
-				// network after the first shift. The second alignment exists to move
-				// a building onto that network; moving the decor now would drag it
-				// away from the level the road was just pinned to. Its dy is final.
+				// Audit 2026-10-21: a pure multi-block decor component already
+				// followed its solved base group; the second alignment would move it
+				// away from that base. Its dy is final.
 				finalTargets.add(List.of());
 				continue;
 			}
@@ -326,10 +335,14 @@ public final class T15Planner {
 		// really are, because the writer uses them to refuse a road column (plan A).
 		// Decor is excluded from plan A; its actual blocks are protected block by
 		// block (audit 2026-10-20 decision 1).
-		StreetDecor.Resolved decorFinal = StreetDecor.refresh(decorAfterShift, pieces, templateManager);
+		StreetDecor.Resolved decorFinal = StreetDecor.refresh(settledDecor, pieces, templateManager);
 		solution.buildingBoxes = BuildingComponents.protectedBoxes(pieces, decorFinal.pieceIndices);
 		solution.decorBlocks = decorFinal.blocks;
 		recordDecorSyncMismatch(decorFinal, finalNetwork);
+		// Audit 2026-10-21: count the fixture-to-road relationship the edge walk
+		// cannot see (diagonal/isolated seats, adjacent lower road bands).
+		StreetDecor.recordIsolatedSeats(finalNetwork);
+		StreetDecor.recordRoadMismatch(decorFinal, finalNetwork);
 		solution.doorFronts = buildDoorFronts(components, pieces, finalTargets, finalNetwork);
 		solution.doorSigns = computeDoorSigns(components, finalTargets, finalNetwork, config);
 		solution.seamSigns = computeSeamSigns(finalNetwork, config);

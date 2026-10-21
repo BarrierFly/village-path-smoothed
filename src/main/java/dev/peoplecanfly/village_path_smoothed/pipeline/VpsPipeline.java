@@ -164,12 +164,30 @@ public final class VpsPipeline {
 	public static final AtomicLong STREET_DECOR_PIECES = new AtomicLong();
 	/** Actual decor template blocks protected block-by-block (not the bbox). */
 	public static final AtomicLong STREET_DECOR_BLOCKS = new AtomicLong();
-	/** Road cells pinned to a multi-block decor's seat/footprint (T5 and the T1.5 final solve). */
+	/** Road cells pinned to a multi-block decor's full base footprint (T5). */
 	public static final AtomicLong STREET_DECOR_PINNED_CELLS = new AtomicLong();
-	/** T1.5 pin cells applied after the first shift (the forced final re-solve consumes them). */
-	public static final AtomicLong T15_DECOR_PINS = new AtomicLong();
 	/** Multi-block decor whose seat/footprint level still disagrees after the second alignment. */
 	public static final AtomicLong DECOR_SEAT_SYNC_MISMATCH = new AtomicLong();
+	// Audit 2026-10-21 (movable full base footprint): counters that make the
+	// fixture-to-road connection visible even when it is diagonal / isolated.
+	/** Multi-block decor base footprints turned into movable/immovable flat units. */
+	public static final AtomicLong DECOR_BASE_GROUPS = new AtomicLong();
+	/** Road cells inside those full base footprints (seat + actual + air columns). */
+	public static final AtomicLong DECOR_BASE_GROUP_CELLS = new AtomicLong();
+	/** Multi-block decor pieces moved onto their final base group level (T1.5). */
+	public static final AtomicLong DECOR_SETTLED_PIECES = new AtomicLong();
+	/** Settles clamped by the world height (the decor could not reach its base level). */
+	public static final AtomicLong DECOR_SETTLE_CLAMPED = new AtomicLong();
+	/** Decor pieces whose base is more than half a block from the nearest non-own road/seat cell. */
+	public static final AtomicLong DECOR_ROAD_MISMATCH_PIECES = new AtomicLong();
+	/** Worst such difference, in half-block units. */
+	public static final AtomicLong DECOR_ROAD_MISMATCH_WORST = new AtomicLong();
+	/** Decor pieces with no road/seat cell within Chebyshev radius 3 (roadside, not connected). */
+	public static final AtomicLong DECOR_ROAD_ISOLATED_PIECES = new AtomicLong();
+	/** Seat cells with no 4-adjacent mask cell: the solver has no edge to constrain them. */
+	public static final AtomicLong DECOR_SEATS_ISOLATED = new AtomicLong();
+	/** Decor candidates that matched a seat pool but whose template/blocks could not be resolved. */
+	public static final AtomicLong DECOR_RESOLVE_FAILED = new AtomicLong();
 	// R2-C (2026-10-16): a SERVED component whose door road cells span more than
 	// the half-block tolerance can bridge, so the shift came from the median
 	// fallback instead of the legal interval. Measurement for the minimax
@@ -439,8 +457,8 @@ public final class VpsPipeline {
 	 * ({@code bbox.minY + groundLevelDelta}), never the bare {@code 2 *
 	 * bbox.minY} - the latter is one block low for {@code taiga_decoration_1}
 	 * whose platform is a sunken layer. Identified 1x1 decor uses baseWalkY;
-	 * a multi-block decor's seat and footprint are pinned by
-	 * {@link StreetDecor#pinMultiBlockFootprints}. A 1x1 feature piece
+	 * a multi-block decor's FULL base footprint is pinned flat by
+	 * {@link StreetDecor#pinBaseFootprints}. A 1x1 feature piece
 	 * (pile/tree/flower) keeps the historical anchor-level pin.
 	 *
 	 * @return number of cells pinned
@@ -588,16 +606,22 @@ public final class VpsPipeline {
 			// with a RIGID decor piece on top pins at the level that piece
 			// actually renders at (the phase-2 plaza precedent: the pieces are
 			// the rigid truth); a bare seat rides the solve freely.
-			// Audit 2026-10-20 decision 2: a multi-block decor pins its seat AND
-			// its actual footprint at baseWalkY (never the bare bbox.minY).
+			// Audit 2026-10-20 decision 2: a multi-block decor pins its FULL base
+			// footprint (seat, actual blocks and the air columns over road) at
+			// baseWalkY - never the bare bbox.minY, and never only the actual
+			// block columns.
 			STREET_DECOR_PINNED_CELLS.addAndGet(pinSeatsWithDecor(network, pieces, decor));
 			// plan C, T5 path: nothing may move at feature placement, so the plaza
 			// groups pin at the level their rigid pieces actually render at - the
 			// solve and the world agree by construction
 			network.applyPlazaPins(false);
-			STREET_DECOR_PINNED_CELLS.addAndGet(StreetDecor.pinMultiBlockFootprints(decor, network));
+			STREET_DECOR_PINNED_CELLS.addAndGet(StreetDecor.pinBaseFootprints(decor, network));
 			RoadSmoother.SolveStats stats = RoadSmoother.solve(network, paramsFor(config));
 			accumulateSolveStats(stats);
+			// Audit 2026-10-21: make the fixture-to-road relationship visible even
+			// where it is diagonal/isolated and the mask edge walk cannot see it.
+			StreetDecor.recordIsolatedSeats(network);
+			StreetDecor.recordRoadMismatch(decor, network);
 		}
 		if (!network.cells.isEmpty() && network.arms.isEmpty()) {
 			VILLAGES_WITHOUT_ARMS.incrementAndGet();

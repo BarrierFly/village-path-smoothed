@@ -98,7 +98,10 @@ water use scaffolding, and dangerous edges get leaf railings.
    connected only to a **horizontally (4-)adjacent solve cell** outside its own
    base footprint (seat counts as a cell), and every such neighbour is checked
    against the half-block rule; a piece with no external neighbour is counted
-   isolated. Diagonal/lawn seats are therefore isolated, not height-linked.
+   isolated. The decor's base group is the **4-connected component** of its
+   footprint that contains the seat/actual base cells; a disconnected bbox ring
+   is a different structure and cannot pull the decor off its seat.
+   Diagonal/lawn seats are therefore isolated, not height-linked.
 4. **Kerbs, kerb railings and the ceiling / 路肩包边、包边护栏与包顶** — each
    side is probed **from the road block's own height**, and the two kerb columns
    are probed together ("探2包1"):
@@ -128,15 +131,15 @@ water use scaffolding, and dangerous edges get leaf railings.
      used to wrap the central well's water column and plug the well shut; the
      plaza's outer boundary is unaffected;
    - the **kerb end cap** closes the wall's along-road end where the road keeps
-     going. The end is judged on the **cap cell alone**: it is open when there
-     is no terrain above the current wall top (`capFacts.topmostY() <=
-     wallTop`). The outward cell does not veto the end; it only participates in
-     the probe-2-wrap-1 placement of the layers above the wall. The cap starts
-     ABOVE the existing wall top (`wallTop + 1`, always one layer) and continues
-     upward with that placement rule, with the leaf railing on top unless the
-     run is cut off at the road's ceiling. It never re-fills the column from the
-     road, an end wall across the road gets no sideways column, and an actual
-     road end (no next road cell) is untouched;
+     going. The end is judged on the **next side cell alone** (the sky-visible
+     cell): it is open when there is no terrain above the current wall top
+     (`skyFacts.topmostY() <= wallTop`). The cap is written on the **wall's own
+     end column**, one layer above the wall top, with the leaf railing on top;
+     it is never written into the next road cell's side column, which is that
+     cell's own drop-railing target. The cap is a single column, not a probe-2
+     wall. It never re-fills the column from the road, an end wall across the
+     road gets no sideways column, and an actual road end (no next road cell)
+     is untouched;
    - the **drop railing** (the original leaf railing): scan **down** to the first
      standable ground. When the road is **at least 2 whole blocks** above it,
      persistent leaves (plains `oak`, desert/savanna `acacia`, snowy/taiga
@@ -465,11 +468,10 @@ Two things are worth spelling out:
   作物/藤蔓/家具/灯具等**所有非地形装饰**逐格跳过，包边遇到装饰断开而不攀爬；有顶板时包边在
   顶板下一格截止，不再沿山坡包到顶板之上；开放天空仍包到侧列探测顶）；**广场件自身的
   y=0 足迹（井口/喷泉水格、jigsaw 格，均非路格）不向里包边**，避免把中心水井糊住，
-  广场外边界不受影响；包边墙沿道路方向（且道路确实继续）的末端，**只按 cap 格自身判定露天**：
-  cap 格在当前墙顶以上完全无地形时（`capFacts.topmostY() <= wallTop`）才收口；外侧第二格不参与
-  末端判定，只在墙顶以上按“探2包1”放置，**从墙顶+1 起向上补**（至少补一层，顶上放包边护栏，
-  被道路顶板截断的段不放截断顶叶），不再从路面重铺整列，道路端墙也不会往横向长列；实际道路
-  尽头（没有下一格路）暂不处理；包边护栏
+  广场外边界不受影响；包边墙沿道路方向（且道路确实继续）的末端，**只按外侧那格（能看到天空的格）判定露天**：
+  该格在当前墙顶以上完全无地形时（`skyFacts.topmostY() <= wallTop`）才收口；包边**写在墙端本列**
+  （不是外侧那格），从墙顶+1 向上补一层，顶上放包边护栏。外侧那格是下一道路格自己的落差护栏目标，
+  不再被端帽占用；端帽是一列，不是“探2包1”墙。实际道路尽头（没有下一格路）暂不处理；包边护栏
   （每个连续包边段顶端——地形顶端和空隙顶端——放一层树叶，不进入房屋；因顶板或世界
   边界被截断的段不放截断顶叶）；包顶（仍只探测路面本列，改用碰撞/液体判据；清格终点
   写入时重读，默认上限 4；**只处理顶板最低一格**，其上厚度保持原样；最低格若是非地形
@@ -490,7 +492,8 @@ Two things are worth spelling out:
   T1.5 首轮平移后同样钉住、强制最终重解，纯多格装饰组件不再被二次对齐搬动，座位与
   装饰不脱节；**街件与路网的连接**按 2026-10-21 语义：只认求解方块的水平（4）邻接；
   装饰以自身 base footprint 内的求解格为端点，对 footprint 外的每个 4 邻接格检查高度差
-  ≤ 半格，没有外部邻格计为孤立（seat 也算格/邻格）；**pile 在放置时记录真正放下的方块**并按位置保护，不再按 5×5/7×7
+  ≤ 半格，没有外部邻格计为孤立（seat 也算格/邻格）；base group 只取与 seat/实际底座格
+  4 连通的那部分 footprint，不连通的外圈不能把装饰拉离座位；**pile 在放置时记录真正放下的方块**并按位置保护，不再按 5×5/7×7
   潜在盒保护，也不再给干草堆单独的 1×1 保护盒。
   清格、路块、填方、包边、包顶、灯笼/铁链和护栏遇到非地形装饰都**逐格跳过**，只处理
   自然地形和本 mod 自己的路面结构（泥砖、平滑砂岩、默认圆石包边、脚手架、土径填方；

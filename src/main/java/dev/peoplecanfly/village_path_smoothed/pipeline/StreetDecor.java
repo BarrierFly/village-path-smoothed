@@ -185,10 +185,44 @@ public final class StreetDecor {
 	}
 
 	/**
-	 * T5 flat-base replacement for the old actual-block pin: every road cell in
-	 * the decor's XZ bbox (seat, planks/stairs and the air columns over road) is
-	 * pinned to the same even walk level. The full footprint is what makes a
-	 * 3x3 lamp or a 3x6 platform read as one flat base instead of a pin island.
+	 * The decor's own solve cells for the 2026-10-21 connection semantics: the
+	 * 4-connected subset of the bbox network cells that contains a seat column
+	 * or an actual template block column. A bbox ring separated from the seat by
+	 * non-road columns is a different structure; it must not move the decor and
+	 * it is not a connection.
+	 */
+	private static Set<Long> baseColumns(RoadNetwork network, Piece piece) {
+		Set<Long> footprint = new HashSet<>();
+		for (int x = piece.minX; x <= piece.maxX; x++) {
+			for (int z = piece.minZ; z <= piece.maxZ; z++) {
+				if (network.cellAt(x, z) >= 0) {
+					footprint.add(RoadCell.packedXZ(x, z));
+				}
+			}
+		}
+		Set<Long> starts = new HashSet<>();
+		for (long column : piece.seatColumns) {
+			int x = (int) (column >> 32);
+			int z = (int) column;
+			if (network.cellAt(x, z) >= 0) {
+				starts.add(column);
+			}
+		}
+		for (long column : piece.columns) {
+			int x = (int) (column >> 32);
+			int z = (int) column;
+			if (network.cellAt(x, z) >= 0) {
+				starts.add(column);
+			}
+		}
+		return network.connectedColumns(footprint, starts);
+	}
+
+	/**
+	 * T5 flat-base replacement for the old actual-block pin: every connected
+	 * road cell of the decor's XZ bbox (seat, planks/stairs and the air columns
+	 * over road) is pinned to the same even walk level. The component is the
+	 * base the player sees; a disconnected bbox ring is a different structure.
 	 * Returns the number of cells pinned.
 	 */
 	public static int pinBaseFootprints(Resolved resolved, RoadNetwork network) {
@@ -199,12 +233,9 @@ public final class StreetDecor {
 				continue;
 			}
 			int pinP = 2 * piece.baseWalkY;
-			for (int x = piece.minX; x <= piece.maxX; x++) {
-				for (int z = piece.minZ; z <= piece.maxZ; z++) {
-					long column = RoadCell.packedXZ(x, z);
-					if (seen.add(column)) {
-						pinned += pinCell(network, column, pinP);
-					}
+			for (long column : baseColumns(network, piece)) {
+				if (seen.add(column)) {
+					pinned += pinCell(network, column, pinP);
 				}
 			}
 		}
@@ -212,12 +243,12 @@ public final class StreetDecor {
 	}
 
 	/**
-	 * T1.5 replacement for the immovable pin: the FULL base footprint of each
-	 * multi-block decor becomes one MOVABLE flat unit in the final solve. The
-	 * polish flattens it to one even level and may move it as a whole, exactly
-	 * like a small plaza; the rigid decor is moved to that level afterwards by
-	 * {@link #settleBases}. Air columns inside the bbox are included because
-	 * they are part of the base the player sees.
+	 * T1.5 replacement for the immovable pin: the connected base footprint of
+	 * each multi-block decor becomes one MOVABLE flat unit in the final solve.
+	 * The polish flattens it to one even level and may move it as a whole,
+	 * exactly like a small plaza; the rigid decor is moved to that level
+	 * afterwards by {@link #settleBases}. Air columns over road inside the
+	 * component are included; a disconnected ring is not this decor's base.
 	 */
 	public static void buildBaseGroups(Resolved resolved, RoadNetwork network) {
 		if (resolved.pieces.isEmpty()) {
@@ -230,22 +261,23 @@ public final class StreetDecor {
 				continue; // a 1x1 seat is the seat rider / T5 pin
 			}
 			List<Integer> cells = new ArrayList<>();
-			for (int x = piece.minX; x <= piece.maxX; x++) {
-				for (int z = piece.minZ; z <= piece.maxZ; z++) {
-					long column = RoadCell.packedXZ(x, z);
-					if (used.contains(column)) {
-						continue;
-					}
-					int index = network.cellAt(x, z);
-					if (index < 0) {
-						continue;
-					}
-					RoadCell cell = network.cells.get(index);
-					if (cell.plaza) {
-						continue; // the plaza group owns this cell
-					}
-					cells.add(index);
+			List<Long> columns = new ArrayList<>(baseColumns(network, piece));
+			columns.sort(Long::compare);
+			for (long column : columns) {
+				if (used.contains(column)) {
+					continue;
 				}
+				int x = (int) (column >> 32);
+				int z = (int) column;
+				int index = network.cellAt(x, z);
+				if (index < 0) {
+					continue;
+				}
+				RoadCell cell = network.cells.get(index);
+				if (cell.plaza) {
+					continue; // the plaza group owns this cell
+				}
+				cells.add(index);
 			}
 			if (cells.isEmpty()) {
 				continue;
@@ -328,21 +360,7 @@ public final class StreetDecor {
 	 */
 	public static void recordRoadMismatch(Resolved resolved, RoadNetwork network) {
 		for (Piece piece : resolved.pieces) {
-			Set<Long> ownColumns = new HashSet<>();
-			for (int x = piece.minX; x <= piece.maxX; x++) {
-				for (int z = piece.minZ; z <= piece.maxZ; z++) {
-					if (network.cellAt(x, z) >= 0) {
-						ownColumns.add(RoadCell.packedXZ(x, z));
-					}
-				}
-			}
-			for (long column : piece.seatColumns) {
-				int x = (int) (column >> 32);
-				int z = (int) column;
-				if (network.cellAt(x, z) >= 0) {
-					ownColumns.add(column);
-				}
-			}
+			Set<Long> ownColumns = baseColumns(network, piece);
 			int[] external = network.externalNeighbours(ownColumns);
 			if (external.length == 0) {
 				VpsPipeline.DECOR_ROAD_ISOLATED_PIECES.incrementAndGet();

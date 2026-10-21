@@ -74,4 +74,16 @@ public class StreetFixtureConnectionTest {
 		int[] external = net.externalNeighbours(Set.of(column(5, 5)));
 		assertEquals("a diagonal corner is not a connection", 0, external.length);
 	}
+
+	@Test
+	public void aDisconnectedBboxRingIsNotPartOfTheSeatStructure() {
+		// The seat (0,0) is separated from a bbox ring at (2,0)/(2,1)/(3,0) by
+		// non-road columns; the base group must stop at the seat component.
+		RoadNetwork net = network(new int[][]{{0, 0, 64}});
+		Set<Long> footprint = Set.of(column(0, 0), column(2, 0), column(2, 1), column(3, 0));
+		assertEquals(Set.of(column(0, 0)),
+				net.connectedColumns(footprint, Set.of(column(0, 0))));
+		assertEquals(Set.of(column(2, 0), column(2, 1), column(3, 0)),
+				net.connectedColumns(footprint, Set.of(column(3, 0))));
+	}
 }

@@ -353,20 +353,27 @@ Rules:
   - **Fixture-to-road connection (user decision 2026-10-21).** Two structures
     in the road network are connected only through **horizontally adjacent
     (4-adjacency)** cells that are part of the solve; proximity and diagonal
-    corners are not connections. `StreetDecor#recordRoadMismatch` takes the
-    decor's own solve cells (the network cells inside its base footprint: the
-    seat for a 1x1 piece, the full footprint for a multi-block piece), finds
-    every 4-neighbour outside that set, and compares each neighbour's
-    `solvedP` with `2 * baseWalkY` (`DECOR_ROAD_MISMATCH_PIECES` / `_WORST`);
-    a piece with no external neighbour is `DECOR_ROAD_ISOLATED_PIECES`. Seats
-    count as cells and as neighbours. The solver's existing `|dP| <= 1`
-    invariant on every 4-adjacency edge keeps a connected pair within half a
-    block, subject to each structure's shape constraints (flat plaza/base,
-    pins, seat parity); the counter reports residuals.
-    `StreetDecor#recordIsolatedSeats` remains the seat-level "no 4-adjacent
-    mask cell" observation. The old Chebyshev-3 nearest-seat search is gone: it
-    treated diagonal/lawn seats as connected and could miss a road beside a
-    multi-block footprint far from the seat.
+    corners are not connections. `StreetDecor#baseColumns` is the decor's own
+    solve structure: the 4-connected component of the bbox network cells that
+    contains a seat or actual template column. A disconnected bbox ring is a
+    different structure; it must not move the decor (the 2026-10-21 lamp-base
+    step) and is not a connection. `StreetDecor#recordRoadMismatch` finds every
+    4-neighbour outside that component and compares each neighbour's `solvedP`
+    with `2 * baseWalkY` (`DECOR_ROAD_MISMATCH_PIECES` / `_WORST`); a piece
+    with no external neighbour is `DECOR_ROAD_ISOLATED_PIECES`. Seats count as
+    cells and as neighbours. The solver's existing `|dP| <= 1` invariant on
+    every 4-adjacency edge keeps a connected pair within half a block, subject
+    to each structure's shape constraints (flat plaza/base, pins, seat parity);
+    the counter reports residuals. `StreetDecor#recordIsolatedSeats` remains
+    the seat-level "no 4-adjacent mask cell" observation. The old Chebyshev-3
+    nearest-seat search is gone: it treated diagonal/lawn seats as connected
+    and could miss a road beside a multi-block footprint far from the seat.
+    The seat writer clears only the old seat material above a moved seat; a
+    decor base block there wins (`RoadWriter`, 2026-10-21).
+  - **Drop railings win over our own kerb.** `RoadWriter#placeRailing` may
+    replace the mod's own kerb material at its target cell (the documented
+    "low kerb + high railing" rule). The end cap no longer writes into the
+    next road cell's side, so it cannot crowd out the leaf railing there.
   - **Piles = exactly placed blocks.** `MixinBlockPileFeature` snapshots the
     potential 7x7x2 box at HEAD and records the blocks the feature actually
     placed at RETURN into `VpsVillageSolution#pileBlocks`; the writer protects
@@ -499,17 +506,19 @@ Rules:
   in that footprint, so the central well/fountain mouth is never wrapped and
   plugged; the plaza's outer boundary (outside the piece footprint) still gets
   its kerb. Separately, when the road actually continues along the wall (a
-  road cell exists at `cell + T`), the writer closes the run's end ABOVE the
-  existing wall top. The end is judged on the **cap cell alone** (user
-  decision 2026-10-21): it is open when no terrain exists above the current
-  wall top (`capFacts.topmostY() <= wallTop`), not when the road-level sky is
-  clear. The outward cell only participates in the probe-2 placement of the
-  layers above the wall; it never vetoes the end. `wallTop + 1` is always
-  placed, the layers above it use the same probe-2-wrap-1 rule, and the leaf
-  railing goes on top unless the run is cut off at the road's ceiling. It never
+  road cell exists at `cell + T`), the writer closes the run's end. The end is
+  judged on the **next side cell alone** (the sky-visible cell `out + T`,
+  user decision 2026-10-21): it is open when no terrain exists above the
+  current wall top (`skyFacts.topmostY() <= wallTop`). The cap is written on
+  the **wall's own end column** (`out`), one layer above `wallTop`, with the
+  leaf railing on top; it is never written into `out + T`, which is the next
+  road cell's side column and its own drop-railing target (writing there was
+  the 2026-10-21 leaf-railing regression). The cap is a single column, not a
+  probe-2 wall; probe-2 remains the rule for the kerb layers below. It never
   re-fills the column from the road, an end wall (the road's forward side)
-  never grows a cross-road column, and an actual road end stays untouched
-  (README: the road must actually continue).
+  never grows a cross-road column, an actual road end stays untouched
+  (README: the road must actually continue), and the road's ceiling does not
+  bound the cap because the cap is outside the road column.
 - **Only the lowest block of the ceiling is lined, and only above the road
   (user decision 2026-10-15, restricted 2026-10-17).**
   `RoadWriter#lineCeiling` probes only the road's own column with the

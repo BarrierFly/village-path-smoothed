@@ -168,11 +168,11 @@ public final class VpsPipeline {
 	public static final AtomicLong STREET_DECOR_PINNED_CELLS = new AtomicLong();
 	/** Multi-block decor whose seat/footprint level still disagrees after the second alignment. */
 	public static final AtomicLong DECOR_SEAT_SYNC_MISMATCH = new AtomicLong();
-	// Audit 2026-10-21 (fixture connections and movable full base footprint):
+	// Audit 2026-10-21 (fixture connections and connected base footprint):
 	// the connection is the 4-adjacency between solve cells, not proximity.
-	/** Multi-block decor base footprints turned into movable/immovable flat units. */
+	/** Multi-block decor's connected base footprints turned into movable/immovable flat units. */
 	public static final AtomicLong DECOR_BASE_GROUPS = new AtomicLong();
-	/** Road cells inside those full base footprints (seat + actual + air columns). */
+	/** Solve cells inside those connected base footprints (seat + actual + air columns over road). */
 	public static final AtomicLong DECOR_BASE_GROUP_CELLS = new AtomicLong();
 	/** Multi-block decor pieces moved onto their final base group level (T1.5). */
 	public static final AtomicLong DECOR_SETTLED_PIECES = new AtomicLong();

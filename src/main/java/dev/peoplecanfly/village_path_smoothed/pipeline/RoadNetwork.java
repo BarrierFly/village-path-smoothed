@@ -165,6 +165,34 @@ public final class RoadNetwork {
 		return indices;
 	}
 
+	/**
+	 * The 4-connected subset of {@code footprint} that contains at least one of
+	 * {@code starts}. A decor base group uses this so a disconnected bbox ring
+	 * (a lawn island around a seat) is a different structure and cannot pull the
+	 * decor away from its own seat/base cells.
+	 */
+	public Set<Long> connectedColumns(Set<Long> footprint, Set<Long> starts) {
+		Set<Long> out = new HashSet<>();
+		Deque<Long> queue = new ArrayDeque<>();
+		for (long start : starts) {
+			if (footprint.contains(start) && out.add(start)) {
+				queue.add(start);
+			}
+		}
+		while (!queue.isEmpty()) {
+			long column = queue.poll();
+			int x = (int) (column >> 32);
+			int z = (int) column;
+			for (int dir = 0; dir < 4; dir++) {
+				long next = RoadCell.packedXZ(x + DIR_DX[dir], z + DIR_DZ[dir]);
+				if (footprint.contains(next) && out.add(next)) {
+					queue.add(next);
+				}
+			}
+		}
+		return out;
+	}
+
 	// ------------------------------------------------------------------
 	// connectivity (fix plan v4 D1-e)
 	// ------------------------------------------------------------------

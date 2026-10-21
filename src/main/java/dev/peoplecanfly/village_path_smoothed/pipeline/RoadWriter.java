@@ -932,8 +932,9 @@ public final class RoadWriter {
 				int wallTop = placeKerbWall(ctx, outX, outZ, farX, farZ, roadTopBlockY, probeTopY, ceilingBottomY,
 						buildingBoxes, materials);
 				if (wallTop != Integer.MIN_VALUE) {
-					// 2026-10-17: close the wall's along-road end where the next
-					// cell already sees open sky, so the top does not stop raw.
+					// 2026-10-17 / 2026-10-21: close the wall's along-road end
+					// when the cap cell is open above the current wall top, so
+					// the top does not stop raw.
 					capKerbRunEnds(net, ctx, cell.x, cell.z, outX, outZ, roadTopBlockY, wallTop,
 							ceilingBottomY, buildingBoxes, materials, sideFacts);
 				}
@@ -1050,7 +1051,7 @@ public final class RoadWriter {
 			runWrapped = false;
 			runTopY = Integer.MIN_VALUE;
 		}
-		if (runWrapped && (ceilingBottomY == RoadWritePolicy.NO_CEILING || runTopY + 1 < ceilingBottomY)) {
+		if (runWrapped && RoadWritePolicy.kerbRailingAllowed(runTopY, ceilingBottomY)) {
 			placeKerbRailing(ctx, x, z, runTopY + 1, buildingBoxes, materials);
 		}
 		if (placed) {
@@ -1060,22 +1061,31 @@ public final class RoadWriter {
 	}
 
 	/**
-	 * Closes a wrapped kerb run's along-road end (user request 2026-10-17).
+	 * Closes a wrapped kerb run's along-road end (user requests 2026-10-17 and
+	 * 2026-10-21).
 	 *
 	 * <p>The wall runs along the road on side {@code S}; {@code (cellX,cellZ)}
 	 * plus {@code S} is the wrapped column {@code (outX,outZ)}. Along the road
 	 * means perpendicular to {@code S} (direction {@code T}) - but only where a
 	 * road cell actually continues at {@code cell + T}: an end wall (the road's
-	 * forward side) must never grow a cross-road column.
+	 * forward side) must never grow a cross-road column, and an actual road end
+	 * stays untouched.
 	 *
-	 * <p>At the end the next road cell's side cell {@code out + T} already sees
-	 * open sky, so that cell gets no wall. The cap is built <b>above the existing
-	 * wall top</b>, not from the road: {@code wallTop + 1} is always placed, and
-	 * the layers above it use the same probe-2-wrap-1 rule as the kerb - probe
-	 * the cap cell and its outward cell, wrap the cap only where either has a
-	 * collision or a fluid, up to the probed top. The top of every wrapped run
-	 * gets the leaf kerb railing. Nothing is written into a road cell or the
-	 * town-centre footprint, and the ceiling still caps the height.
+	 * <p>The end is judged on the <b>cap cell alone</b>: it is open when there
+	 * is no terrain above the current wall top, i.e. the cap cell's highest
+	 * terrain block is at or below {@code wallTop}. The second probed cell does
+	 * not participate in that decision; it is only used while placing the
+	 * layers above the wall (probe-2-wrap-1), so it can extend the upward wrap
+	 * but never veto the end.
+	 *
+	 * <p>The cap is built <b>above the existing wall top</b>, not from the
+	 * road: {@code wallTop + 1} is always placed, and the layers above it use
+	 * the same probe-2-wrap-1 rule as the kerb - probe the cap cell and its
+	 * outward cell, wrap the cap only where either has a collision or a fluid,
+	 * up to the probed top. The top of every wrapped run gets the leaf kerb
+	 * railing unless the run is cut off at the road's ceiling. Nothing is
+	 * written into a road cell or the town-centre footprint, and the ceiling
+	 * still caps the height.
 	 */
 	private static void capKerbRunEnds(RoadNetwork net, VpsGenContext ctx, int cellX, int cellZ,
 			int outX, int outZ, int roadTopBlockY, int wallTop, int ceilingBottomY,
@@ -1124,8 +1134,8 @@ public final class RoadWriter {
 			}
 			SideFacts capFacts = sideFacts.computeIfAbsent(new SideKey(capX, capZ, roadTopBlockY),
 					k -> probeSideFacts(ctx, k.x(), k.z(), k.roadTopBlockY()));
-			if (capFacts == null || capFacts.topmostY() > roadTopBlockY) {
-				continue; // the wall continues there, or the column is unreadable
+			if (capFacts == null || !RoadWritePolicy.kerbEndOpen(capFacts.topmostY(), wallTop)) {
+				continue; // the cap cell still has terrain above the current wall top
 			}
 			int farCapX = capX + sideX;
 			int farCapZ = capZ + sideZ;
@@ -1135,8 +1145,10 @@ public final class RoadWriter {
 					? Integer.MIN_VALUE
 					: Math.max(capFacts.topmostY(), farCapFacts.topmostY());
 			int capTopY = Math.min(capLimitY, Math.max(firstY, probeTop));
-			// Probe-2-wrap-1 above the wall top, with the wall-top+1 layer always
-			// placed so the end closes even when the sky-adjacent column is empty.
+			// Probe-2-wrap-1 above the wall top: the outward cell may extend the
+			// upward wrap, but it never decides whether this is an end. The
+			// wall-top+1 layer is always placed so the end closes even when the
+			// cap cell is empty above the wall.
 			boolean runWrapped = false;
 			int runTopY = Integer.MIN_VALUE;
 			boolean placed = false;
@@ -1169,7 +1181,7 @@ public final class RoadWriter {
 				runWrapped = false;
 				runTopY = Integer.MIN_VALUE;
 			}
-			if (runWrapped) {
+			if (runWrapped && RoadWritePolicy.kerbRailingAllowed(runTopY, ceilingBottomY)) {
 				placeKerbRailing(ctx, capX, capZ, runTopY + 1, buildingBoxes, materials);
 			}
 			if (placed) {

@@ -133,6 +133,32 @@ public final class RoadWritePolicy {
 		return Math.min(probeTopY, ceilingBottomY - 1);
 	}
 
+	/**
+	 * End-cap trigger (user decision 2026-10-21): the cap cell alone decides
+	 * whether the wall's along-road end is open. "Open" means there is no
+	 * terrain above the current wall top: the cap cell's highest terrain block
+	 * is at or below {@code wallTop}. The second probed cell is only used when
+	 * placing the layers above the wall top (probe-2-wrap-1); it never vetoes
+	 * the end.
+	 *
+	 * @param capTopmostY highest terrain block Y in the cap cell (from the road
+	 *        block's level), or {@link Integer#MIN_VALUE} when the column is
+	 *        empty up there
+	 * @param wallTop highest kerb block Y written for the current wall
+	 */
+	public static boolean kerbEndOpen(int capTopmostY, int wallTop) {
+		return capTopmostY <= wallTop;
+	}
+
+	/**
+	 * True when a wrapped kerb run's top may take its leaf railing. A run
+	 * artificially cut off at the road's ceiling gets no cutoff-top leaves; the
+	 * world edge is handled by the writer's bounds check.
+	 */
+	public static boolean kerbRailingAllowed(int runTopY, int ceilingBottomY) {
+		return ceilingBottomY == NO_CEILING || runTopY + 1 < ceilingBottomY;
+	}
+
 	/** Railing: the road walk surface is more than {@code minDropHeight} whole blocks above the side. */
 	public static boolean railingApplies(int sideWalkSurface2, int roadWalkSurface2, int minDropHeight) {
 		return roadWalkSurface2 - sideWalkSurface2 > 2 * minDropHeight;

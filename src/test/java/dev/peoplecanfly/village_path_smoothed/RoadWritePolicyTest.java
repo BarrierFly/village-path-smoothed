@@ -55,4 +55,21 @@ public class RoadWritePolicyTest {
 		assertFalse(FeatureProtection.isProtectedDecoration(true, false, false));
 		assertFalse(FeatureProtection.isProtectedDecoration(false, true, false));
 	}
+
+	@Test
+	public void kerbEndIsOpenOnlyAboveTheCurrentWallTop() {
+		// wallTop 64: a cap-cell terrain block at 64 is level with the highest
+		// kerb block, so there is no terrain above it; 65 is above the wall top.
+		assertTrue(RoadWritePolicy.kerbEndOpen(64, 64));
+		assertTrue(RoadWritePolicy.kerbEndOpen(60, 64));
+		assertTrue(RoadWritePolicy.kerbEndOpen(Integer.MIN_VALUE, 64));
+		assertFalse(RoadWritePolicy.kerbEndOpen(65, 64));
+	}
+
+	@Test
+	public void aKerbRunCutAtTheCeilingGetsNoCutoffTopRailing() {
+		assertTrue(RoadWritePolicy.kerbRailingAllowed(64, 66));
+		assertFalse(RoadWritePolicy.kerbRailingAllowed(65, 66));
+		assertTrue(RoadWritePolicy.kerbRailingAllowed(65, RoadWritePolicy.NO_CEILING));
+	}
 }

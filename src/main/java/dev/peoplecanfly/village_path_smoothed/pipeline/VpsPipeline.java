@@ -168,8 +168,8 @@ public final class VpsPipeline {
 	public static final AtomicLong STREET_DECOR_PINNED_CELLS = new AtomicLong();
 	/** Multi-block decor whose seat/footprint level still disagrees after the second alignment. */
 	public static final AtomicLong DECOR_SEAT_SYNC_MISMATCH = new AtomicLong();
-	// Audit 2026-10-21 (movable full base footprint): counters that make the
-	// fixture-to-road connection visible even when it is diagonal / isolated.
+	// Audit 2026-10-21 (fixture connections and movable full base footprint):
+	// the connection is the 4-adjacency between solve cells, not proximity.
 	/** Multi-block decor base footprints turned into movable/immovable flat units. */
 	public static final AtomicLong DECOR_BASE_GROUPS = new AtomicLong();
 	/** Road cells inside those full base footprints (seat + actual + air columns). */
@@ -178,11 +178,11 @@ public final class VpsPipeline {
 	public static final AtomicLong DECOR_SETTLED_PIECES = new AtomicLong();
 	/** Settles clamped by the world height (the decor could not reach its base level). */
 	public static final AtomicLong DECOR_SETTLE_CLAMPED = new AtomicLong();
-	/** Decor pieces whose base is more than half a block from the nearest non-own road/seat cell. */
+	/** Decor pieces with at least one horizontally adjacent external solve cell more than half a block from baseWalkY. */
 	public static final AtomicLong DECOR_ROAD_MISMATCH_PIECES = new AtomicLong();
 	/** Worst such difference, in half-block units. */
 	public static final AtomicLong DECOR_ROAD_MISMATCH_WORST = new AtomicLong();
-	/** Decor pieces with no road/seat cell within Chebyshev radius 3 (roadside, not connected). */
+	/** Decor pieces with no 4-adjacent solve cell outside their own base footprint. */
 	public static final AtomicLong DECOR_ROAD_ISOLATED_PIECES = new AtomicLong();
 	/** Seat cells with no 4-adjacent mask cell: the solver has no edge to constrain them. */
 	public static final AtomicLong DECOR_SEATS_ISOLATED = new AtomicLong();
@@ -618,8 +618,8 @@ public final class VpsPipeline {
 			STREET_DECOR_PINNED_CELLS.addAndGet(StreetDecor.pinBaseFootprints(decor, network));
 			RoadSmoother.SolveStats stats = RoadSmoother.solve(network, paramsFor(config));
 			accumulateSolveStats(stats);
-			// Audit 2026-10-21: make the fixture-to-road relationship visible even
-			// where it is diagonal/isolated and the mask edge walk cannot see it.
+			// User decision 2026-10-21: connection is the 4-adjacency between
+			// solve cells; count adjacent residuals and pieces with no external edge.
 			StreetDecor.recordIsolatedSeats(network);
 			StreetDecor.recordRoadMismatch(decor, network);
 		}

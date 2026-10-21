@@ -158,6 +158,24 @@ public class RoadPolishTest {
 		assertTrue("the profile stays within half a block (" + worstStep(net) + ")", worstStep(net) <= 1);
 	}
 
+	/**
+	 * User decision 2026-10-21: a seat connected to the road by a shared side is
+	 * a normal 4-adjacency edge, so the solver must keep the pair within half a
+	 * block (the seat's flat/even shape constraints still apply).
+	 */
+	@Test
+	public void aSeatConnectedToTheRoadStaysWithinHalfABlock() {
+		List<RoadCell> cells = street(10, z -> 64);
+		RoadCell seat = new RoadCell(1, 5, "plains", 2 * 70, false);
+		seat.seat = true;
+		seat.seatBlock = "grass_block";
+		cells.add(seat);
+		RoadNetwork net = RoadNetwork.build(cells, 4);
+		RoadSmoother.solve(net, params());
+		assertEquals("the side-adjacent seat is one more 4-adjacency edge", 0, violations(net));
+		assertTrue("the pair stays within half a block", worstStep(net) <= 1);
+	}
+
 	/** Running the solver twice must give the same profile: the polish is a fixed point. */
 	@Test
 	public void thePolishIsAFixedPoint() {

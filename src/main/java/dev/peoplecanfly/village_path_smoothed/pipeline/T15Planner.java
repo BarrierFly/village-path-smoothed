@@ -339,8 +339,8 @@ public final class T15Planner {
 		solution.buildingBoxes = BuildingComponents.protectedBoxes(pieces, decorFinal.pieceIndices);
 		solution.decorBlocks = decorFinal.blocks;
 		recordDecorSyncMismatch(decorFinal, finalNetwork);
-		// Audit 2026-10-21: count the fixture-to-road relationship the edge walk
-		// cannot see (diagonal/isolated seats, adjacent lower road bands).
+		// Audit 2026-10-21 / user decision: connection is the 4-adjacency between
+		// solve cells; count adjacent residuals and pieces with no external edge.
 		StreetDecor.recordIsolatedSeats(finalNetwork);
 		StreetDecor.recordRoadMismatch(decorFinal, finalNetwork);
 		solution.doorFronts = buildDoorFronts(components, pieces, finalTargets, finalNetwork);

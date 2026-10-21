@@ -12,8 +12,10 @@ import java.util.BitSet;
 import java.util.Comparator;
 import java.util.Deque;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * The road mask rebuilt from street templates, decomposed into
@@ -130,6 +132,37 @@ public final class RoadNetwork {
 
 	public int cellAt(int x, int z) {
 		return cellIndexLookup.getOrDefault(RoadCell.packedXZ(x, z), -1);
+	}
+
+	/**
+	 * Distinct 4-neighbour cell indices of {@code ownColumns} that are not in
+	 * {@code ownColumns}. This is the fixture-connection primitive: two
+	 * structures are connected only through solve cells that share a horizontal
+	 * side, never through proximity or a diagonal corner. The caller passes its
+	 * own footprint columns, so internal base cells never count as connections.
+	 */
+	public int[] externalNeighbours(Set<Long> ownColumns) {
+		Set<Integer> out = new HashSet<>();
+		for (long column : ownColumns) {
+			int x = (int) (column >> 32);
+			int z = (int) column;
+			for (int dir = 0; dir < 4; dir++) {
+				int nextX = x + DIR_DX[dir];
+				int nextZ = z + DIR_DZ[dir];
+				int index = cellAt(nextX, nextZ);
+				if (index < 0 || ownColumns.contains(RoadCell.packedXZ(nextX, nextZ))) {
+					continue;
+				}
+				out.add(index);
+			}
+		}
+		int[] indices = new int[out.size()];
+		int n = 0;
+		for (int index : out) {
+			indices[n++] = index;
+		}
+		Arrays.sort(indices);
+		return indices;
 	}
 
 	// ------------------------------------------------------------------

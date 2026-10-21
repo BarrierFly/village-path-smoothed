@@ -308,67 +308,66 @@ public final class StreetDecor {
 	}
 
 	/**
-	 * Counts the remaining fixture-to-road mismatches after the solve/settle.
-	 * The nearest road/seat cell OUTSIDE the decor's own base footprint is the
-	 * connection the player sees; a difference of more than half a block is
-	 * counted even when the two cells are diagonal (the solver's edge walk only
-	 * sees 4-adjacency, which is exactly the blind spot this counter covers).
+	 * Counts the fixture-to-road relationship under the 2026-10-21 semantics:
+	 * two structures in the road network are connected only through
+	 * <b>horizontally adjacent (4-adjacency)</b> cells that are part of the
+	 * solve. The decor's own solve cells are the network cells inside its base
+	 * footprint - the seat for a 1x1 piece, the full footprint (seat, actual
+	 * blocks and air columns over road) for a multi-block piece. Seats count as
+	 * cells and as neighbours.
+	 *
+	 * <p>Every 4-neighbour of that footprint that is not part of the decor is a
+	 * connection. The solver's edge invariant already requires {@code |dP| <= 1}
+	 * on each such edge, subject to each structure's own shape constraints
+	 * (flat plaza/base, pins, seat parity); this counter reports the residuals
+	 * and compares every neighbour, not just the nearest one. A piece with no
+	 * external neighbour is isolated. Proximity and diagonal corners are not
+	 * connections: the old Chebyshev-3 seat search treated lawn/diagonal seats
+	 * as connected and could miss a road beside a multi-block footprint far
+	 * from the seat.
 	 */
 	public static void recordRoadMismatch(Resolved resolved, RoadNetwork network) {
 		for (Piece piece : resolved.pieces) {
-			java.util.Set<Long> own = new HashSet<>();
-			own.addAll(piece.seatColumns);
-			own.addAll(piece.columns);
+			Set<Long> ownColumns = new HashSet<>();
 			for (int x = piece.minX; x <= piece.maxX; x++) {
 				for (int z = piece.minZ; z <= piece.maxZ; z++) {
-					own.add(RoadCell.packedXZ(x, z));
-				}
-			}
-			RoadCell nearest = null;
-			int bestDistance = Integer.MAX_VALUE;
-			for (long column : piece.seatColumns) {
-				int seatX = (int) (column >> 32);
-				int seatZ = (int) column;
-				for (int radius = 1; radius <= 3 && nearest == null; radius++) {
-					for (int dx = -radius; dx <= radius; dx++) {
-						for (int dz = -radius; dz <= radius; dz++) {
-							if (Math.max(Math.abs(dx), Math.abs(dz)) != radius) {
-								continue;
-							}
-							int x = seatX + dx;
-							int z = seatZ + dz;
-							if (own.contains(RoadCell.packedXZ(x, z))) {
-								continue;
-							}
-							int index = network.cellAt(x, z);
-							if (index < 0) {
-								continue;
-							}
-							int distance = Math.abs(dx) + Math.abs(dz);
-							if (distance < bestDistance) {
-								bestDistance = distance;
-								nearest = network.cells.get(index);
-							}
-						}
+					if (network.cellAt(x, z) >= 0) {
+						ownColumns.add(RoadCell.packedXZ(x, z));
 					}
 				}
-				if (nearest != null) {
-					break;
+			}
+			for (long column : piece.seatColumns) {
+				int x = (int) (column >> 32);
+				int z = (int) column;
+				if (network.cellAt(x, z) >= 0) {
+					ownColumns.add(column);
 				}
 			}
-			if (nearest == null) {
+			int[] external = network.externalNeighbours(ownColumns);
+			if (external.length == 0) {
 				VpsPipeline.DECOR_ROAD_ISOLATED_PIECES.incrementAndGet();
 				continue;
 			}
-			int diff = Math.abs(nearest.solvedP - 2 * piece.baseWalkY);
-			if (diff > 1) {
+			int worst = 0;
+			for (int index : external) {
+				int diff = Math.abs(network.cells.get(index).solvedP - 2 * piece.baseWalkY);
+				worst = Math.max(worst, diff);
+			}
+			if (worst > 1) {
 				VpsPipeline.DECOR_ROAD_MISMATCH_PIECES.incrementAndGet();
-				VpsPipeline.DECOR_ROAD_MISMATCH_WORST.accumulateAndGet(diff, Math::max);
+				VpsPipeline.DECOR_ROAD_MISMATCH_WORST.accumulateAndGet(worst, Math::max);
 			}
 		}
 	}
 
-	/** Seat cells with no 4-adjacent mask cell at all: the solvable-network blind spot. */
+	/**
+	 * Seat cells with no 4-adjacent mask cell: the solver has no edge that could
+	 * constrain them. This is a seat-level observation; the structure-level
+	 * connection used by {@link #recordRoadMismatch} additionally excludes the
+	 * decor's own base footprint, so a seat inside a multi-block base with only
+	 * internal neighbours is not counted here but its structure can still be
+	 * isolated.
+	 */
 	public static void recordIsolatedSeats(RoadNetwork network) {
 		for (RoadCell cell : network.cells) {
 			if (!cell.seat) {

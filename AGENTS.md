@@ -396,21 +396,23 @@ Rules:
 - **A structure ground that shares a column with a road cell is solved as one
   flat unit and rendered by the writer (2026-10-22).** The vanilla y=0 block of
   a claimed column is suppressed for every piece, so an overlap between a road
-  cell and a street fixture base or a street-template scenery column
-  (`streetScenery`: farmland, water, terracotta, ...) would otherwise be a
-  hole. Only the **actual overlap cells of one source structure** join the
-  unit (`RoadCell#groundGroupKey`; `RoadNetwork#groundOverlapGroups`), starting
-  from the structure ground height. The unit is flat and (movable units) even;
-  T1.5 fixture bases may move as a whole, T5 fixture bases are physically fixed
-  (`groundGroupMovable=false`), and writer-rendered scenery units still follow
-  the solve. The writer renders the structure ground instead of a road at the
-  solved level and moves the source template's above-ground blocks (crops, the
-  fixture base) by the same whole-block delta; the T5 real ground height is
-  recorded from the gravity processor (`VpsPlacementContext#recordVanillaGround`)
-  because the suppressed y0 block itself is gone. Do not pin these cells to the
-  terrain probe instead - that leaves the two road sides at different heights.
-  `fixture overlap cells`, `scenery overlap cells` and `ground overlap written
-  (units moved, blocks moved)` in `/vps stats` are the observation set.
+  cell and a structure ground would otherwise be a hole. Only **two sources**
+  contribute: a street fixture base and an original **fixed-shape farm house**
+  ({@code village/<style>/[zombie/]houses/*farm*}, RIGID; its whole y=0 ground,
+  including farmland/water/dirt paths). **Scattered farmland inside street
+  templates is deliberately excluded** (user decision 2026-10-22: savanna
+  street farmland stays `streetScenery`). Only the **actual overlap cells of
+  one source structure** join the unit (`RoadCell#groundGroupKey`;
+  `RoadNetwork#groundOverlapGroups`), starting from the structure ground height.
+  The unit is flat and (movable units) even; T1.5 fixture bases may move as a
+  whole, T5 fixture bases are physically fixed (`groundGroupMovable=false`), and
+  writer-rendered farm ground still follows the solve. The writer renders the
+  structure ground instead of a road at the solved level and moves the source
+  template's above-ground blocks (crops, the fixture base) by the same
+  whole-block delta. Do not pin these cells to the terrain probe instead - that
+  leaves the two road sides at different heights. `fixture overlap cells`,
+  `farm overlap cells` and `ground overlap written (units moved, blocks moved)`
+  in `/vps stats` are the observation set.
 - **The polish never moves a physically fixed cell, but it DOES move a movable
   unit before placement (2026-10-15, reworked 2026-10-17).** A T5 decor-seat pin
   and a T5/phase-2 plaza pin are immovable: the free side takes the correction

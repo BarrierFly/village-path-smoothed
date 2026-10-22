@@ -126,8 +126,8 @@ public class RoadPolishTest {
 		RoadCell b = cells.get(6);
 		a.groundOverlap = true;
 		b.groundOverlap = true;
-		a.groundGroupKey = RoadNetwork.sceneryGroupKey(1);
-		b.groundGroupKey = RoadNetwork.sceneryGroupKey(1);
+		a.groundGroupKey = RoadNetwork.farmGroupKey(1);
+		b.groundGroupKey = RoadNetwork.farmGroupKey(1);
 		a.groundGroupMovable = true;
 		b.groundGroupMovable = true;
 		RoadNetwork net = RoadNetwork.build(cells, 4);

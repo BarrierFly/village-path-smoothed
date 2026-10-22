@@ -17,7 +17,6 @@ import dev.peoplecanfly.village_path_smoothed.terrain.VpsProbe;
 import dev.peoplecanfly.village_path_smoothed.terrain.WaterCrossings;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
-import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.tags.BlockTags;
 import net.minecraft.world.level.block.Block;
@@ -157,8 +156,6 @@ public final class RoadCollector {
 	 * jigsaws is road; fields, channels and trim are not.
 	 */
 	public static final AtomicLong TEMPLATE_Y0_SCENERY_SKIPPED = new AtomicLong();
-	/** 2026-10-22: road cells that overlap a street structure ground and are rewritten as that ground. */
-	public static final AtomicLong GROUND_OVERLAP_CELLS = new AtomicLong();
 
 	/**
 	 * The base materials a street seat's jigsaw renders ({@code final_state}).
@@ -268,7 +265,6 @@ public final class RoadCollector {
 		List<Seat> seats = new ArrayList<>();
 		java.util.Set<Long> plazaFootprint = new java.util.HashSet<>();
 		Set<Long> streetScenery = new HashSet<>();
-		Map<Long, RoadNetwork.SceneryGround> sceneryGrounds = new HashMap<>();
 		Set<Long> allSeatColumns = new HashSet<>();
 		Set<String> decorPools = new HashSet<>();
 		int pieceCount = 0;
@@ -319,7 +315,7 @@ public final class RoadCollector {
 			}
 			pieceCount++;
 			collectPiece(poolPiece, singleElement, location, style, townCentre, pieceIndex, templateManager, ctx, config,
-					cellsByPos, seats, plazaFootprint, streetScenery, sceneryGrounds, allSeatColumns, decorPools);
+					cellsByPos, seats, plazaFootprint, streetScenery, allSeatColumns, decorPools);
 		}
 
 		// Decor seats join the mask AFTER the road cells and WIN a shared column
@@ -351,25 +347,6 @@ public final class RoadCollector {
 			cellsByPos.put(key, cell);
 		}
 
-		// 2026-10-22: a road cell that overlaps a street-template scenery ground
-		// (farmland/water/terracotta) is rewritten as that ground at the solved
-		// height. Only the ACTUAL overlap cells join the flat unit; the unit's
-		// start is the structure ground height (the same column's probe).
-		for (Map.Entry<Long, RoadNetwork.SceneryGround> entry : sceneryGrounds.entrySet()) {
-			RoadCell cell = cellsByPos.get(entry.getKey());
-			if (cell == null || cell.seat || cell.plaza || cell.fixtureBase || cell.groundOverlap) {
-				continue;
-			}
-			RoadNetwork.SceneryGround ground = entry.getValue();
-			cell.groundOverlap = true;
-			cell.groundBlock = ground.blockId;
-			cell.groundOldBlockY = RoadCell.GROUND_Y_UNKNOWN;
-			cell.groundAboveLocalYs = ground.aboveLocalYs;
-			cell.groundGroupKey = RoadNetwork.sceneryGroupKey(ground.pieceIndex);
-			cell.groundGroupMovable = true;
-			GROUND_OVERLAP_CELLS.incrementAndGet();
-		}
-
 		VillagePathSmoothed.LOGGER.debug("[VPS] village at {}: {} street pieces, {} road cells", start.getChunkPos(), pieceCount, cellsByPos.size());
 		int max = Math.max(0, config.diagnostics.maxRoadCellsPerVillage);
 		if (max > 0 && cellsByPos.size() > max) {
@@ -381,7 +358,6 @@ public final class RoadCollector {
 		RoadNetwork network = RoadNetwork.build(cells, config.roadSmoothing.maxExactSectionWidth);
 		network.plazaFootprint.addAll(plazaFootprint);
 		network.streetScenery.addAll(streetScenery);
-		network.streetSceneryGrounds.putAll(sceneryGrounds);
 		network.allSeatColumns.addAll(allSeatColumns);
 		network.decorPools.addAll(decorPools);
 		recordIntegrity(network);
@@ -526,7 +502,6 @@ public final class RoadCollector {
 			List<Seat> seats,
 			java.util.Set<Long> plazaFootprint,
 			Set<Long> streetScenery,
-			Map<Long, RoadNetwork.SceneryGround> sceneryGrounds,
 			Set<Long> allSeatColumns,
 			Set<String> decorPools
 	) {
@@ -551,8 +526,7 @@ public final class RoadCollector {
 		// road; farmland, water and terracotta inside the template are scenery and
 		// stay vanilla. Connector bases (a few are plain dirt) are seeds and stay
 		// road, so a crossroad seam never opens a hole.
-		Set<Long> accepted = townCentre ? null : scanStreetSurface(palette, style, config, settings, offset,
-				streetScenery, sceneryGrounds, pieceIndex);
+		Set<Long> accepted = townCentre ? null : scanStreetSurface(palette, style, config, settings, offset, streetScenery);
 		for (StructureTemplate.StructureBlockInfo info : palette.blocks()) {
 			//#if MC >= 12001
 			//$$ BlockPos infoPos = info.pos();
@@ -758,9 +732,8 @@ public final class RoadCollector {
 	 */
 	private static Set<Long> scanStreetSurface(StructureTemplate.Palette palette, String style,
 			VillagePathSmoothedConfig config, StructurePlaceSettings settings, BlockPos offset,
-			Set<Long> sceneryWorld, Map<Long, RoadNetwork.SceneryGround> sceneryGrounds, int pieceIndex) {
+			Set<Long> sceneryWorld) {
 		Map<Long, BlockState> y0 = new HashMap<>();
-		Map<Long, List<Integer>> localColumnYs = new HashMap<>();
 		Set<Long> seeds = new HashSet<>();
 		for (StructureTemplate.StructureBlockInfo info : palette.blocks()) {
 			//#if MC >= 12001
@@ -771,11 +744,6 @@ public final class RoadCollector {
 			BlockState infoState = info.state;
 			//#endif
 			long key = RoadCell.packedXZ(infoPos.getX(), infoPos.getZ());
-			if (infoPos.getY() >= 0 && !infoState.isAir()
-					&& !infoState.is(Blocks.STRUCTURE_VOID) && !infoState.is(Blocks.STRUCTURE_BLOCK)
-					&& !infoState.is(Blocks.JIGSAW)) {
-				localColumnYs.computeIfAbsent(key, k -> new ArrayList<>()).add(infoPos.getY());
-			}
 			if (infoPos.getY() == 0) {
 				y0.put(key, infoState);
 			} else if (infoPos.getY() == 1 && infoState.is(Blocks.JIGSAW)
@@ -836,8 +804,7 @@ public final class RoadCollector {
 			if (accepted.contains(key)) {
 				continue;
 			}
-			addSceneryGround(sceneryWorld, sceneryGrounds, settings, offset, key, state,
-					localColumnYs.get(key), pieceIndex);
+			addSceneryColumn(sceneryWorld, settings, offset, key);
 			TEMPLATE_Y0_SCENERY_SKIPPED.incrementAndGet();
 			recordY0ScenerySkip(state);
 		}
@@ -845,44 +812,10 @@ public final class RoadCollector {
 	}
 
 	private static void addSceneryColumn(Set<Long> sceneryWorld, StructurePlaceSettings settings, BlockPos offset, long localXZ) {
-		BlockPos world = worldColumn(settings, offset, localXZ);
-		sceneryWorld.add(RoadCell.packedXZ(world.getX(), world.getZ()));
-	}
-
-	/**
-	 * Records a non-road street-template ground together with its source piece
-	 * and the template offsets of the blocks above it. If another piece's road
-	 * cell claims the column, the writer rewrites this surface at the solved
-	 * height and moves the recorded above-ground blocks with it.
-	 */
-	private static void addSceneryGround(Set<Long> sceneryWorld, Map<Long, RoadNetwork.SceneryGround> sceneryGrounds,
-			StructurePlaceSettings settings, BlockPos offset, long localXZ, BlockState state,
-			List<Integer> localYs, int pieceIndex) {
-		BlockPos world = worldColumn(settings, offset, localXZ);
-		long worldColumn = RoadCell.packedXZ(world.getX(), world.getZ());
-		sceneryWorld.add(worldColumn);
-		List<Integer> above = new ArrayList<>();
-		if (localYs != null) {
-			for (int y : localYs) {
-				if (y > 0) {
-					above.add(y);
-				}
-			}
-		}
-		above.sort(null);
-		int[] aboveLocalYs = new int[above.size()];
-		for (int i = 0; i < aboveLocalYs.length; i++) {
-			aboveLocalYs[i] = above.get(i);
-		}
-		String id = BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString();
-		sceneryGrounds.put(worldColumn,
-				new RoadNetwork.SceneryGround(pieceIndex, id, world.getY(), aboveLocalYs));
-	}
-
-	private static BlockPos worldColumn(StructurePlaceSettings settings, BlockPos offset, long localXZ) {
 		int localX = (int) (localXZ >> 32);
 		int localZ = (int) localXZ;
-		return StructureTemplate.calculateRelativePosition(settings, new BlockPos(localX, 0, localZ)).offset(offset);
+		BlockPos world = StructureTemplate.calculateRelativePosition(settings, new BlockPos(localX, 0, localZ)).offset(offset);
+		sceneryWorld.add(RoadCell.packedXZ(world.getX(), world.getZ()));
 	}
 
 	/** A solid, non-marker y0 block: a connector seed may use any material (a few are plain dirt). */

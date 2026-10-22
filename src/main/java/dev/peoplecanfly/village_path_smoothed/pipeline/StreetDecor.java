@@ -10,6 +10,7 @@ import dev.peoplecanfly.village_path_smoothed.duck.SinglePoolElementVpsAccess;
 import dev.peoplecanfly.village_path_smoothed.duck.StructureTemplateVpsAccess;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.RegistryAccess;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
@@ -428,7 +429,146 @@ public final class StreetDecor {
 		RoadNetwork rebuilt = RoadNetwork.build(cells, maxWidth);
 		rebuilt.plazaFootprint.addAll(network.plazaFootprint);
 		rebuilt.streetScenery.addAll(network.streetScenery);
-		rebuilt.streetSceneryGrounds.putAll(network.streetSceneryGrounds);
+		rebuilt.allSeatColumns.addAll(network.allSeatColumns);
+		rebuilt.decorPools.addAll(network.decorPools);
+		return rebuilt;
+	}
+
+	/**
+	 * 2026-10-22 (user decision): only the original fixed-shape farm house
+	 * pieces ({@code *_farm_*} in a {@code houses} pool, RIGID) take part in the
+	 * ground-overlap solve. The scattered farmland inside savanna street
+	 * templates stays street scenery and is deliberately excluded.
+	 *
+	 * <p>Returns the piece's complete y=0 ground (farmland, water, dirt/grass
+	 * paths, ...) keyed by packed XZ, with the template offsets of the blocks
+	 * above it. The piece is RIGID, so the recorded world Y is the real rendered
+	 * ground Y even before any T1.5 shift.
+	 */
+	public static Map<Long, FixtureGround> identifyFarmGrounds(List<StructurePiece> pieces,
+			StructureTemplateManager templateManager) {
+		if (templateManager == null) {
+			return Map.of();
+		}
+		Map<Long, FixtureGround> out = new HashMap<>();
+		for (int i = 0; i < pieces.size(); i++) {
+			StructurePiece piece = pieces.get(i);
+			if (!(piece instanceof PoolElementStructurePiece pool)
+					|| !(pool.getElement() instanceof SinglePoolElement element)) {
+				continue;
+			}
+			if (element.getProjection() != StructureTemplatePool.Projection.RIGID || !isFarmHouse(element)) {
+				continue;
+			}
+			StructureTemplate template;
+			try {
+				template = VpsCompat.loadTemplate(templateManager,
+						((SinglePoolElementVpsAccess) element).village_path_smoothed$getTemplateLocation());
+			} catch (Throwable t) {
+				continue;
+			}
+			List<StructureTemplate.Palette> palettes =
+					((StructureTemplateVpsAccess) template).village_path_smoothed$getPalettes();
+			if (palettes == null || palettes.isEmpty()) {
+				continue;
+			}
+			StructurePlaceSettings settings = new StructurePlaceSettings().setRotation(pool.getRotation());
+			StructureTemplate.Palette palette = settings.getRandomPalette(palettes, pool.getPosition());
+			BlockPos origin = pool.getPosition();
+			Map<Long, List<Integer>> columnYs = new HashMap<>();
+			Map<Long, BlockState> ground = new HashMap<>();
+			Map<Long, Integer> groundY = new HashMap<>();
+			for (StructureTemplate.StructureBlockInfo info : palette.blocks()) {
+				//#if MC >= 12001
+				//$$ BlockPos infoPos = info.pos();
+				//$$ BlockState infoState = info.state();
+				//#else
+				BlockPos infoPos = info.pos;
+				BlockState infoState = info.state;
+				//#endif
+				if (infoPos.getY() < 0 || infoState.isAir()
+						|| infoState.is(Blocks.STRUCTURE_VOID) || infoState.is(Blocks.STRUCTURE_BLOCK)
+						|| infoState.is(Blocks.JIGSAW)) {
+					continue;
+				}
+				BlockPos world = StructureTemplate.calculateRelativePosition(settings, infoPos).offset(origin);
+				long column = RoadCell.packedXZ(world.getX(), world.getZ());
+				columnYs.computeIfAbsent(column, k -> new ArrayList<>()).add(infoPos.getY());
+				if (infoPos.getY() == 0) {
+					ground.putIfAbsent(column, infoState);
+					groundY.putIfAbsent(column, world.getY());
+				}
+			}
+			for (Map.Entry<Long, BlockState> entry : ground.entrySet()) {
+				long column = entry.getKey();
+				int baseY = groundY.get(column);
+				List<Integer> ys = columnYs.get(column);
+				out.putIfAbsent(column, fixtureGround(i, baseY,
+						BuiltInRegistries.BLOCK.getKey(entry.getValue().getBlock()).toString(), ys));
+			}
+		}
+		return out;
+	}
+
+	/** True for an original {@code village/<style>/[zombie/]houses/*farm*} template. */
+	private static boolean isFarmHouse(SinglePoolElement element) {
+		try {
+			String location = ((SinglePoolElementVpsAccess) element).village_path_smoothed$getTemplateLocation();
+			if (location == null || !location.contains("/houses/")) {
+				return false;
+			}
+			int slash = location.lastIndexOf('/');
+			String file = slash >= 0 ? location.substring(slash + 1) : location;
+			return file.contains("farm");
+		} catch (Throwable t) {
+			return false;
+		}
+	}
+
+	/**
+	 * Marks the road cells that overlap a fixed-shape farm's y=0 ground as one
+	 * movable flat unit per farm piece. A farm column that is already a road
+	 * cell is rewritten at the solved height; non-overlapping farm ground needs
+	 * no solve cell.
+	 */
+	public static RoadNetwork addFarmGrounds(RoadNetwork network, List<StructurePiece> pieces,
+			StructureTemplateManager templateManager, int maxWidth) {
+		Map<Long, FixtureGround> farms = identifyFarmGrounds(pieces, templateManager);
+		if (farms.isEmpty()) {
+			return network;
+		}
+		List<RoadCell> cells = new ArrayList<>(network.cells);
+		boolean changed = false;
+		for (Map.Entry<Long, FixtureGround> entry : farms.entrySet()) {
+			long column = entry.getKey();
+			int x = (int) (column >> 32);
+			int z = (int) column;
+			int index = network.cellAt(x, z);
+			if (index < 0) {
+				continue; // no road overlap
+			}
+			RoadCell cell = network.cells.get(index);
+			if (cell.seat || cell.plaza || cell.fixtureBase || cell.groundOverlap) {
+				continue; // an existing structure already owns this cell
+			}
+			FixtureGround ground = entry.getValue();
+			cell.groundOverlap = true;
+			cell.groundBlock = ground.blockId;
+			cell.groundOldBlockY = ground.baseBlockY;
+			cell.groundAboveLocalYs = ground.aboveLocalYs;
+			cell.groundGroupKey = RoadNetwork.farmGroupKey(ground.pieceIndex);
+			cell.groundGroupMovable = true;
+			cell.baseP = 2 * (ground.baseBlockY + 1);
+			cell.solvedP = cell.baseP;
+			VpsPipeline.FARM_OVERLAP_CELLS.incrementAndGet();
+			changed = true;
+		}
+		if (!changed) {
+			return network;
+		}
+		RoadNetwork rebuilt = RoadNetwork.build(cells, maxWidth);
+		rebuilt.plazaFootprint.addAll(network.plazaFootprint);
+		rebuilt.streetScenery.addAll(network.streetScenery);
 		rebuilt.allSeatColumns.addAll(network.allSeatColumns);
 		rebuilt.decorPools.addAll(network.decorPools);
 		return rebuilt;

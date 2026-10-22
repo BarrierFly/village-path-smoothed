@@ -68,9 +68,12 @@ public final class RoadNetwork {
 
 	/**
 	 * 2026-10-22: one flat, vertically movable unit per source structure whose
-	 * ground columns overlap road cells. The unit contains only the ACTUAL
-	 * overlap cells of that structure; the structure ground is rendered at the
-	 * solved level and the surrounding road solves against the unit.
+	 * ground columns overlap road cells. Only a street fixture base or an
+	 * original fixed-shape {@code *_farm_*} house piece contributes; scattered
+	 * street-template farmland is deliberately NOT part of this. The unit
+	 * contains only the ACTUAL overlap cells of that structure; the structure
+	 * ground is rendered at the solved level and the surrounding road solves
+	 * against the unit.
 	 */
 	public final List<GroundOverlapGroup> groundOverlapGroups = new ArrayList<>();
 
@@ -85,31 +88,6 @@ public final class RoadNetwork {
 			this.movable = movable;
 		}
 	}
-
-	/**
-	 * A street-template y=0 column that is deliberately not road (farmland,
-	 * water, terracotta, ...). When another piece's road cell claims the same
-	 * column, the scenery ground is the surface the player must see and the
-	 * overlap cell is rewritten at the solved height.
-	 */
-	public static final class SceneryGround {
-		public final int pieceIndex;
-		public final String blockId;
-		/** World Y the template puts the y0 block at before gravity (fallback only). */
-		public final int templateGroundY;
-		/** Template block offsets above the ground block (0 = the ground). */
-		public final int[] aboveLocalYs;
-
-		public SceneryGround(int pieceIndex, String blockId, int templateGroundY, int[] aboveLocalYs) {
-			this.pieceIndex = pieceIndex;
-			this.blockId = blockId;
-			this.templateGroundY = templateGroundY;
-			this.aboveLocalYs = aboveLocalYs;
-		}
-	}
-
-	/** Scenery columns by packed XZ; the collector marks overlap cells from it. */
-	public final Map<Long, SceneryGround> streetSceneryGrounds = new HashMap<>();
 
 	/** One decor piece's full base footprint (cell indices into {@link #cells}). */
 	public static final class DecorBaseGroup {
@@ -535,8 +513,8 @@ public final class RoadNetwork {
 		return network;
 	}
 
-	/** Group key prefixes so a scenery piece and a fixture piece never collide. */
-	public static long sceneryGroupKey(int pieceIndex) {
+	/** Group key prefixes so a farm piece and a fixture piece never collide. */
+	public static long farmGroupKey(int pieceIndex) {
 		return 0x2000_0000_0000_0000L | (pieceIndex & 0xFFFF_FFFFL);
 	}
 

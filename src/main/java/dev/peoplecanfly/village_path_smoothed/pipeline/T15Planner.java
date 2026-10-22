@@ -119,6 +119,8 @@ public final class T15Planner {
 		// across the vertical shifts; the block positions are refreshed below.
 		StreetDecor.Resolved decor = StreetDecor.identify(start.getPieces(), network, templateManager, registries);
 		network = StreetDecor.addFixtureBases(network, decor, config.roadSmoothing.maxExactSectionWidth, true);
+		network = StreetDecor.addFarmGrounds(network, start.getPieces(), templateManager,
+				config.roadSmoothing.maxExactSectionWidth);
 		VpsPipeline.STREET_DECOR_PIECES.addAndGet(decor.pieces.size());
 		VpsPipeline.STREET_DECOR_BLOCKS.addAndGet(decor.blocks.size());
 		if (config.roadSmoothing.enabled) {
@@ -262,6 +264,8 @@ public final class T15Planner {
 				// pieces' current positions and pinned in the final solve.
 				fixtures = StreetDecor.identify(start.getPieces(), resolved, templateManager, registries);
 				resolved = StreetDecor.addFixtureBases(resolved, fixtures, config.roadSmoothing.maxExactSectionWidth, true);
+				resolved = StreetDecor.addFarmGrounds(resolved, start.getPieces(), templateManager,
+						config.roadSmoothing.maxExactSectionWidth);
 				// plan C phase 2: pin every plaza group at the level its pieces really
 				// render at after the move - the solve and the world agree by construction
 				resolved.applyPlazaPins(false);

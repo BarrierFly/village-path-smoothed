@@ -111,18 +111,21 @@ water use scaffolding, and dangerous edges get leaf railings.
    other three are one block higher.
    Diagonal/lawn seats are therefore isolated, not height-linked.
 4. **Structure-ground overlaps / 结构地面与道路重叠** — when a road cell and a
-   street structure's ground (a fixture base or street-template farmland / water
-   / terracotta scenery) claim the same column, the vanilla y=0 block of the
-   claimed column is suppressed. The overlap cells of one source structure form
-   one **flat, vertically movable unit** in the solve, starting from the
-   structure ground's height. The writer renders that structure ground at the
-   solved level instead of a road, and moves the template's above-ground blocks
-   (crops, the fixture base) with the same whole-block delta, so both roads and
-   the structure surface still meet. On T1.5 a fixture base may move as a whole;
-   on T5 the fixture base is physically fixed (the scenery ground is
-   writer-rendered and still follows the solve). `fixture overlap cells`,
-   `scenery overlap cells` and `ground overlap written (units moved, blocks
-   moved)` in `/vps stats` are the observation set.
+   structure ground claim the same column, the vanilla y=0 block of the claimed
+   column is suppressed. Only a **street fixture base** and an original
+   **fixed-shape farm house** (`village/<style>/[zombie/]houses/*farm*`, RIGID;
+   its whole y=0 ground including farmland/water/dirt paths) take part. The
+   scattered farmland inside savanna street templates is **excluded** and stays
+   street scenery. The overlap cells of one source structure form one **flat,
+   vertically movable unit** in the solve, starting from the structure ground's
+   height. The writer renders that structure ground at the solved level instead
+   of a road, and moves the template's above-ground blocks (crops, the fixture
+   base) with the same whole-block delta, so both roads and the structure
+   surface still meet. On T1.5 a fixture base may move as a whole; on T5 the
+   fixture base is physically fixed (the farm ground is writer-rendered and
+   still follows the solve). `fixture overlap cells`, `farm overlap cells` and
+   `ground overlap written (units moved, blocks moved)` in `/vps stats` are the
+   observation set.
 5. **Kerbs, kerb railings and the ceiling / 路肩包边、包边护栏与包顶** — each
    side is probed **from the road block's own height**, and the two kerb columns
    are probed together ("探2包1"):
@@ -448,9 +451,9 @@ Two things are worth spelling out:
 12. **Street scenery is deliberately not dressed** — farmland, water channels
     and terracotta trim inside a street template are not road (decision
     2026-10-20). They get no kerb or railing, so a road cut beside a field can
-    show a raw edge by design. Where a road cell actually overlaps one of those
-    grounds, the 2026-10-22 overlap unit rewrites the ground at the solved
-    height instead of leaving the suppressed column empty. Decor and piles are
+    show a raw edge by design. The 2026-10-22 overlap unit deliberately does
+    not take them; only fixed-shape `*_farm_*` house pieces are rewritten at the
+    solved height. Decor and piles are
     protected by their actual blocks; a multi-block decor's T5/T1.5 pin can
     still force a counted step where the surrounding free road cannot meet the
     rigid base (`decor` line in `/vps stats`).
@@ -485,12 +488,15 @@ Two things are worth spelling out:
   广场/街件/房屋的土径均不改；**路面掩膜只取与街道 jigsaw 连接点连通的街面**
   （2026-10-20 决策）：savanna 农田/水渠、desert 陶瓦镶边视为街面景物，不进掩膜、
   保留原版方块，writer 也不向其包边/护栏；连接点下的普通 dirt 仍算路，接缝不破洞；
-  **结构地面与路格重叠**（2026-10-22）：同一列既有路格又有街件底座/街道模板农田景物时，
-  被认领列的 vanilla y=0 方块本就被抑制；该来源结构的实际重叠列组成一个**可整体升降的
-  平单元**参与求解，起点取结构地面高度。writer 在解出高度写结构地面（不是路面），并按
-  同一整格位移带上模板中地面以上的作物/底座等方块，使两侧道路与结构地面仍平滑相接；
-  T1.5 街件底座可整体移动，T5 街件底座固定（景物地面由 writer 重写，仍随求解）。
-  `/vps stats` 的 `fixture overlap cells`、`scenery overlap cells` 与
+  **结构地面与路格重叠**（2026-10-22，修正于同日）：同一列既有路格又有结构地面时，
+  被认领列的 vanilla y=0 方块本就被抑制。只有两类来源参与：**街件底座**与
+  **原版固定形状农舍件**（`village/<style>/[zombie/]houses/*farm*`，RIGID；整个 y=0
+  固定地面，含农田/水渠/土径）。**热带草原街道模板里的散装农田不参与**，仍是 street
+  scenery。该来源结构的实际重叠列组成一个**可整体升降的平单元**参与求解，起点取结构
+  地面高度。writer 在解出高度写结构地面（不是路面），并按同一整格位移带上模板中地面
+  以上的作物/底座等方块，使两侧道路与结构地面仍平滑相接；T1.5 街件底座可整体移动，
+  T5 街件底座固定（农舍地面由 writer 重写，仍随求解）。`/vps stats` 的
+  `fixture overlap cells`、`farm overlap cells` 与
   `ground overlap written (units moved, blocks moved)` 是观测集；
   地形追线候选带（无独立参考剖面，偏差直接对地形量，
   接缝带向区域侧延伸保证合法坡道可达）；路肩包边（**探2包1**：向外探测两格、只包

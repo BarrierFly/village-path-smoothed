@@ -87,11 +87,12 @@ public final class RoadCell {
 	public boolean fixtureBase;
 	/**
 	 * 2026-10-22: the road cell overlaps a structure ground column (a street
-	 * fixture base or a street-template scenery block such as farmland). The
-	 * cell is solved as one flat, vertically movable unit with the structure and
-	 * the writer renders the structure ground instead of a road: the vanilla
-	 * road layer is suppressed for the claimed column, so without this the
-	 * surface would be a hole and the roads on both sides would not meet it.
+	 * fixture base or a fixed-shape original {@code *_farm_*} house piece).
+	 * Scattered street-template farmland is deliberately NOT included. The cell
+	 * is solved as one flat, vertically movable unit with the structure and the
+	 * writer renders the structure ground instead of a road: the vanilla road
+	 * layer is suppressed for the claimed column, so without this the surface
+	 * would be a hole and the roads on both sides would not meet it.
 	 */
 	public boolean groundOverlap;
 	/** Block id of the structure ground rendered at the solved level. */

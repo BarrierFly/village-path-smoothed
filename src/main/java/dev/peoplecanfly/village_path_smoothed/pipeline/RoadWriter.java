@@ -199,7 +199,6 @@ public final class RoadWriter {
 	public static void write(RoadNetwork net, VpsGenContext ctx, BoundingBox chunkBB, VillagePathSmoothedConfig config,
 			int[][] shiftedComponents, int[][] buildingBoxes, java.util.Set<Long> decorBlocks,
 			java.util.Map<Long, String> decorBaseBlocks, java.util.Set<Long> pileBlocks,
-			java.util.Map<Long, Integer> vanillaGroundY,
 			int[][] doorFronts, int[][] doorSigns,
 			int[][] seamSigns, String village) {
 		RoadMaterialTable table = RoadMaterialTable.create(config);
@@ -228,7 +227,7 @@ public final class RoadWriter {
 			}
 			try {
 				writeCell(net, cell, ctx, config, table, sideFacts, countedEdgeColumns, shiftedComponents,
-						buildingBoxes, vanillaGroundY, doorFronts, threeWideMiddles, village);
+						buildingBoxes, doorFronts, threeWideMiddles, village);
 			} catch (Throwable t) {
 				VillagePathSmoothed.LOGGER.debug("[VPS] failed to write road cell {} {}", cell.x, cell.z, t);
 				// Review 4 risk R3: the cell's vanilla block is NOT there to fall
@@ -421,8 +420,9 @@ public final class RoadWriter {
 	private static final int[] SIDE_DZ = {0, 0, -1, 1};
 
 	/**
-	 * 2026-10-22: writes a structure ground (street fixture base or street
-	 * scenery such as farmland) at the solved walk level instead of a road.
+	 * 2026-10-22: writes a structure ground (street fixture base or a fixed-shape
+	 * original {@code *_farm_*} house piece) at the solved walk level instead of
+	 * a road. Scattered street-template farmland never reaches this path.
 	 *
 	 * <p>The vanilla y=0 block of every piece on a claimed column was suppressed,
 	 * so the structure ground would otherwise be a hole. The overlap unit is
@@ -431,8 +431,7 @@ public final class RoadWriter {
 	 * the same whole-block delta, per the user's "non-ground blocks move with
 	 * the surface" decision.
 	 */
-	private static void writeGroundOverlapCell(RoadCell cell, VpsGenContext ctx, int[][] buildingBoxes,
-			Map<Long, Integer> vanillaGroundY) {
+	private static void writeGroundOverlapCell(RoadCell cell, VpsGenContext ctx, int[][] buildingBoxes) {
 		Block ground = VpsCompat.blockById(cell.groundBlock);
 		if (ground == null) {
 			return;
@@ -444,9 +443,7 @@ public final class RoadWriter {
 		}
 		int oldY = cell.groundOldBlockY;
 		if (oldY == RoadCell.GROUND_Y_UNKNOWN) {
-			Integer recorded = vanillaGroundY == null ? null
-					: vanillaGroundY.get(RoadCell.packedXZ(cell.x, cell.z));
-			oldY = recorded != null ? recorded : cell.baseP / 2;
+			oldY = cell.baseP / 2;
 		}
 		int dy = targetY - oldY;
 		if (dy != 0) {
@@ -509,8 +506,7 @@ public final class RoadWriter {
 	private static void writeCell(RoadNetwork net, RoadCell cell, VpsGenContext ctx, VillagePathSmoothedConfig config,
 			RoadMaterialTable table, Map<SideKey, SideFacts> sideFacts,
 			Set<Long> countedEdgeColumns, int[][] shiftedComponents,
-			int[][] buildingBoxes, java.util.Map<Long, Integer> vanillaGroundY,
-			int[][] doorFronts, java.util.BitSet threeWideMiddles, String village) {
+			int[][] buildingBoxes, int[][] doorFronts, java.util.BitSet threeWideMiddles, String village) {
 		int x = cell.x;
 		int z = cell.z;
 
@@ -519,7 +515,7 @@ public final class RoadWriter {
 		// claimed column was suppressed, so the overlap surface has to be written
 		// here; the roads on both sides then meet the same flat unit.
 		if (cell.groundOverlap) {
-			writeGroundOverlapCell(cell, ctx, buildingBoxes, vanillaGroundY);
+			writeGroundOverlapCell(cell, ctx, buildingBoxes);
 			return;
 		}
 

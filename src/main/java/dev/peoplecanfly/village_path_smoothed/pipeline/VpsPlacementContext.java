@@ -34,12 +34,25 @@ public final class VpsPlacementContext {
 	 */
 	private static final ThreadLocal<java.util.Set<Long>> PILE_BLOCKS = new ThreadLocal<>();
 	private static final ThreadLocal<int[]> DEPTH = ThreadLocal.withInitial(() -> new int[1]);
+	/**
+	 * 2026-10-22: the Y vanilla's gravity processor moved each y=0 block to
+	 * before suppression, keyed by packed XZ. This is the actual structure
+	 * ground height at placement time; the writer uses it to move a scenery
+	 * surface's above-ground blocks with it. Last write per column wins, which
+	 * is exactly the vanilla placement order.
+	 */
+	private static final ThreadLocal<java.util.Map<Long, Integer>> VANILLA_GROUND_Y =
+			ThreadLocal.withInitial(java.util.HashMap::new);
 
 	private VpsPlacementContext() {
 	}
 
 	public static void push(RoadNetwork network, java.util.Set<Long> pileBlocks) {
-		DEPTH.get()[0]++;
+		int[] depth = DEPTH.get();
+		if (depth[0] == 0) {
+			VANILLA_GROUND_Y.get().clear();
+		}
+		depth[0]++;
 		NETWORK.set(network);
 		PILE_BLOCKS.set(pileBlocks);
 	}
@@ -51,7 +64,21 @@ public final class VpsPlacementContext {
 			DEPTH.remove();
 			NETWORK.remove();
 			PILE_BLOCKS.remove();
+			VANILLA_GROUND_Y.remove();
 		}
+	}
+
+	/** Records the vanilla-adjusted y=0 block Y of the piece currently placing. */
+	public static void recordVanillaGround(int templateY, int worldX, int worldY, int worldZ) {
+		if (templateY != 0 || NETWORK.get() == null) {
+			return;
+		}
+		VANILLA_GROUND_Y.get().put(RoadCell.packedXZ(worldX, worldZ), worldY);
+	}
+
+	/** The current chunk's vanilla y=0 ground Y per packed XZ column. */
+	public static java.util.Map<Long, Integer> vanillaGround() {
+		return new java.util.HashMap<>(VANILLA_GROUND_Y.get());
 	}
 
 	/** The road mask of the village currently being placed on this thread, or null. */

@@ -526,6 +526,29 @@ public record SolveParams(
 			}
 			units.add(group, movable);
 		}
+		// Structure-ground overlaps (2026-10-22): only the actual overlap cells
+		// form the unit. On T1.5 a fixture base and a street scenery ground may
+		// move as a whole; on T5 the fixture base is physically fixed, the
+		// writer-rendered scenery ground still follows the solve.
+		for (RoadNetwork.GroundOverlapGroup group : net.groundOverlapGroups) {
+			if (group.cells.length == 0) {
+				continue;
+			}
+			boolean claimed = false;
+			boolean movable = group.movable;
+			for (int idx : group.cells) {
+				if (units.unitOf[idx] >= 0) {
+					claimed = true;
+					break;
+				}
+				if (pinnedCells.get(idx)) {
+					movable = false; // a T5 decor/plaza pin is physically fixed
+				}
+			}
+			if (!claimed) {
+				units.add(group.cells, movable);
+			}
+		}
 		// Decor base footprints (audit 2026-10-21): the FULL base of a multi-block
 		// decor - seat, actual blocks and the air columns over road - is one flat
 		// body. On T1.5 it is movable, so the polish flattens it to one even level

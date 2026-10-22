@@ -188,6 +188,15 @@ public final class VpsPipeline {
 	public static final AtomicLong DECOR_SEATS_ISOLATED = new AtomicLong();
 	/** Decor candidates that matched a seat pool but whose template/blocks could not be resolved. */
 	public static final AtomicLong DECOR_RESOLVE_FAILED = new AtomicLong();
+	// 2026-10-22: structure-ground overlaps (street fixture bases, farmland/scenery).
+	/** Overlap cells whose fixture base was already a road cell (the new fixture overlap unit). */
+	public static final AtomicLong FIXTURE_BASE_OVERLAP_CELLS = new AtomicLong();
+	/** Overlap cells written as their structure ground instead of a road. */
+	public static final AtomicLong GROUND_OVERLAP_CELLS_WRITTEN = new AtomicLong();
+	/** Overlap units the writer actually shifted. */
+	public static final AtomicLong GROUND_OVERLAP_MOVED_UNITS = new AtomicLong();
+	/** Above-ground structure blocks moved with a shifted overlap surface. */
+	public static final AtomicLong GROUND_OVERLAP_BLOCKS_MOVED = new AtomicLong();
 	// R2-C (2026-10-16): a SERVED component whose door road cells span more than
 	// the half-block tolerance can bridge, so the shift came from the median
 	// fallback instead of the legal interval. Measurement for the minimax
@@ -304,6 +313,10 @@ public final class VpsPipeline {
 		// The context is popped first: a failure further down must not leave a
 		// stale mask live on a reused world-gen thread. The caller already wraps
 		// this hook in its own try/catch, so there is nothing to add here.
+		// 2026-10-22: the vanilla y=0 ground heights of this chunk are captured
+		// before the pop; the scenery overlap writer moves above-ground blocks
+		// from exactly where vanilla placed them.
+		java.util.Map<Long, Integer> vanillaGroundY = VpsPlacementContext.vanillaGround();
 		VpsPlacementContext.pop();
 		if (solution == null || solution.network.cells.isEmpty()) {
 			return;
@@ -315,7 +328,7 @@ public final class VpsPipeline {
 		}
 		RoadWriter.write(solution.network, ctx, chunkBB, config, solution.shiftedComponents,
 				solution.buildingBoxes, solution.decorBlocks, solution.decorBaseBlocks,
-				solution.pileBlocks, solution.doorFronts, solution.doorSigns, solution.seamSigns,
+				solution.pileBlocks, vanillaGroundY, solution.doorFronts, solution.doorSigns, solution.seamSigns,
 				String.valueOf(start.getChunkPos()));
 	}
 
@@ -602,7 +615,7 @@ public final class VpsPipeline {
 		STREET_DECOR_PIECES.addAndGet(decor.pieces.size());
 		STREET_DECOR_BLOCKS.addAndGet(decor.blocks.size());
 		if (config.roadSmoothing.enabled) {
-			network = StreetDecor.addFixtureBases(network, decor, config.roadSmoothing.maxExactSectionWidth);
+			network = StreetDecor.addFixtureBases(network, decor, config.roadSmoothing.maxExactSectionWidth, false);
 			// plan 2026-10-16: nothing may move at feature placement, so a seat
 			// with a RIGID decor piece on top pins at the level that piece
 			// actually renders at (the phase-2 plaza precedent: the pieces are

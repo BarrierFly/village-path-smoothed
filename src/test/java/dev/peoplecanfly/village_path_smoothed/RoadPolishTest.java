@@ -114,6 +114,30 @@ public class RoadPolishTest {
 		assertTrue("p90 delta is reported", stats.polishDeltaP90() >= 0);
 	}
 
+	/**
+	 * 2026-10-22: a structure-ground overlap is one flat MOVABLE unit, so the
+	 * solve can shift farm/fixture surfaces and the roads together. The unit
+	 * must stay flat and on an even (full-block) surface.
+	 */
+	@Test
+	public void aGroundOverlapUnitMovesFlatAndEven() {
+		List<RoadCell> cells = street(12, z -> z < 6 ? 64 : 68);
+		RoadCell a = cells.get(5);
+		RoadCell b = cells.get(6);
+		a.groundOverlap = true;
+		b.groundOverlap = true;
+		a.groundGroupKey = RoadNetwork.sceneryGroupKey(1);
+		b.groundGroupKey = RoadNetwork.sceneryGroupKey(1);
+		a.groundGroupMovable = true;
+		b.groundGroupMovable = true;
+		RoadNetwork net = RoadNetwork.build(cells, 4);
+		assertEquals("both overlap cells form one unit", 1, net.groundOverlapGroups.size());
+		RoadSmoother.solve(net, params());
+		assertEquals("the unit is flat", a.solvedP, b.solvedP);
+		assertEquals("the unit stays on an even walk surface", 0, a.solvedP & 1);
+		assertEquals("the profile is still legal", 0, violations(net));
+	}
+
 	/** A profile the optimiser already made legal must not be touched. */
 	@Test
 	public void aFlatProfileIsNotTouched() {

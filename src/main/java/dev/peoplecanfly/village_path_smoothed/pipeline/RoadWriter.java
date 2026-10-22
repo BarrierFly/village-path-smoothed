@@ -199,6 +199,7 @@ public final class RoadWriter {
 	public static void write(RoadNetwork net, VpsGenContext ctx, BoundingBox chunkBB, VillagePathSmoothedConfig config,
 			int[][] shiftedComponents, int[][] buildingBoxes, java.util.Set<Long> decorBlocks,
 			java.util.Map<Long, String> decorBaseBlocks, java.util.Set<Long> pileBlocks,
+			java.util.Map<Long, Integer> vanillaGroundY,
 			int[][] doorFronts, int[][] doorSigns,
 			int[][] seamSigns, String village) {
 		RoadMaterialTable table = RoadMaterialTable.create(config);
@@ -227,7 +228,7 @@ public final class RoadWriter {
 			}
 			try {
 				writeCell(net, cell, ctx, config, table, sideFacts, countedEdgeColumns, shiftedComponents,
-						buildingBoxes, doorFronts, threeWideMiddles, village);
+						buildingBoxes, vanillaGroundY, doorFronts, threeWideMiddles, village);
 			} catch (Throwable t) {
 				VillagePathSmoothed.LOGGER.debug("[VPS] failed to write road cell {} {}", cell.x, cell.z, t);
 				// Review 4 risk R3: the cell's vanilla block is NOT there to fall
@@ -236,7 +237,9 @@ public final class RoadWriter {
 				// unconditional surface pin with the same guarded nudge every other
 				// fallback uses: it is the only height that is trustworthy at write
 				// time, and it is only used when it cannot step.
-				writeSurfaceFallback(net, cell, ctx, config, table, shiftedComponents);
+				if (!cell.groundOverlap) {
+					writeSurfaceFallback(net, cell, ctx, config, table, shiftedComponents);
+				}
 			}
 		}
 		// debug door/seam signs run LAST: a road write or a clear in this pass can
@@ -417,12 +420,108 @@ public final class RoadWriter {
 	private static final int[] SIDE_DX = {-1, 1, 0, 0};
 	private static final int[] SIDE_DZ = {0, 0, -1, 1};
 
+	/**
+	 * 2026-10-22: writes a structure ground (street fixture base or street
+	 * scenery such as farmland) at the solved walk level instead of a road.
+	 *
+	 * <p>The vanilla y=0 block of every piece on a claimed column was suppressed,
+	 * so the structure ground would otherwise be a hole. The overlap unit is
+	 * flat and even; its solved level is the surface both roads meet. The
+	 * source template's above-ground blocks (crops, the lamp base, ...) move by
+	 * the same whole-block delta, per the user's "non-ground blocks move with
+	 * the surface" decision.
+	 */
+	private static void writeGroundOverlapCell(RoadCell cell, VpsGenContext ctx, int[][] buildingBoxes,
+			Map<Long, Integer> vanillaGroundY) {
+		Block ground = VpsCompat.blockById(cell.groundBlock);
+		if (ground == null) {
+			return;
+		}
+		int targetY = RoadWritePolicy.roadBlockY(cell.solvedP, false);
+		if (targetY < ctx.getMinY() || targetY > ctx.getMaxY()
+				|| RoadWritePolicy.insideBuildingAt(buildingBoxes, cell.x, targetY, cell.z)) {
+			return;
+		}
+		int oldY = cell.groundOldBlockY;
+		if (oldY == RoadCell.GROUND_Y_UNKNOWN) {
+			Integer recorded = vanillaGroundY == null ? null
+					: vanillaGroundY.get(RoadCell.packedXZ(cell.x, cell.z));
+			oldY = recorded != null ? recorded : cell.baseP / 2;
+		}
+		int dy = targetY - oldY;
+		if (dy != 0) {
+			// Clear the old ground first: a block moving down by one lands on
+			// this exact position, so clearing afterwards would erase it again.
+			if (oldY >= ctx.getMinY() && oldY <= ctx.getMaxY()) {
+				setBlock(ctx, cell.x, oldY, cell.z, Blocks.AIR.defaultBlockState());
+			}
+			boolean moved = false;
+			if (cell.groundAboveLocalYs != null) {
+				if (dy > 0) {
+					for (int k = cell.groundAboveLocalYs.length - 1; k >= 0; k--) {
+						moved |= moveGroundBlock(ctx, cell, buildingBoxes,
+								oldY + cell.groundAboveLocalYs[k], dy);
+					}
+				} else {
+					for (int k = 0; k < cell.groundAboveLocalYs.length; k++) {
+						moved |= moveGroundBlock(ctx, cell, buildingBoxes,
+								oldY + cell.groundAboveLocalYs[k], dy);
+					}
+				}
+			}
+			if (moved) {
+				VpsPipeline.GROUND_OVERLAP_MOVED_UNITS.incrementAndGet();
+			}
+		}
+		// Support below the surface: dirt, exactly like the seat writer. This
+		// keeps the structure ground attached when the solve lifts it.
+		int groundTopY = ctx.groundSurfaceTopY(cell.x, cell.z, targetY);
+		for (int y = groundTopY - 1; y < targetY; y++) {
+			setBlockUnlessProtected(ctx, cell.x, y, cell.z, Blocks.DIRT.defaultBlockState(),
+					FEATURE_FILL_BLOCKS_SKIPPED);
+		}
+		setBlock(ctx, cell.x, targetY, cell.z, ground.defaultBlockState());
+		VpsPipeline.GROUND_OVERLAP_CELLS_WRITTEN.incrementAndGet();
+		VpsPipeline.ROAD_CELLS_WRITTEN.incrementAndGet();
+	}
+
+	private static boolean moveGroundBlock(VpsGenContext ctx, RoadCell cell, int[][] buildingBoxes,
+			int oldY, int dy) {
+		int newY = oldY + dy;
+		if (oldY < ctx.getMinY() || oldY > ctx.getMaxY()
+				|| newY < ctx.getMinY() || newY > ctx.getMaxY()) {
+			return false;
+		}
+		if (RoadWritePolicy.insideBuildingAt(buildingBoxes, cell.x, oldY, cell.z)
+				|| RoadWritePolicy.insideBuildingAt(buildingBoxes, cell.x, newY, cell.z)) {
+			return false;
+		}
+		BlockState state = ctx.blockState(cell.x, oldY, cell.z);
+		if (state.isAir()) {
+			return false;
+		}
+		setBlock(ctx, cell.x, newY, cell.z, state);
+		setBlock(ctx, cell.x, oldY, cell.z, Blocks.AIR.defaultBlockState());
+		VpsPipeline.GROUND_OVERLAP_BLOCKS_MOVED.incrementAndGet();
+		return true;
+	}
+
 	private static void writeCell(RoadNetwork net, RoadCell cell, VpsGenContext ctx, VillagePathSmoothedConfig config,
 			RoadMaterialTable table, Map<SideKey, SideFacts> sideFacts,
 			Set<Long> countedEdgeColumns, int[][] shiftedComponents,
-			int[][] buildingBoxes, int[][] doorFronts, java.util.BitSet threeWideMiddles, String village) {
+			int[][] buildingBoxes, java.util.Map<Long, Integer> vanillaGroundY,
+			int[][] doorFronts, java.util.BitSet threeWideMiddles, String village) {
 		int x = cell.x;
 		int z = cell.z;
+
+		// 2026-10-22: a road cell that overlaps a structure ground renders that
+		// ground at the solved level. The vanilla y0 block of every piece on the
+		// claimed column was suppressed, so the overlap surface has to be written
+		// here; the roads on both sides then meet the same flat unit.
+		if (cell.groundOverlap) {
+			writeGroundOverlapCell(cell, ctx, buildingBoxes, vanillaGroundY);
+			return;
+		}
 
 		// 2026-10-21: a house/street fixture base cell solves and pins the
 		// surrounding roads but is not a road column: the base itself (floor,
@@ -1165,8 +1264,11 @@ public final class RoadWriter {
 		// along the road = perpendicular to the kerb's side direction
 		int alongX = outZ - cellZ;
 		int alongZ = outX - cellX;
-		int capY = wallTop + 1;
-		if (capY > ctx.getMaxY()) {
+		// outward from the road = the wall's side direction
+		int sideX = outX - cellX;
+		int sideZ = outZ - cellZ;
+		int firstY = wallTop + 1;
+		if (firstY > ctx.getMaxY()) {
 			return;
 		}
 		for (int sign = -1; sign <= 1; sign += 2) {
@@ -1191,28 +1293,63 @@ public final class RoadWriter {
 			if (skyFacts == null || !RoadWritePolicy.kerbEndOpen(skyFacts.topmostY(), wallTop)) {
 				continue; // the sky cell still has terrain above the current wall top
 			}
-			// The cap belongs to the wall end column. Terrain and natural
-			// decorations win; our own persistent railing at the wall top is
-			// replaced by the cap and moves up with it.
-			if (RoadWritePolicy.insideBuildingAt(buildingBoxes, outX, capY, outZ)) {
-				continue;
+			// 2026-10-22 (user decision): the end turns upward like a normal
+			// probe-2-wrap-1 kerb. The cap stays on the wall's own end column
+			// (never the next road cell's side column) and wraps from wallTop+1
+			// to the probed terrain top of this column and its outward column.
+			int farX = outX + sideX;
+			int farZ = outZ + sideZ;
+			SideFacts ownFacts = sideFacts.computeIfAbsent(new SideKey(outX, outZ, roadTopBlockY),
+					k -> probeSideFacts(ctx, k.x(), k.z(), k.roadTopBlockY()));
+			SideFacts farFacts = sideFacts.computeIfAbsent(new SideKey(farX, farZ, roadTopBlockY),
+					k -> probeSideFacts(ctx, k.x(), k.z(), k.roadTopBlockY()));
+			int probeTopY = Integer.MIN_VALUE;
+			if (ownFacts != null) {
+				probeTopY = ownFacts.topmostY();
 			}
-			BlockState existing = ctx.blockState(outX, capY, outZ);
-			boolean ownRailing = existing.is(materials.leavesBlock)
-					&& existing.hasProperty(LeavesBlock.PERSISTENT)
-					&& existing.getValue(LeavesBlock.PERSISTENT);
-			if (ctx.isProtectedDecoration(outX, capY, outZ) && !ownRailing) {
-				FEATURE_KERB_BLOCKS_SKIPPED.incrementAndGet();
-				continue;
+			if (farFacts != null) {
+				probeTopY = Math.max(probeTopY, farFacts.topmostY());
 			}
-			if (!existing.isAir() && !existing.canBeReplaced() && !ownRailing
-					&& !existing.is(materials.kerbBlock)) {
-				continue;
+			int capTopY = Math.min(ctx.getMaxY(), Math.max(firstY, probeTopY));
+			boolean placed = false;
+			boolean runWrapped = false;
+			int runTopY = Integer.MIN_VALUE;
+			for (int y = firstY; y <= capTopY; y++) {
+				if (ctx.isProtectedDecoration(outX, y, outZ)) {
+					if (runWrapped) {
+						placeKerbRailing(ctx, outX, outZ, runTopY + 1, buildingBoxes, materials);
+					}
+					runWrapped = false;
+					runTopY = Integer.MIN_VALUE;
+					FEATURE_KERB_BLOCKS_SKIPPED.incrementAndGet();
+					continue;
+				}
+				boolean nearTerrain = y == firstY || ctx.hasCollisionOrFluid(outX, y, outZ);
+				boolean farTerrain = farFacts != null
+						&& !ctx.isProtectedDecoration(farX, y, farZ)
+						&& ctx.hasCollisionOrFluid(farX, y, farZ);
+				if (nearTerrain || farTerrain) {
+					runTopY = y;
+					if (!RoadWritePolicy.insideBuildingAt(buildingBoxes, outX, y, outZ)) {
+						setBlock(ctx, outX, y, outZ, materials.kerbBlock.defaultBlockState());
+						placed = true;
+						runWrapped = true;
+					}
+					continue;
+				}
+				if (runWrapped) {
+					placeKerbRailing(ctx, outX, outZ, runTopY + 1, buildingBoxes, materials);
+				}
+				runWrapped = false;
+				runTopY = Integer.MIN_VALUE;
 			}
-			setBlock(ctx, outX, capY, outZ, materials.kerbBlock.defaultBlockState());
-			VpsPipeline.KERBS_PLACED.incrementAndGet();
-			placeKerbRailing(ctx, outX, outZ, capY + 1, buildingBoxes, materials);
-			return; // one cap per wall end; both along-road directions share the column
+			if (runWrapped) {
+				placeKerbRailing(ctx, outX, outZ, runTopY + 1, buildingBoxes, materials);
+			}
+			if (placed) {
+				VpsPipeline.KERBS_PLACED.incrementAndGet();
+				return; // one cap per wall end; both along-road directions share the column
+			}
 		}
 	}
 

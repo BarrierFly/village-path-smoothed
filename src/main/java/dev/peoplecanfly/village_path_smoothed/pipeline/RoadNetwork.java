@@ -66,6 +66,51 @@ public final class RoadNetwork {
 	/** True on the T1.5 final solve: decor base groups may move as whole flat bodies. */
 	public boolean decorBaseGroupsMovable;
 
+	/**
+	 * 2026-10-22: one flat, vertically movable unit per source structure whose
+	 * ground columns overlap road cells. The unit contains only the ACTUAL
+	 * overlap cells of that structure; the structure ground is rendered at the
+	 * solved level and the surrounding road solves against the unit.
+	 */
+	public final List<GroundOverlapGroup> groundOverlapGroups = new ArrayList<>();
+
+	public static final class GroundOverlapGroup {
+		public final long key;
+		public final int[] cells;
+		public final boolean movable;
+
+		public GroundOverlapGroup(long key, int[] cells, boolean movable) {
+			this.key = key;
+			this.cells = cells;
+			this.movable = movable;
+		}
+	}
+
+	/**
+	 * A street-template y=0 column that is deliberately not road (farmland,
+	 * water, terracotta, ...). When another piece's road cell claims the same
+	 * column, the scenery ground is the surface the player must see and the
+	 * overlap cell is rewritten at the solved height.
+	 */
+	public static final class SceneryGround {
+		public final int pieceIndex;
+		public final String blockId;
+		/** World Y the template puts the y0 block at before gravity (fallback only). */
+		public final int templateGroundY;
+		/** Template block offsets above the ground block (0 = the ground). */
+		public final int[] aboveLocalYs;
+
+		public SceneryGround(int pieceIndex, String blockId, int templateGroundY, int[] aboveLocalYs) {
+			this.pieceIndex = pieceIndex;
+			this.blockId = blockId;
+			this.templateGroundY = templateGroundY;
+			this.aboveLocalYs = aboveLocalYs;
+		}
+	}
+
+	/** Scenery columns by packed XZ; the collector marks overlap cells from it. */
+	public final Map<Long, SceneryGround> streetSceneryGrounds = new HashMap<>();
+
 	/** One decor piece's full base footprint (cell indices into {@link #cells}). */
 	public static final class DecorBaseGroup {
 		public final int pieceIndex;
@@ -486,7 +531,46 @@ public final class RoadNetwork {
 		}
 
 		network.buildPlazaGroups(neighbors);
+		network.buildGroundOverlapGroups();
 		return network;
+	}
+
+	/** Group key prefixes so a scenery piece and a fixture piece never collide. */
+	public static long sceneryGroupKey(int pieceIndex) {
+		return 0x2000_0000_0000_0000L | (pieceIndex & 0xFFFF_FFFFL);
+	}
+
+	public static long fixtureGroupKey(int pieceIndex) {
+		return 0x1000_0000_0000_0000L | (pieceIndex & 0xFFFF_FFFFL);
+	}
+
+	/**
+	 * Rebuilds the flat units from the cells' {@code groundGroupKey}. Groups are
+	 * derived from the cells so a network rebuild (adding fixture bases) keeps
+	 * the unit membership without remapping stale cell indices.
+	 */
+	public void buildGroundOverlapGroups() {
+		groundOverlapGroups.clear();
+		Map<Long, List<Integer>> byKey = new HashMap<>();
+		Map<Long, Boolean> movableByKey = new HashMap<>();
+		for (RoadCell cell : cells) {
+			if (!cell.groundOverlap || cell.groundGroupKey == Long.MIN_VALUE) {
+				continue;
+			}
+			byKey.computeIfAbsent(cell.groundGroupKey, k -> new ArrayList<>()).add(cell.index);
+			movableByKey.merge(cell.groundGroupKey, cell.groundGroupMovable, (a, b) -> a && b);
+		}
+		for (Map.Entry<Long, List<Integer>> entry : byKey.entrySet()) {
+			List<Integer> group = entry.getValue();
+			group.sort(null);
+			int[] indices = new int[group.size()];
+			for (int i = 0; i < indices.length; i++) {
+				indices[i] = group.get(i);
+			}
+			groundOverlapGroups.add(new GroundOverlapGroup(entry.getKey(), indices,
+					movableByKey.getOrDefault(entry.getKey(), false)));
+		}
+		groundOverlapGroups.sort(Comparator.comparingLong(g -> g.key));
 	}
 
 	/**

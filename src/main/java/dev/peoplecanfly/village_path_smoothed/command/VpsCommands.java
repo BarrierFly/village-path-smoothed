@@ -268,9 +268,9 @@ public final class VpsCommands {
 						+ "  suppression: vanilla road blocks dropped %d (passed through %d)%n"
 						+ "  buildings  : T1.5 applied %d (no-server %d), components %d, shifted %d, no-road %d, overlap guards %d, second align moved %d, floating %d, buried %d, re-solved after shift %d (T15 resolve delta cells %d, door targets changed %d), road cells yielded %d, main doors %d (no entrance %d, non-door lower halves skipped %d, normal ambiguous %d), door targets excluded seat/inside/behind %d/%d/%d, no front %d, front fallback %d, door anchor offsets 0/1/2/3/4+ %d/%d/%d/%d/%d, door signs placed %d (no road %d), seam signs %d computed / %d placed (step violations %d, no-BE %d), base plane mismatch %d, baseY decor %d, align fallback %d, door dir mismatch %d%n"
 						+ "  centres    : town-centre plaza cells %d (non-road cells skipped %d), vanilla-rendered %d, groups %d (shifted %d, pieces %d), plaza guards %d, decor seats %d (written %d, decor pieces moved %d, probe dropped %d, write fallback %d, edge clamped %d)%n"
-						+ "  decor      : pieces %d, actual blocks %d, base groups %d (cells %d), settled %d (clamped %d), protected writes skipped %d (pile %d), cells pinned %d, seat sync mismatches %d, road mismatches %d (worst %d, isolated pieces %d, isolated seats %d), base restored %d, fixture base cells %d, resolve failed %d%n"
+						+ "  decor      : pieces %d, actual blocks %d, base groups %d (cells %d), settled %d (clamped %d), protected writes skipped %d (pile %d), cells pinned %d, seat sync mismatches %d, road mismatches %d (worst %d, isolated pieces %d, isolated seats %d), base restored %d, fixture base cells %d, fixture overlap cells %d, ground overlap written %d (units moved %d, blocks moved %d), resolve failed %d%n"
 						+ "  model gap  : written surface vs real terrain: mean %s half units, worst %d, over threshold %d, cut below terrain %d, fill above %d%n"
-						+ "  misc       : floor-garbage probes %d, probe boundary switches %d, probe mismatch columns %d, y0 non-solid skipped %d, y0 scenery skipped %d, villager freeze: %s (brain ticks skipped: %d)",
+						+ "  misc       : floor-garbage probes %d, probe boundary switches %d, probe mismatch columns %d, y0 non-solid skipped %d, y0 scenery skipped %d, scenery overlap cells %d, villager freeze: %s (brain ticks skipped: %d)",
 				solved,
 				solved > 0 ? nanos / 1_000_000.0 / solved : 0.0,
 				VpsPipeline.ROAD_CELLS_WRITTEN.get(),
@@ -389,6 +389,10 @@ public final class VpsCommands {
 				VpsPipeline.DECOR_SEATS_ISOLATED.get(),
 				RoadWriter.DECOR_BASE_RESTORED.get(),
 				RoadWriter.FIXTURE_BASE_CELLS.get(),
+				VpsPipeline.FIXTURE_BASE_OVERLAP_CELLS.get(),
+				VpsPipeline.GROUND_OVERLAP_CELLS_WRITTEN.get(),
+				VpsPipeline.GROUND_OVERLAP_MOVED_UNITS.get(),
+				VpsPipeline.GROUND_OVERLAP_BLOCKS_MOVED.get(),
 				VpsPipeline.DECOR_RESOLVE_FAILED.get(),
 				RoadWriter.DEVIATION_CELLS.get() > 0
 					? String.format("%.1f", (double) RoadWriter.DEVIATION_SUM.get() / RoadWriter.DEVIATION_CELLS.get())
@@ -402,6 +406,7 @@ public final class VpsCommands {
 				RoadCollector.PROBE_MISMATCH_COLUMNS.get(),
 				RoadCollector.TEMPLATE_Y0_NON_SOLID_SKIPPED.get(),
 				RoadCollector.TEMPLATE_Y0_SCENERY_SKIPPED.get(),
+				RoadCollector.GROUND_OVERLAP_CELLS.get(),
 				VillagePathSmoothedConfig.get().debug.disableVillagerBrains ? "ACTIVE" : "INACTIVE",
 				VpsPipeline.DEBUG_VILLAGER_BRAIN_SKIPS.get());
 	}

@@ -86,6 +86,27 @@ public final class RoadCell {
 	 */
 	public boolean fixtureBase;
 	/**
+	 * 2026-10-22: the road cell overlaps a structure ground column (a street
+	 * fixture base or a street-template scenery block such as farmland). The
+	 * cell is solved as one flat, vertically movable unit with the structure and
+	 * the writer renders the structure ground instead of a road: the vanilla
+	 * road layer is suppressed for the claimed column, so without this the
+	 * surface would be a hole and the roads on both sides would not meet it.
+	 */
+	public boolean groundOverlap;
+	/** Block id of the structure ground rendered at the solved level. */
+	public String groundBlock;
+	/** Ground block Y the structure rendered at, or {@link #GROUND_Y_UNKNOWN}. */
+	public int groundOldBlockY;
+	/** Source template block offsets above the ground block (0 = the ground). */
+	public int[] groundAboveLocalYs;
+	/** Groups cells of one source structure; {@link RoadNetwork} builds the unit. */
+	public long groundGroupKey = Long.MIN_VALUE;
+	/** True when the overlap unit may move as a whole (T1.5 / scenery). */
+	public boolean groundGroupMovable;
+	/** Sentinel for a scenery ground whose vanilla Y is recorded at write time. */
+	public static final int GROUND_Y_UNKNOWN = Integer.MIN_VALUE;
+	/**
 	 * R1-4 / seam reason: set when {@code settleSeats} had to clamp a seat's
 	 * solved level at the world edge, so the decor piece could not reach the pin.
 	 * Diagnostic only; the seam signs name it as a known smoothing blocker.

@@ -393,6 +393,24 @@ Rules:
     covered by the decor footprint/pin above; the void seats themselves stay
     out of the mask (audit §8, user decision 5). The savanna `]` NBT typo is
     not fixed (the parser ignores it, audit §10.1).
+- **A structure ground that shares a column with a road cell is solved as one
+  flat unit and rendered by the writer (2026-10-22).** The vanilla y=0 block of
+  a claimed column is suppressed for every piece, so an overlap between a road
+  cell and a street fixture base or a street-template scenery column
+  (`streetScenery`: farmland, water, terracotta, ...) would otherwise be a
+  hole. Only the **actual overlap cells of one source structure** join the
+  unit (`RoadCell#groundGroupKey`; `RoadNetwork#groundOverlapGroups`), starting
+  from the structure ground height. The unit is flat and (movable units) even;
+  T1.5 fixture bases may move as a whole, T5 fixture bases are physically fixed
+  (`groundGroupMovable=false`), and writer-rendered scenery units still follow
+  the solve. The writer renders the structure ground instead of a road at the
+  solved level and moves the source template's above-ground blocks (crops, the
+  fixture base) by the same whole-block delta; the T5 real ground height is
+  recorded from the gravity processor (`VpsPlacementContext#recordVanillaGround`)
+  because the suppressed y0 block itself is gone. Do not pin these cells to the
+  terrain probe instead - that leaves the two road sides at different heights.
+  `fixture overlap cells`, `scenery overlap cells` and `ground overlap written
+  (units moved, blocks moved)` in `/vps stats` are the observation set.
 - **The polish never moves a physically fixed cell, but it DOES move a movable
   unit before placement (2026-10-15, reworked 2026-10-17).** A T5 decor-seat pin
   and a T5/phase-2 plaza pin are immovable: the free side takes the correction
@@ -519,15 +537,16 @@ Rules:
   judged on the **next side cell alone** (the sky-visible cell `out + T`,
   user decision 2026-10-21): it is open when no terrain exists above the
   current wall top (`skyFacts.topmostY() <= wallTop`). The cap is written on
-  the **wall's own end column** (`out`), one layer above `wallTop`, with the
-  leaf railing on top; it is never written into `out + T`, which is the next
-  road cell's side column and its own drop-railing target (writing there was
-  the 2026-10-21 leaf-railing regression). The cap is a single column, not a
-  probe-2 wall; probe-2 remains the rule for the kerb layers below. It never
-  re-fills the column from the road, an end wall (the road's forward side)
-  never grows a cross-road column, an actual road end stays untouched
-  (README: the road must actually continue), and the road's ceiling does not
-  bound the cap because the cap is outside the road column.
+  the **wall's own end column** (`out`) and turns upward from `wallTop + 1`
+  with the same **probe-2-wrap-1** rule as a normal kerb (2026-10-22): wrap
+  every layer up to the probed terrain top of `out` and its outward neighbour,
+  with the leaf railing on top of each wrapped run. It is never written into
+  `out + T`, which is the next road cell's side column and its own
+  drop-railing target (writing there was the 2026-10-21 leaf-railing
+  regression). It never re-fills the column from the road, an end wall (the
+  road's forward side) never grows a cross-road column, an actual road end
+  stays untouched (README: the road must actually continue), and the road's
+  ceiling does not bound the cap because the cap is outside the road column.
 - **Only the lowest block of the ceiling is lined, and only above the road
   (user decision 2026-10-15, restricted 2026-10-17).**
   `RoadWriter#lineCeiling` probes only the road's own column with the

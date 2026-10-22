@@ -65,6 +65,7 @@ public abstract class MixinGravityProcessor {
 	//$$ 	}
 	//$$ 	int templateY = templateRelativePos.getY();
 	//$$ 	BlockPos worldPos = processedBlockInfo.pos();
+	//$$ 	VpsPlacementContext.recordVanillaGround(templateY, worldPos.getX(), worldPos.getY(), worldPos.getZ());
 	//$$ 	if (VpsPlacementContext.decide(templateY, worldPos.getX(), worldPos.getZ()) == PlacementPolicy.Decision.SUPPRESS) {
 	//$$ 		cir.setReturnValue(null);
 	//$$ 	}
@@ -85,6 +86,7 @@ public abstract class MixinGravityProcessor {
 	//$$ 	}
 	//$$ 	int templateY = originalBlockInfo.pos().getY();
 	//$$ 	BlockPos worldPos = processedBlockInfo.pos();
+	//$$ 	VpsPlacementContext.recordVanillaGround(templateY, worldPos.getX(), worldPos.getY(), worldPos.getZ());
 	//$$ 	if (VpsPlacementContext.decide(templateY, worldPos.getX(), worldPos.getZ()) == PlacementPolicy.Decision.SUPPRESS) {
 	//$$ 		cir.setReturnValue(null);
 	//$$ 	}
@@ -105,6 +107,7 @@ public abstract class MixinGravityProcessor {
 		}
 		int templateY = originalBlockInfo.pos.getY();
 		BlockPos worldPos = processedBlockInfo.pos;
+		VpsPlacementContext.recordVanillaGround(templateY, worldPos.getX(), worldPos.getY(), worldPos.getZ());
 		if (VpsPlacementContext.decide(templateY, worldPos.getX(), worldPos.getZ()) == PlacementPolicy.Decision.SUPPRESS) {
 			cir.setReturnValue(null);
 		}

@@ -110,7 +110,20 @@ water use scaffolding, and dangerous edges get leaf railings.
    corner lamp base smooth when its west road is half a block lower and the
    other three are one block higher.
    Diagonal/lawn seats are therefore isolated, not height-linked.
-4. **Kerbs, kerb railings and the ceiling / 路肩包边、包边护栏与包顶** — each
+4. **Structure-ground overlaps / 结构地面与道路重叠** — when a road cell and a
+   street structure's ground (a fixture base or street-template farmland / water
+   / terracotta scenery) claim the same column, the vanilla y=0 block of the
+   claimed column is suppressed. The overlap cells of one source structure form
+   one **flat, vertically movable unit** in the solve, starting from the
+   structure ground's height. The writer renders that structure ground at the
+   solved level instead of a road, and moves the template's above-ground blocks
+   (crops, the fixture base) with the same whole-block delta, so both roads and
+   the structure surface still meet. On T1.5 a fixture base may move as a whole;
+   on T5 the fixture base is physically fixed (the scenery ground is
+   writer-rendered and still follows the solve). `fixture overlap cells`,
+   `scenery overlap cells` and `ground overlap written (units moved, blocks
+   moved)` in `/vps stats` are the observation set.
+5. **Kerbs, kerb railings and the ceiling / 路肩包边、包边护栏与包顶** — each
    side is probed **from the road block's own height**, and the two kerb columns
    are probed together ("探2包1"):
    - the **kerb wall** probes the first **and** the second cell outward, but
@@ -141,13 +154,14 @@ water use scaffolding, and dangerous edges get leaf railings.
    - the **kerb end cap** closes the wall's along-road end where the road keeps
      going. The end is judged on the **next side cell alone** (the sky-visible
      cell): it is open when there is no terrain above the current wall top
-     (`skyFacts.topmostY() <= wallTop`). The cap is written on the **wall's own
-     end column**, one layer above the wall top, with the leaf railing on top;
-     it is never written into the next road cell's side column, which is that
-     cell's own drop-railing target. The cap is a single column, not a probe-2
-     wall. It never re-fills the column from the road, an end wall across the
-     road gets no sideways column, and an actual road end (no next road cell)
-     is untouched;
+      (`skyFacts.topmostY() <= wallTop`). The cap is written on the **wall's own
+      end column**, and turns upward from `wallTop + 1` with the same
+      **probe-2-wrap-1** rule as a normal kerb: it wraps every layer up to the
+      probed terrain top of that column and its outward neighbour, with the leaf
+      railing on top of each wrapped run. It is never written into the next road
+      cell's side column, which is that cell's own drop-railing target. It never
+      re-fills the column from the road, an end wall across the road gets no
+      sideways column, and an actual road end (no next road cell) is untouched;
    - the **drop railing** (the original leaf railing): scan **down** to the first
      standable ground. When the road is **at least 2 whole blocks** above it,
      persistent leaves (plains `oak`, desert/savanna `acacia`, snowy/taiga
@@ -168,7 +182,7 @@ water use scaffolding, and dangerous edges get leaf railings.
 
    Every road cell dresses its own edges: a column shared by a low and a high
    road gets the low road's kerb AND the high road's railing (2026-10-15).
-5. **Directional terrain probes / 双向地形探测** — the fill/cut decision is made
+6. **Directional terrain probes / 双向地形探测** — the fill/cut decision is made
    per cell too, never from the heightmap top: a **downward** probe finds the
    ground the road is built up from (fill versus bridge deck), while the clear
    end is re-read at write time as the highest block with a collision or a fluid
@@ -179,7 +193,7 @@ water use scaffolding, and dangerous edges get leaf railings.
    for the model-vs-terrain deviation statistics and the floating/buried guard,
    which are observations
    only.
-6. **Scaffolding water crossings / 过水段脚手架** — every column with water at or
+7. **Scaffolding water crossings / 过水段脚手架** — every column with water at or
    just below the road block becomes `scaffolding` with `waterlogged=true` when
    water is present, `distance=0` when the block below fully supports it and
    `distance=1` otherwise, `bottom` per the block below. The scaffold **is the
@@ -189,7 +203,7 @@ water use scaffolding, and dangerous edges get leaf railings.
    above it — that half step is the accepted cost of a visible bridge. The three
    paths (water at the road block / water below / dry) are counted separately in
    `/vps stats`.
-7. **Non-terrain decorations are never touched / 非地形装饰一律保留** — the writer
+8. **Non-terrain decorations are never touched / 非地形装饰一律保留** — the writer
    classifies every block it is about to replace against vanilla's natural
    terrain tags. Logs, leaves, plants, crops, vines, furniture, lamps and any
    unknown/modded block count as protected decoration: the road block, support
@@ -433,8 +447,10 @@ Two things are worth spelling out:
     to vanilla, which made the mod look like it did nothing in real worlds.
 12. **Street scenery is deliberately not dressed** — farmland, water channels
     and terracotta trim inside a street template are not road (decision
-    2026-10-20). They keep their vanilla blocks and get no kerb or railing, so
-    a road cut beside a field can show a raw edge by design. Decor and piles are
+    2026-10-20). They get no kerb or railing, so a road cut beside a field can
+    show a raw edge by design. Where a road cell actually overlaps one of those
+    grounds, the 2026-10-22 overlap unit rewrites the ground at the solved
+    height instead of leaving the suppressed column empty. Decor and piles are
     protected by their actual blocks; a multi-block decor's T5/T1.5 pin can
     still force a counted step where the surrounding free road cannot meet the
     rigid base (`decor` line in `/vps stats`).
@@ -469,6 +485,13 @@ Two things are worth spelling out:
   广场/街件/房屋的土径均不改；**路面掩膜只取与街道 jigsaw 连接点连通的街面**
   （2026-10-20 决策）：savanna 农田/水渠、desert 陶瓦镶边视为街面景物，不进掩膜、
   保留原版方块，writer 也不向其包边/护栏；连接点下的普通 dirt 仍算路，接缝不破洞；
+  **结构地面与路格重叠**（2026-10-22）：同一列既有路格又有街件底座/街道模板农田景物时，
+  被认领列的 vanilla y=0 方块本就被抑制；该来源结构的实际重叠列组成一个**可整体升降的
+  平单元**参与求解，起点取结构地面高度。writer 在解出高度写结构地面（不是路面），并按
+  同一整格位移带上模板中地面以上的作物/底座等方块，使两侧道路与结构地面仍平滑相接；
+  T1.5 街件底座可整体移动，T5 街件底座固定（景物地面由 writer 重写，仍随求解）。
+  `/vps stats` 的 `fixture overlap cells`、`scenery overlap cells` 与
+  `ground overlap written (units moved, blocks moved)` 是观测集；
   地形追线候选带（无独立参考剖面，偏差直接对地形量，
   接缝带向区域侧延伸保证合法坡道可达）；路肩包边（**探2包1**：向外探测两格、只包
   第1格；写入时重读最高碰撞/液体方块，保留侧比路高 >1 格阈值，逐层只要两格中任一格
@@ -478,8 +501,9 @@ Two things are worth spelling out:
   y=0 足迹（井口/喷泉水格、jigsaw 格，均非路格）不向里包边**，避免把中心水井糊住，
   广场外边界不受影响；包边墙沿道路方向（且道路确实继续）的末端，**只按外侧那格（能看到天空的格）判定露天**：
   该格在当前墙顶以上完全无地形时（`skyFacts.topmostY() <= wallTop`）才收口；包边**写在墙端本列**
-  （不是外侧那格），从墙顶+1 向上补一层，顶上放包边护栏。外侧那格是下一道路格自己的落差护栏目标，
-  不再被端帽占用；端帽是一列，不是“探2包1”墙。实际道路尽头（没有下一格路）暂不处理；包边护栏
+  （不是外侧那格），从墙顶+1 起按常规“探2包1”向上包到本列与外侧探测列的地形顶端，每段顶端放
+  包边护栏。外侧那格是下一道路格自己的落差护栏目标，不再被端帽占用。实际道路尽头（没有下一格路）
+  暂不处理；包边护栏
   （每个连续包边段顶端——地形顶端和空隙顶端——放一层树叶，不进入房屋；因顶板或世界
   边界被截断的段不放截断顶叶）；包顶（仍只探测路面本列，改用碰撞/液体判据；清格终点
   写入时重读，默认上限 4；**只处理顶板最低一格**，其上厚度保持原样；最低格若是非地形

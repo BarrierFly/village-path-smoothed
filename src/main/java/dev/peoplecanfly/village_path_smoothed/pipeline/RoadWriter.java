@@ -34,6 +34,7 @@ import net.minecraft.world.level.block.state.properties.RotationSegment;
 import net.minecraft.world.level.block.state.properties.SlabType;
 import net.minecraft.world.level.levelgen.structure.BoundingBox;
 
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.HashMap;
 import java.util.Map;
@@ -173,6 +174,9 @@ public final class RoadWriter {
 	public static final AtomicLong CEILING_END_ROAD_CELLS = new AtomicLong();
 	public static final AtomicLong CEILING_END_ALONG_CELLS = new AtomicLong();
 	public static final AtomicLong CEILING_END_OPEN_CELLS = new AtomicLong();
+	/** Ceiling-end faces that actually wrapped upward, and the blocks they placed. */
+	public static final AtomicLong CEILING_END_WRAPS = new AtomicLong();
+	public static final AtomicLong CEILING_END_BLOCKS = new AtomicLong();
 	/**
 	 * Kerb railings (user decision 2026-10-17): leaf layers placed on top of a
 	 * kerb run, including the top of every run separated by an air gap, but not
@@ -703,7 +707,6 @@ public final class RoadWriter {
 		}
 
 		int ceilingBottomY = RoadWritePolicy.NO_CEILING;
-		int kerbCeilingBottomY = RoadWritePolicy.NO_CEILING;
 		if (config.roadSmoothing.enabled) {
 			// The walk surface and the support fill are separate materials now:
 			// the non-desert surface is mud bricks, while the fill below it stays
@@ -791,24 +794,18 @@ public final class RoadWriter {
 			// beyond the cap keeps the kerb material and gets a hanging lantern on
 			// the middle cell instead. Plaza cells never reach here (their early
 			// return above protects the fountain).
-			kerbCeilingBottomY = ceilingBottomY;
 			if (config.kerb.enabled && !aboveWater) {
 				lineCeiling(ctx, x, z, clearTop, highestBlockY, config.roadSmoothing.maxClearLayers,
 						ceilingBottomY, threeWideMiddles.get(cell.index), buildingBoxes, materials);
-				// 2026-10-22 (user decision): where the ceiling ends along the
-				// road, the side kerb wall is NOT bounded by the ceiling: it keeps
-				// the normal probe-2-wrap-1 rule and climbs the exposed cut face
-				// to the terrain top. Probe-2 is always into the cliff (the wall
-				// column and one cell farther outward), never the open along-road
-				// cell.
-				if (ceilingBottomY != RoadWritePolicy.NO_CEILING) {
-					try {
-						if (isCeilingEndAlong(ctx, net, cell)) {
-							kerbCeilingBottomY = RoadWritePolicy.NO_CEILING;
-						}
-					} catch (Throwable t) {
-						// a cosmetic probe failure must not fail the cell
-					}
+				// 2026-10-22 (user decision): at the along-road end of the
+				// ceiling, the ceiling's end turns upward into a kerb face. The
+				// road column itself is wrapped from above the ceiling layer to
+				// its terrain top; probe-2's second cell is one step INTO the
+				// hill body along the road, never the open along-road cell.
+				try {
+					wrapCeilingEnd(ctx, net, cell, ceilingBottomY, buildingBoxes, materials);
+				} catch (Throwable t) {
+					// cosmetic: an unreadable neighbour must not fail the cell
 				}
 			}
 		}
@@ -816,7 +813,7 @@ public final class RoadWriter {
 
 		// ---- kerbs and railings on side edges (5.5)
 		applyKerbsAndRailings(net, cell, ctx, config, materials, roadTopBlockY, writtenWalkSurface2,
-				sideFacts, countedEdgeColumns, buildingBoxes, doorFronts, kerbCeilingBottomY);
+				sideFacts, countedEdgeColumns, buildingBoxes, doorFronts, ceilingBottomY);
 	}
 
 	/**
@@ -871,18 +868,29 @@ public final class RoadWriter {
 	}
 
 	/**
-	 * 2026-10-22 (user decision): true when this road cell is at the along-road
-	 * end of its ceiling. The side kerb wall is then allowed above the ceiling
-	 * and climbs the exposed cut face with its normal probe-2 rule; probe-2 is
-	 * always into the cliff (the wall column plus one cell farther outward), not
-	 * the open along-road cell.
+	 * 2026-10-22 (user decision): at the along-road end of the ceiling, the
+	 * ceiling's end turns upward into a kerb face. The road column itself is
+	 * wrapped from one above the ceiling layer to its terrain top.
+	 *
+	 * <p>Probe-2-wrap-1 is kept: the first cell is the road/face column, the
+	 * second is one cell **into the hill along the road** (the cell on the
+	 * opposite side of the open end), not the open along-road cell. Only a layer
+	 * where either probed cell has a collision/fluid is wrapped; a layer with
+	 * both air stays air. A leaf railing goes on each wrapped run top.
 	 */
-	private static boolean isCeilingEndAlong(VpsGenContext ctx, RoadNetwork net, RoadCell cell) {
+	private static void wrapCeilingEnd(VpsGenContext ctx, RoadNetwork net, RoadCell cell,
+			int ceilingBottomY, int[][] buildingBoxes, RoadMaterialTable.StyleMaterials materials) {
+		if (ceilingBottomY == RoadWritePolicy.NO_CEILING) {
+			return;
+		}
 		CEILING_END_CELLS.incrementAndGet();
+		int topY = ctx.highestTerrainCollisionOrFluidY(cell.x, cell.z, ceilingBottomY + 1);
+		if (topY <= ceilingBottomY) {
+			return; // no terrain above the ceiling to wrap
+		}
+		// Second probe = one step INTO the hill, opposite each open along-road end.
+		java.util.List<int[]> farCells = new java.util.ArrayList<>(2);
 		boolean inArm = false;
-		// Along-road directions come from the arm slices: the sweep axis is the
-		// road direction. Check both ways, whether or not a road cell is there,
-		// so a tunnel mouth at the actual road end is included.
 		for (RoadNetwork.Arm arm : net.arms) {
 			boolean found = false;
 			for (int[] slice : arm.slices) {
@@ -905,27 +913,69 @@ public final class RoadWriter {
 			int dz = arm.sweepAxis == 0 ? 1 : 0;
 			for (int sign = -1; sign <= 1; sign += 2) {
 				if (isOpenAlong(ctx, net, cell.x + sign * dx, cell.z + sign * dz, cell)) {
-					CEILING_END_OPEN_CELLS.incrementAndGet();
-					return true;
+					farCells.add(new int[]{cell.x - sign * dx, cell.z - sign * dz});
 				}
 			}
-			return false;
+			break;
 		}
-		// A junction/region has no single along axis: keep the safe rule that a
-		// continuing road cell with open sky marks the end.
-		for (int dir = 0; dir < 4; dir++) {
-			int nx = cell.x + SIDE_DX[dir];
-			int nz = cell.z + SIDE_DZ[dir];
-			if (net.cellAt(nx, nz) < 0) {
+		if (!inArm) {
+			// Junction/region fallback: only a continuing road cell with open sky
+			// marks the end; the into-hill probe is the opposite cell.
+			for (int dir = 0; dir < 4; dir++) {
+				int nx = cell.x + SIDE_DX[dir];
+				int nz = cell.z + SIDE_DZ[dir];
+				if (net.cellAt(nx, nz) < 0) {
+					continue;
+				}
+				CEILING_END_ROAD_CELLS.incrementAndGet();
+				if (isOpenAlong(ctx, net, nx, nz, cell)) {
+					farCells.add(new int[]{cell.x - SIDE_DX[dir], cell.z - SIDE_DZ[dir]});
+				}
+			}
+		}
+		if (farCells.isEmpty()) {
+			return;
+		}
+		CEILING_END_OPEN_CELLS.incrementAndGet();
+		int last = Integer.MIN_VALUE;
+		boolean runWrapped = false;
+		boolean placed = false;
+		for (int y = ceilingBottomY + 1; y <= topY; y++) {
+			if (ctx.isProtectedDecoration(cell.x, y, cell.z)
+					|| RoadWritePolicy.insideBuildingAt(buildingBoxes, cell.x, y, cell.z)) {
+				if (runWrapped) {
+					placeKerbRailing(ctx, cell.x, cell.z, last + 1, buildingBoxes, materials);
+				}
+				break;
+			}
+			boolean nearTerrain = ctx.hasCollisionOrFluid(cell.x, y, cell.z);
+			boolean farTerrain = false;
+			for (int[] far : farCells) {
+				if (!ctx.isProtectedDecoration(far[0], y, far[1])
+						&& ctx.hasCollisionOrFluid(far[0], y, far[1])) {
+					farTerrain = true;
+					break;
+				}
+			}
+			if (!nearTerrain && !farTerrain) {
+				if (runWrapped) {
+					placeKerbRailing(ctx, cell.x, cell.z, last + 1, buildingBoxes, materials);
+				}
+				runWrapped = false;
 				continue;
 			}
-			CEILING_END_ROAD_CELLS.incrementAndGet();
-			if (isOpenAlong(ctx, net, nx, nz, cell)) {
-				CEILING_END_OPEN_CELLS.incrementAndGet();
-				return true;
-			}
+			setBlock(ctx, cell.x, y, cell.z, materials.kerbBlock.defaultBlockState());
+			last = y;
+			runWrapped = true;
+			placed = true;
+			CEILING_END_BLOCKS.incrementAndGet();
 		}
-		return false;
+		if (runWrapped) {
+			placeKerbRailing(ctx, cell.x, cell.z, last + 1, buildingBoxes, materials);
+		}
+		if (placed) {
+			CEILING_END_WRAPS.incrementAndGet();
+		}
 	}
 
 	/**

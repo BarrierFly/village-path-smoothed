@@ -564,13 +564,14 @@ Rules:
   ceiling block is a protected decoration, the whole ceiling treatment (lining,
   glowstone, lantern, chain) is skipped. **Ceiling end (2026-10-22):** where the
   ceiling ends along the road (arm sweep axis) and the cell one step along it is
-  open sky - including the cell just past the road end - the **side kerb wall**
-  is no longer bounded by the ceiling: it keeps its normal **probe-2-wrap-1**
-  rule (first cell = the wall column, second = one cell farther **into the
-  cliff**) and climbs the exposed cut face to the lateral terrain top, with the
-  usual leaf railing at each run top. Probe-2 is never aimed back at the open
-  along-road cell. A layer where both probed cells are air stays air; the wall
-  end cap follows the same rule, so it can never place floating cobblestone.
+  open sky - including the cell just past the road end - the **ceiling's end
+  turns upward into a kerb face in the road column**: wrap from one above the
+  ceiling layer to that column's terrain top, with the usual leaf railing at
+  each run top. The normal **probe-2-wrap-1** rule applies: first cell = the
+  road/face column, second = one cell **into the hill along the road** (the cell
+  opposite the open end), never the open along-road cell. A layer where both
+  probed cells are air stays air. The wall end cap follows the same probe rule,
+  so it cannot place floating cobblestone either.
   `RoadNetwork#threeWideMiddleCells` implements the straight-3-wide test on the
   arm slices. Plaza cells never reach the ceiling code - the run above a plaza
   platform is the fountain.

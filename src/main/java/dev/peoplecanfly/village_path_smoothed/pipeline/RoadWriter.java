@@ -165,6 +165,19 @@ public final class RoadWriter {
 	 */
 	public static final AtomicLong ROOF_LINED_BLOCKS = new AtomicLong();
 	/**
+	 * 2026-10-22: ceiling-end cells whose exposed cut face was wrapped upward
+	 * from the ceiling layer to the terrain top (the tunnel-mouth face).
+	 */
+	public static final AtomicLong CEILING_END_WRAPS = new AtomicLong();
+	/** Blocks placed by those ceiling-end upward wraps. */
+	public static final AtomicLong CEILING_END_BLOCKS = new AtomicLong();
+	/** Ceiling cells seen / with terrain above the ceiling / with a road neighbour / with an open road neighbour. */
+	public static final AtomicLong CEILING_END_CELLS = new AtomicLong();
+	public static final AtomicLong CEILING_END_TOP_CELLS = new AtomicLong();
+	public static final AtomicLong CEILING_END_ROAD_CELLS = new AtomicLong();
+	public static final AtomicLong CEILING_END_ALONG_CELLS = new AtomicLong();
+	public static final AtomicLong CEILING_END_OPEN_CELLS = new AtomicLong();
+	/**
 	 * Kerb railings (user decision 2026-10-17): leaf layers placed on top of a
 	 * kerb run, including the top of every run separated by an air gap, but not
 	 * where the run was artificially cut off at the world edge.
@@ -784,6 +797,15 @@ public final class RoadWriter {
 			if (config.kerb.enabled && !aboveWater) {
 				lineCeiling(ctx, x, z, clearTop, highestBlockY, config.roadSmoothing.maxClearLayers,
 						ceilingBottomY, threeWideMiddles.get(cell.index), buildingBoxes, materials);
+				// 2026-10-22 (user decision): where a ceiling ends along the road
+				// and the next road cell is open sky, the exposed cut face turns
+				// upward: wrap this road column from the ceiling layer to its
+				// terrain top with the kerb material, like a normal kerb.
+				try {
+					wrapCeilingEnd(ctx, net, cell, ceilingBottomY, buildingBoxes, materials);
+				} catch (Throwable t) {
+					// the end face is cosmetic: an unreadable neighbour must not fail the cell
+				}
 			}
 		}
 		VpsPipeline.ROAD_CELLS_WRITTEN.incrementAndGet();
@@ -809,7 +831,9 @@ public final class RoadWriter {
 	 *       lantern is placed in the clear cap cell, connected to the roof by an
 	 *       iron chain - no glowstone.</li>
 	 * </ul>
-	 * A building block is never replaced.
+	 * A building block is never replaced. The along-road end of a ceiling is the
+	 * exception: {@link #wrapCeilingEnd} turns the exposed mouth face upward to
+	 * the terrain top.
 	 */
 	private static void lineCeiling(VpsGenContext ctx, int x, int z, int clearTop, int highestBlockY,
 			int maxClearLayers, int ceilingBottomY, boolean middle, int[][] buildingBoxes,
@@ -840,6 +864,118 @@ public final class RoadWriter {
 			// Natural cave roof above the clear cap: hang the lantern from it.
 			placeCeilingLantern(ctx, x, z, clearTop + 1, ceilingBottomY, buildingBoxes);
 		}
+	}
+
+	/**
+	 * 2026-10-22 (user decision): at the along-road end of a ceiling, where the
+	 * next road cell is open sky, the exposed tunnel-mouth face turns upward.
+	 * The current road column is wrapped from one layer above the ceiling to its
+	 * terrain top with the kerb material, with a leaf railing on top, exactly
+	 * like a normal kerb run. The ceiling layer itself keeps its glowstone/kerb
+	 * lining; the wrap starts above it.
+	 *
+	 * <p>Only a neighbouring ROAD cell counts as the along-road direction, so a
+	 * lateral open edge keeps its ordinary side kerb. Protected decorations and
+	 * building boxes break the upward run instead of being replaced.
+	 */
+	private static void wrapCeilingEnd(VpsGenContext ctx, RoadNetwork net, RoadCell cell,
+			int ceilingBottomY, int[][] buildingBoxes,
+			RoadMaterialTable.StyleMaterials materials) {
+		if (ceilingBottomY == RoadWritePolicy.NO_CEILING) {
+			return;
+		}
+		CEILING_END_CELLS.incrementAndGet();
+		int topY = ctx.highestTerrainCollisionOrFluidY(cell.x, cell.z, ceilingBottomY + 1);
+		if (topY == Integer.MIN_VALUE || topY <= ceilingBottomY) {
+			return;
+		}
+		CEILING_END_TOP_CELLS.incrementAndGet();
+		boolean end = false;
+		boolean inArm = false;
+		// Along-road directions come from the arm slices: the sweep axis is the
+		// road direction. Check both ways, whether or not a road cell is there,
+		// so a tunnel mouth at the actual road end is included. A lateral open
+		// edge is not an along-road end.
+		for (RoadNetwork.Arm arm : net.arms) {
+			boolean found = false;
+			for (int[] slice : arm.slices) {
+				for (int idx : slice) {
+					if (idx == cell.index) {
+						found = true;
+						break;
+					}
+				}
+				if (found) {
+					break;
+				}
+			}
+			if (!found) {
+				continue;
+			}
+			inArm = true;
+			CEILING_END_ALONG_CELLS.incrementAndGet();
+			int dx = arm.sweepAxis == 1 ? 1 : 0;
+			int dz = arm.sweepAxis == 0 ? 1 : 0;
+			for (int sign = -1; sign <= 1; sign += 2) {
+				if (isOpenAlong(ctx, net, cell.x + sign * dx, cell.z + sign * dz, cell)) {
+					end = true;
+				}
+			}
+			break;
+		}
+		if (!inArm) {
+			// A junction/region has no single along axis: keep the safe rule that
+			// a continuing road cell with open sky marks the end.
+			for (int dir = 0; dir < 4; dir++) {
+				int nx = cell.x + SIDE_DX[dir];
+				int nz = cell.z + SIDE_DZ[dir];
+				int neighbour = net.cellAt(nx, nz);
+				if (neighbour < 0) {
+					continue;
+				}
+				CEILING_END_ROAD_CELLS.incrementAndGet();
+				if (isOpenAlong(ctx, net, nx, nz, cell)) {
+					end = true;
+				}
+			}
+		}
+		if (!end) {
+			return;
+		}
+		CEILING_END_OPEN_CELLS.incrementAndGet();
+		int last = Integer.MIN_VALUE;
+		boolean placed = false;
+		for (int y = ceilingBottomY + 1; y <= topY; y++) {
+			if (ctx.isProtectedDecoration(cell.x, y, cell.z)
+					|| RoadWritePolicy.insideBuildingAt(buildingBoxes, cell.x, y, cell.z)) {
+				break; // a tree/building breaks the upward run
+			}
+			setBlock(ctx, cell.x, y, cell.z, materials.kerbBlock.defaultBlockState());
+			last = y;
+			placed = true;
+			CEILING_END_BLOCKS.incrementAndGet();
+		}
+		if (placed) {
+			CEILING_END_WRAPS.incrementAndGet();
+			placeKerbRailing(ctx, cell.x, cell.z, last + 1, buildingBoxes, materials);
+		}
+	}
+
+	/**
+	 * True when the column one step along the road is open sky above the road:
+	 * the tunnel-mouth test. The neighbour road cell's own solved level is used
+	 * when it exists; otherwise the current cell's level is the reference.
+	 */
+	private static boolean isOpenAlong(VpsGenContext ctx, RoadNetwork net, int x, int z, RoadCell current) {
+		int index = net.cellAt(x, z);
+		int fromY = index >= 0
+				? RoadWritePolicy.roadTopBlockY(net.cells.get(index).solvedP)
+				: RoadWritePolicy.roadTopBlockY(current.solvedP);
+		int scanFrom = fromY + 1;
+		// highestTerrainCollisionOrFluidY returns scanFrom - 1 for an empty
+		// column (not Integer.MIN_VALUE), so "open" is "nothing at or above the
+		// scan start".
+		return ctx.highestTerrainCollisionOrFluidY(x, z, scanFrom) < scanFrom;
 	}
 
 	/** Hanging lantern at {@code lanternY}, with an iron chain up to the natural roof. */

@@ -174,7 +174,11 @@ water use scaffolding, and dangerous edges get leaf railings.
      with the same collision/fluid rule. The clear end is re-read at write time
      from the real column (up to the clear cap, default 4), and **only the
      lowest block of the ceiling is lined** - the roof thickness above it is
-     left untouched. When the cap forms the ceiling, that bottom block becomes
+     left untouched, except at a **ceiling end**: where the next road cell is
+     open sky, the exposed tunnel-mouth face wraps upward from the ceiling layer
+     to its terrain top with the kerb material and a leaf railing, like a normal
+     kerb (it never writes into the open neighbour). When the cap forms the
+     ceiling, that bottom block becomes
      **glowstone** on the middle cell of a straight 3-wide road; a natural cave
      roof beyond the cap has its lowest block lined with the kerb material and
      instead gets a hanging **lantern** in the clear-cap cell, connected to the
@@ -512,8 +516,10 @@ Two things are worth spelling out:
   暂不处理；包边护栏
   （每个连续包边段顶端——地形顶端和空隙顶端——放一层树叶，不进入房屋；因顶板或世界
   边界被截断的段不放截断顶叶）；包顶（仍只探测路面本列，改用碰撞/液体判据；清格终点
-  写入时重读，默认上限 4；**只处理顶板最低一格**，其上厚度保持原样；最低格若是非地形
-  装饰则整列跳过、不换材质也不挂灯/链；到达上限形成的
+  写入时重读，默认上限 4；**只处理顶板最低一格**，其上厚度保持原样；**包顶末端例外**
+  （2026-10-22）：沿道路方向顶板结束、下一格道路见天时，把当前路列从包顶层上一格向上
+  一直包到地形顶端并放包边护栏，像常规包边一样；不写入见天的邻格，侧向露天不触发。
+  最低格若是非地形装饰则整列跳过、不换材质也不挂灯/链；到达上限形成的
   顶板最低格在三格宽直路中间格换**荧石**，超过上限的自然洞顶最低格保留包边材质并在
   上限格放**灯笼 + 铁链**，路口/拐角/非三格宽不做）；树叶落差护栏（条件不变；每条路各管
   各的边缘，同侧列可同时出现矮路的包边和高路的护栏）；过水段脚手架（`distance` 有

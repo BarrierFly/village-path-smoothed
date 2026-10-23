@@ -29,14 +29,14 @@ public final class VpsVillageSolution {
 	/** Moved RIGID component footprints {minX,maxX,minZ,maxZ,baseY(shifted)}; empty when nothing moved. */
 	public int[][] shiftedComponents = new int[0][];
 	/**
-	 * 3D bounding boxes {minX,maxX,minY,maxY,minZ,maxZ} of every movable
-	 * BUILDING (decor pieces excluded; audit 2026-10-20 decision 1). The writer
-	 * skips a claimed road column whose road block lands inside one, so a
-	 * smoothed road can never overwrite a building body (plan A, user decision
-	 * 2026-10-15). Decor is protected block-by-block through
-	 * {@link #decorBlocks} instead of a whole bbox.
+	 * Exact cells of every movable BUILDING's body and interior (decor pieces
+	 * excluded; audit 2026-10-20 decision 1, narrowed by the 2026-10-23
+	 * decision). The writer skips a claimed road column only when its road block
+	 * lands on one of those cells, so a smoothed road can never overwrite a
+	 * building body while the empty part of the old bounding box stays
+	 * writable. Decor is protected block-by-block through {@link #decorBlocks}.
 	 */
-	public int[][] buildingBoxes = new int[0][];
+	public BuildingMask buildingMask = new BuildingMask();
 	/** Actual decor template blocks of the identified street decor ({@link RoadCell#packedXYZ}). */
 	public java.util.Set<Long> decorBlocks = java.util.Set.of();
 	/**

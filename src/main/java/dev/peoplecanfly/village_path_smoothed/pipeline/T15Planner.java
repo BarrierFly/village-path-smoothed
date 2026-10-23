@@ -18,7 +18,6 @@ import net.minecraft.world.level.levelgen.structure.BoundingBox;
 import net.minecraft.world.level.levelgen.structure.PoolElementStructurePiece;
 import net.minecraft.world.level.levelgen.structure.StructurePiece;
 import net.minecraft.world.level.levelgen.structure.StructureStart;
-import net.minecraft.world.level.levelgen.structure.pools.FeaturePoolElement;
 import net.minecraft.world.level.levelgen.structure.pools.JigsawJunction;
 import net.minecraft.world.level.levelgen.structure.pools.SinglePoolElement;
 import net.minecraft.world.level.levelgen.structure.pools.StructureTemplatePool;
@@ -60,10 +59,11 @@ public final class T15Planner {
 	public static final java.util.concurrent.atomic.AtomicLong T15_RESOLVE_DELTA_CELLS =
 			new java.util.concurrent.atomic.AtomicLong();
 	/**
-	 * Plan 2026-10-16: RIGID decor pieces (lamp/tree/hay) shifted so they keep
-	 * standing exactly on their seat's solved height. A lamp is a RIGID
-	 * single-pool piece and used to be aligned as a singleton "building"; that
-	 * alignment is replaced by the seat's dy.
+	 * Plan 2026-10-16, narrowed 2026-10-23: RIGID 1x1 single-pool decor pieces
+	 * (lamps) shift so they keep standing exactly on their seat's solved height.
+	 * A lamp used to be aligned as a singleton "building"; that alignment is
+	 * replaced by the seat's dy. {@code FeaturePoolElement}s (hay/tree/flower)
+	 * are vanilla-placed and never counted here.
 	 */
 	public static final java.util.concurrent.atomic.AtomicLong SEAT_DECOR_PIECES_MOVED =
 			new java.util.concurrent.atomic.AtomicLong();
@@ -140,16 +140,17 @@ public final class T15Planner {
 		VpsPipeline.VILLAGES_SOLVED.incrementAndGet();
 
 		if (!config.roadSmoothing.enabled) {
-			solution.buildingBoxes = BuildingComponents.protectedBoxes(start.getPieces(), decor.protectedPieceIndices);
+			solution.buildingMask = BuildingComponents.protectedMask(start.getPieces(),
+					BuildingComponents.scanTemplates(start.getPieces(), templateManager), decor.protectedPieceIndices);
 			solution.decorBlocks = decor.blocks;
 			solution.decorBaseBlocks = decor.baseBlocks;
 			return solution;
 		}
 
 		List<StructurePiece> pieces = start.getPieces();
-		// Decor pieces standing on a mask seat (a lamp or a hay pile singleton)
-		// ride the seat's solved level instead of aligning on their own (plan
-		// 2026-10-16)
+		// RIGID 1x1 decor pieces (lamps) standing on a mask seat ride the seat's
+		// solved level instead of aligning on their own (plan 2026-10-16).
+		// Feature pieces (hay/tree/flower) are never seat riders (2026-10-23).
 		java.util.Set<Long> seatColumns = new java.util.HashSet<>();
 		for (RoadCell cell : network.cells) {
 			if (cell.seat) {
@@ -170,11 +171,11 @@ public final class T15Planner {
 			// 1x1 decor moved with its seat in settleSeats; refresh the footprint
 			// so the writer protects where the blocks really are.
 			decor = StreetDecor.refresh(decor, pieces, templateManager);
-			int[][] boxes = BuildingComponents.protectedBoxes(pieces, decor.protectedPieceIndices);
-			int[][] exclusion = mergeBoxes(boxes, decor.columnBoxes);
+			BuildingMask mask = BuildingComponents.protectedMask(pieces, scan, decor.protectedPieceIndices);
+			BuildingMask exclusion = mask.copyWithColumns(decor.columnBoxes);
 			List<List<DoorSigns.DoorTarget>> targets = collectDoorTargets(components, pieces, scan,
 					solution.network, exclusion, true);
-			solution.buildingBoxes = boxes;
+			solution.buildingMask = mask;
 			solution.decorBlocks = decor.blocks;
 			java.util.Map<Long, String> emptyBase = new java.util.HashMap<>(decor.fixtureBaseBlocks);
 			emptyBase.putAll(decor.baseBlocks);
@@ -189,8 +190,8 @@ public final class T15Planner {
 
 		int maxShift = config.roadSmoothing.maxBuildingShift;
 		List<int[]> shifted = new ArrayList<>();
-		int[][] firstBoxes = BuildingComponents.protectedBoxes(pieces, decor.protectedPieceIndices);
-		int[][] firstExclusion = mergeBoxes(firstBoxes, decor.columnBoxes);
+		BuildingMask firstMask = BuildingComponents.protectedMask(pieces, scan, decor.protectedPieceIndices);
+		BuildingMask firstExclusion = firstMask.copyWithColumns(decor.columnBoxes);
 		List<List<DoorSigns.DoorTarget>> firstTargets = new ArrayList<>(components.size());
 
 		for (BuildingComponents.Component component : components) {
@@ -314,9 +315,9 @@ public final class T15Planner {
 				continue;
 			}
 			// Recompute per component: earlier iterations of this loop may have moved
-			// a building, and the old code read fresh boxes for exactly this reason.
-			int[][] boxes = BuildingComponents.protectedBoxes(pieces, protectedDecorPieces);
-			int[][] exclusion = mergeBoxes(boxes, finalDecor.columnBoxes);
+			// a building, and the mask follows the pieces' current positions.
+			BuildingMask mask = BuildingComponents.protectedMask(pieces, scan, protectedDecorPieces);
+			BuildingMask exclusion = mask.copyWithColumns(finalDecor.columnBoxes);
 			List<DoorSigns.DoorTarget> targets = doorTargets(component, pieces, scan, finalNetwork, exclusion, true);
 			finalTargets.add(targets);
 			int desired = targets.isEmpty()
@@ -351,14 +352,14 @@ public final class T15Planner {
 		syncJunctions(pieces, components);
 
 		solution.shiftedComponents = shiftedComponents(components);
-		// read after both shifts: the boxes must describe where the buildings
-		// really are, because the writer uses them to refuse a road column (plan A).
+		// read after both shifts: the mask must describe where the buildings
+		// really are, because the writer uses it to refuse a road block (plan A).
 		// Decor is excluded from plan A; its actual blocks are protected block by
 		// block (audit 2026-10-20 decision 1).
 		StreetDecor.Resolved decorFinal = StreetDecor.refresh(settledDecor, pieces, templateManager);
 		java.util.Set<Integer> finalProtectedPieces = new java.util.HashSet<>(decorFinal.protectedPieceIndices);
 		finalProtectedPieces.addAll(fixtures.protectedPieceIndices);
-		solution.buildingBoxes = BuildingComponents.protectedBoxes(pieces, finalProtectedPieces);
+		solution.buildingMask = BuildingComponents.protectedMask(pieces, scan, finalProtectedPieces);
 		java.util.Set<Long> finalDecorBlocks = new java.util.HashSet<>(decorFinal.blocks);
 		// The refresh kept the pre-shift fixture blocks; replace them with the
 		// post-shift fixture identify so a moved house lamp cannot leave stale
@@ -411,27 +412,11 @@ public final class T15Planner {
 	 */
 	private static List<List<DoorSigns.DoorTarget>> collectDoorTargets(
 			List<BuildingComponents.Component> components, List<StructurePiece> pieces,
-			BuildingComponents.TemplateScan scan, RoadNetwork network, int[][] exclusionBoxes, boolean countStats) {
+			BuildingComponents.TemplateScan scan, RoadNetwork network, BuildingMask exclusion, boolean countStats) {
 		List<List<DoorSigns.DoorTarget>> out = new ArrayList<>(components.size());
 		for (BuildingComponents.Component component : components) {
-			out.add(doorTargets(component, pieces, scan, network, exclusionBoxes, countStats));
+			out.add(doorTargets(component, pieces, scan, network, exclusion, countStats));
 		}
-		return out;
-	}
-
-	/** Package-visible bridge for the T5 path: building boxes + decor footprint columns. */
-	static int[][] mergeBoxesForT5(int[][] buildingBoxes, int[][] decorColumns) {
-		return mergeBoxes(buildingBoxes, decorColumns);
-	}
-
-	/** Building boxes + the decor's actual footprint columns, for door-target exclusion only. */
-	private static int[][] mergeBoxes(int[][] buildings, int[][] decorColumns) {
-		if (decorColumns == null || decorColumns.length == 0) {
-			return buildings;
-		}
-		int[][] out = new int[buildings.length + decorColumns.length][];
-		System.arraycopy(buildings, 0, out, 0, buildings.length);
-		System.arraycopy(decorColumns, 0, out, buildings.length, decorColumns.length);
 		return out;
 	}
 
@@ -505,8 +490,8 @@ public final class T15Planner {
 	/** Package-visible bridge for the T5 path (no building move, same door rules). */
 	static List<DoorSigns.DoorTarget> doorTargetsFor(BuildingComponents.Component component,
 			List<StructurePiece> pieces, BuildingComponents.TemplateScan scan, RoadNetwork network,
-			int[][] buildingBoxes, boolean countStats) {
-		return doorTargets(component, pieces, scan, network, buildingBoxes, countStats);
+			BuildingMask buildingMask, boolean countStats) {
+		return doorTargets(component, pieces, scan, network, buildingMask, countStats);
 	}
 
 	/** Package-visible bridge for the T5 path. */
@@ -517,7 +502,7 @@ public final class T15Planner {
 
 	private static List<DoorSigns.DoorTarget> doorTargets(BuildingComponents.Component component,
 			List<StructurePiece> pieces, BuildingComponents.TemplateScan scan, RoadNetwork network,
-			int[][] buildingBoxes, boolean countStats) {
+			BuildingMask buildingMask, boolean countStats) {
 		List<int[]> doors = new ArrayList<>();
 		List<int[]> entrances = new ArrayList<>();
 		for (int idx : component.pieceIndices) {
@@ -557,8 +542,8 @@ public final class T15Planner {
 				}
 				return false;
 			}
-			if (RoadWritePolicy.insideFootprint(buildingBoxes, cell.x, cell.z)
-					|| RoadWritePolicy.insideBuilding(buildingBoxes, cell.x, cell.z, cell.solvedP)) {
+			if (RoadWritePolicy.insideFootprint(buildingMask, cell.x, cell.z)
+					|| RoadWritePolicy.insideBuilding(buildingMask, cell.x, cell.z, cell.solvedP)) {
 				if (countStats) {
 					VpsPipeline.DOOR_TARGET_INSIDE_BUILDING.incrementAndGet();
 				}
@@ -1190,11 +1175,9 @@ public final class T15Planner {
 	/**
 	 * True when the component is a single 1x1-footprint piece standing on a mask
 	 * seat column: it rides the seat's solved level (settleSeats) instead of
-	 * aligning on its own. A lamp is a RIGID single-pool piece and used to be
-	 * treated as a singleton building here. Since 2026-10-16 hay piles are not
-	 * building candidates at all (a standalone pile never moves), so the 1x1
-	 * RIGID lamp-like piece is the remaining case; a hay pile on a seat still
-	 * moves exactly once - with its seat (user decision 2026-10-16).
+	 * aligning on its own. Only a RIGID single-pool lamp-like piece reaches this
+	 * path; {@code FeaturePoolElement}s (hay/tree/flower) are not building
+	 * candidates at all and stay at their vanilla position (2026-10-23).
 	 */
 	private static boolean isSeatRider(BuildingComponents.Component component, List<StructurePiece> pieces,
 			java.util.Set<Long> seatColumns) {
@@ -1209,13 +1192,17 @@ public final class T15Planner {
 	}
 
 	/**
-	 * Moves the RIGID decor piece standing on every solved seat (plan
-	 * 2026-10-16): the seat rides the solved profile, so the lamp/tree/hay on
-	 * it must shift by the same whole blocks to keep its shape intact. The
-	 * decor pieces are the 1x1-footprint non-street pool elements at the seat's
-	 * column; their own alignment is replaced by the seat's dy. The junction a
-	 * lamp carries is deliberately NOT re-synced: it records the STREET side's
-	 * jigsaw ground level, and the street did not move.
+	 * Moves the RIGID 1x1 decor piece standing on every solved seat (plan
+	 * 2026-10-16): the seat rides the solved profile, so the lamp on it must
+	 * shift by the same whole blocks to keep its shape intact. The decor piece
+	 * is a 1x1-footprint non-street {@code SinglePoolElement}; its own alignment
+	 * is replaced by the seat's dy. The junction a lamp carries is deliberately
+	 * NOT re-synced: it records the STREET side's jigsaw ground level, and the
+	 * street did not move.
+	 *
+	 * <p>2026-10-23: every {@code FeaturePoolElement} (hay pile, tree, flower) is
+	 * placed by vanilla and never moved here, even when it stands on a seat. The
+	 * pile's really placed blocks are still protected at write time.
 	 */
 	private static void settleSeats(RoadNetwork network, List<StructurePiece> pieces, int minY, int maxY,
 			VillagePathSmoothedConfig config) {
@@ -1230,9 +1217,8 @@ public final class T15Planner {
 				if (!(piece instanceof PoolElementStructurePiece pool)) {
 					continue;
 				}
-				if (!(pool.getElement() instanceof SinglePoolElement)
-						&& !(pool.getElement() instanceof FeaturePoolElement)) {
-					continue; // villager/cat spawn points place no blocks
+				if (!(pool.getElement() instanceof SinglePoolElement)) {
+					continue; // features (hay/tree/flower) and spawn points stay vanilla
 				}
 				if (RoadCollector.isStreetPiece(piece, config)) {
 					continue; // streets/terminators/centres are rewritten per column

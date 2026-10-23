@@ -200,101 +200,31 @@ public final class RoadWritePolicy {
 	}
 
 	/**
-	 * Plan A box selection: keep only the boxes whose owning piece is not a
-	 * recognised decor piece. A decor box is never a building obstacle - a 3x3
-	 * lamp owns 8 empty ring columns in its bbox while its real base is 1x1, so
-	 * using the bbox would delete the ring from the road. Extracted pure so the
-	 * exclusion rule is unit tested; {@code BuildingComponents.protectedBoxes}
-	 * is its only production caller.
-	 *
-	 * @param boxes  boxes in the {minX,maxX,minY,maxY,minZ,maxZ} layout
-	 * @param owners piece index for each box (same order)
-	 * @param decorPieces recognised decor piece indices to exclude
+	 * 2026-10-23: true when the road block of a column lands on a protected
+	 * building cell. The mask is the exact building body + interior
+	 * ({@link BuildingMask}); there is no bounding-box or Y-margin expansion any
+	 * more, so the empty part of a template is written normally.
 	 */
-	public static int[][] selectPlanABoxes(int[][] boxes, int[] owners, java.util.Set<Integer> decorPieces) {
-		if (boxes == null || boxes.length == 0) {
-			return new int[0][];
-		}
-		int keep = 0;
-		for (int i = 0; i < boxes.length; i++) {
-			int owner = owners != null && i < owners.length ? owners[i] : -1;
-			if (decorPieces == null || !decorPieces.contains(owner)) {
-				keep++;
-			}
-		}
-		int[][] out = new int[keep][];
-		int n = 0;
-		for (int i = 0; i < boxes.length; i++) {
-			int owner = owners != null && i < owners.length ? owners[i] : -1;
-			if (decorPieces == null || !decorPieces.contains(owner)) {
-				out[n++] = boxes[i];
-			}
-		}
-		return out;
+	public static boolean insideBuilding(BuildingMask buildingMask, int x, int z, int solvedP) {
+		return buildingMask != null && buildingMask.protectsRoadBlock(x, z, solvedP);
 	}
 
 	/**
-	 * Plan 2026-10-17 (door/basis fix, section 3.3): true when the road block of
-	 * a column would land inside one of the protected building boxes
-	 * {minX, maxX, minY, maxY, minZ, maxZ}. This is the SAME test the writer
-	 * uses to make a building win its column (plan A); it was extracted here so
-	 * the door road-cell selector cannot drift from the writer.
-	 *
-	 * <p>The Y test keeps a road that passes well below a building's basement
-	 * (or well above it) from being skipped: the box is expanded by one block on
-	 * each side, matching the writer's historical behaviour.
+	 * 2026-10-23: true when the exact block is a protected building cell. The
+	 * kerb, the clear above the road and the ceiling lining use this test; the
+	 * decoration classifier is checked separately by the writer.
 	 */
-	public static boolean insideBuilding(int[][] buildingBoxes, int x, int z, int solvedP) {
-		if (buildingBoxes == null) {
-			return false;
-		}
-		int blockY = roadTopBlockY(solvedP);
-		for (int[] box : buildingBoxes) {
-			if (x >= box[0] && x <= box[1] && z >= box[4] && z <= box[5]
-					&& blockY >= box[2] - 1 && blockY <= box[3] + 1) {
-				return true;
-			}
-		}
-		return false;
+	public static boolean insideBuildingAt(BuildingMask buildingMask, int x, int y, int z) {
+		return buildingMask != null && buildingMask.protects(x, y, z);
 	}
 
 	/**
-	 * True when the exact block lies inside one of the protected building boxes
-	 * {minX, maxX, minY, maxY, minZ, maxZ}. The kerb, the clear above the road and
-	 * the ceiling lining use this exact test so no building block is replaced or
-	 * removed. Outside those boxes the writer additionally protects every
-	 * non-terrain decoration through {@code terrain.FeatureProtection} (user
-	 * decision 2026-10-17), so a block must pass both tests to be written.
+	 * 2026-10-23: true when the column carries any protected building cell. A
+	 * vanilla side street routed through a house is still in the road network
+	 * but the writer skips its body; it must never be chosen as a door front.
 	 */
-	public static boolean insideBuildingAt(int[][] buildingBoxes, int x, int y, int z) {
-		if (buildingBoxes == null) {
-			return false;
-		}
-		for (int[] box : buildingBoxes) {
-			if (x >= box[0] && x <= box[1] && z >= box[4] && z <= box[5]
-					&& y >= box[2] && y <= box[3]) {
-				return true;
-			}
-		}
-		return false;
-	}
-
-	/**
-	 * Plan 2026-10-17 (door/basis fix, section 3.3): true when the column lies
-	 * inside a protected piece's 2D footprint. A vanilla side street routed
-	 * through a house is still in the road network but the writer skips it
-	 * (plan A); it must never be chosen as a door front.
-	 */
-	public static boolean insideFootprint(int[][] buildingBoxes, int x, int z) {
-		if (buildingBoxes == null) {
-			return false;
-		}
-		for (int[] box : buildingBoxes) {
-			if (x >= box[0] && x <= box[1] && z >= box[4] && z <= box[5]) {
-				return true;
-			}
-		}
-		return false;
+	public static boolean insideFootprint(BuildingMask buildingMask, int x, int z) {
+		return buildingMask != null && buildingMask.hasColumn(x, z);
 	}
 
 	/**

@@ -84,6 +84,16 @@ water use scaffolding, and dangerous edges get leaf railings.
    Floating/buried components are only counted (`/vps stats`), never repaired
    (`buildingGuard`).
 
+   **Plan A protects the real building body, not the template bounding box**
+   (2026-10-23): the protected cells are the building blocks the template
+   really renders plus interior air that meets a building block along at least
+   five of its six axes before leaving the template (a normal room's centre
+   counts; an open edge does not). The empty part of the old bbox - a courtyard,
+   the empty corner of a template, the air under an eave - no longer blocks a
+   road block, support fill or clear. There is no Y-direction margin. If a
+   template cannot be read, the piece falls back to its whole bounding box, so
+   an unknown/modded building never becomes unprotected.
+
    **Street decor** is part of this building pass, not a plan-A bbox obstacle:
    the writer protects the decor's **actual template blocks** (including its
    cobblestone/snow bases) and still writes the road and the support fill
@@ -98,8 +108,13 @@ water use scaffolding, and dangerous edges get leaf railings.
    that same footprint is one **movable flat unit** in the final solve, and the
    decor is moved onto the level it settles on. The base is therefore part of
    the solve (the user's "fixed shape, vertically movable, even surface"),
-   not a frozen anchor. 1×1 decor (lamp/cat) still rides the seat exactly like
-   before. Fixture connections follow the 2026-10-21 semantics: a decor is
+   not a frozen anchor. A 1×1 **RIGID** decor piece (a lamp) still rides the
+   seat exactly like before. **Every `FeaturePoolElement` - the hay pile, trees
+   and flowers - is placed by vanilla and is not a vertical structure**
+   (2026-10-23): it never rides a seat, never pins one and is never moved. A
+   pile's really placed blocks are still protected by the writer, so the road
+   yields to it block by block. Fixture connections follow the 2026-10-21
+   semantics: a decor is
    connected only to a **horizontally (4-)adjacent solve cell** outside its own
    base footprint (seat counts as a cell), and every such neighbour is checked
    against the half-block rule; a piece with no external neighbour is counted
@@ -242,7 +257,9 @@ water use scaffolding, and dangerous edges get leaf railings.
    pile really placed are protected by position, not by a bounding box or the
    5×5/7×7 potential box. The pile is recorded when it places; the old
    whole-bbox plan-A skip for decor and the hay 1×1 box are gone, so the road
-   and its support fill run under/around the decoration.
+   and its support fill run under/around the decoration. The pile is a vanilla
+   feature, not a vertically movable structure: it keeps its vanilla position
+   and the writer yields to its actual blocks.
 
 ## The mod writes the road; it does not overwrite it
 
@@ -493,6 +510,12 @@ Two things are worth spelling out:
     protected by their actual blocks; a multi-block decor's T5/T1.5 pin can
     still force a counted step where the surrounding free road cannot meet the
     rigid base (`decor` line in `/vps stats`).
+13. **A feature on a seat keeps its vanilla height** — hay piles, trees and
+    flowers (`FeaturePoolElement`) are never moved (2026-10-23). If the smoothed
+    seat under one rises or falls, the feature can float or sink into the seat;
+    the writer still protects its actual blocks, so the road leaves a gap there
+    instead of overwriting it. That is the requested vanilla placement, not a
+    missing-road bug.
 
 ## Credits / 致谢
 
@@ -567,6 +590,11 @@ Two things are worth spelling out:
   非座格且写入端不会跳过者；没有合格外侧路时房屋不动，门牌第四行写 `NO FRONT`。
   重解后再做一次权威对齐并冻结道路。位移取门邻路格的合法区间内离 0 最近者；解算结果
   按（维度+结构+锚点区块）跨实例共享。
+  **plan A 保护建筑体本身而不是模板 bbox**（2026-10-23）：保护模板真实放置的非空气
+  建筑方块，以及沿六个轴向看、至少五个方向在离开模板前能遇到建筑方块的内部空气
+  （普通房间中央算内部，开放边缘不算）；bbox 内的空列（院子、模板空角、屋檐下的
+  空气）不再阻止路块、垫方和清格，Y 方向也不再额外放宽 1 格。模板读取失败时退回
+  整件 bbox，避免无法识别的模组建筑失去保护。
   **街件装饰**按实际方块保护（含圆石/雪底座），plan A 不再整 bbox 跳过，路块与垫方
   仍写在装饰下方/周围；多格装饰在 T5 把 seat + 实际 footprint 钉在 `baseWalkY`，
   T1.5 首轮平移后同样钉住、强制最终重解，纯多格装饰组件不再被二次对齐搬动，座位与
@@ -577,8 +605,9 @@ Two things are worth spelling out:
   留成空气，writer 只补这一格（`base restored`），不移动装饰、不写道路；街道座位之外的装饰
   （房屋灯座）作为**固定的非道路 fixture base cell** 加入求解（writer 跳过该格），求解器把四周道路
   重解到基座 ±半格（`fixture base cells`）——西侧低半格、另外三侧高 1 格时，调的是道路，不是只补基座；
-  **pile 在放置时记录真正放下的方块**并按位置保护，不再按 5×5/7×7
-  潜在盒保护，也不再给干草堆单独的 1×1 保护盒。
+  **干草堆/树/花等 `FeaturePoolElement` 一律按原版放置**（2026-10-23）：不再随座位升降，
+  也不把座位钉在它们的高度；只有 RIGID 单件灯随座位。**pile 在放置时记录真正放下的方块**
+  并按位置保护，不再按 5×5/7×7 潜在盒保护，也不再给干草堆单独的 1×1 保护盒。
   清格、路块、填方、包边、包顶、灯笼/铁链和护栏遇到非地形装饰都**逐格跳过**，只处理
   自然地形和本 mod 自己的路面结构（泥砖、平滑砂岩、默认圆石包边、脚手架、土径填方；
   这些保持可替换，以便同侧列“低路包边 + 高路护栏”仍成立）；跳过的方块数按类别显示在
@@ -600,8 +629,10 @@ Two things are worth spelling out:
   包顶只包道路正上方最低一格；最低格是装饰时整列不包顶、不挂灯/链；包顶照明只在
   三格宽直路中间格、且存在顶板时
   出现（`maxClearLayers` 默认 4，调到 0/负数会改变可见性）；断崖处出现与原版一致
-  的大台阶（计数可见）；`beard_thin` 核的密度-方块换算系数尚未实机标定，默认仍用
-  `step` 核。
+  的大台阶（计数可见）；座位上的干草堆/树/花按原版高度放置，若座位被平滑抬高或降低，
+  它们可能悬空或陷入座位，writer 仍逐块避让，因此那里可能留下缺格——这是 2026-10-23
+  “Feature 按原版放置”的既定行为；`beard_thin` 核的密度-方块换算系数尚未实机标定，
+  默认仍用 `step` 核。
 
 ## 开源协议
 

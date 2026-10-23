@@ -23,7 +23,6 @@ import net.minecraft.world.level.levelgen.structure.BoundingBox;
 import net.minecraft.world.level.levelgen.structure.PoolElementStructurePiece;
 import net.minecraft.world.level.levelgen.structure.StructurePiece;
 import net.minecraft.world.level.levelgen.structure.StructureStart;
-import net.minecraft.world.level.levelgen.structure.pools.FeaturePoolElement;
 import net.minecraft.world.level.levelgen.structure.pools.SinglePoolElement;
 import net.minecraft.world.level.levelgen.structure.templatesystem.StructureTemplateManager;
 
@@ -329,7 +328,7 @@ public final class VpsPipeline {
 			runBuildingGuard(solution, ctx, config);
 		}
 		RoadWriter.write(solution.network, ctx, chunkBB, config, solution.shiftedComponents,
-				solution.buildingBoxes, solution.decorBlocks, solution.decorBaseBlocks,
+				solution.buildingMask, solution.decorBlocks, solution.decorBaseBlocks,
 				solution.pileBlocks, solution.doorFronts, solution.doorSigns, solution.seamSigns,
 				String.valueOf(start.getChunkPos()));
 	}
@@ -475,8 +474,8 @@ public final class VpsPipeline {
 	}
 
 	/**
-	 * T5 path: nothing may move at feature placement, so a seat with a decor
-	 * piece on top pins at the level that piece actually renders at (the
+	 * T5 path: nothing may move at feature placement, so a seat with a RIGID
+	 * decor piece on top pins at the level that piece actually renders at (the
 	 * phase-2 plaza precedent: the pieces are the rigid truth); a bare seat
 	 * rides the solve freely.
 	 *
@@ -485,8 +484,11 @@ public final class VpsPipeline {
 	 * bbox.minY} - the latter is one block low for {@code taiga_decoration_1}
 	 * whose platform is a sunken layer. Identified 1x1 decor uses baseWalkY;
 	 * a multi-block decor's FULL base footprint is pinned flat by
-	 * {@link StreetDecor#pinBaseFootprints}. A 1x1 feature piece
-	 * (pile/tree/flower) keeps the historical anchor-level pin.
+	 * {@link StreetDecor#pinBaseFootprints}.
+	 *
+	 * <p>2026-10-23: {@code FeaturePoolElement}s (hay pile, tree, flower) are
+	 * vanilla-placed; they are not a rigid reference and do not pin the seat.
+	 * Their really placed blocks stay protected by the writer.
 	 *
 	 * @return number of cells pinned
 	 */
@@ -518,9 +520,8 @@ public final class VpsPipeline {
 					continue; // an identified 1x1 decor was handled above
 				}
 				if (!(piece instanceof PoolElementStructurePiece pool)
-						|| (!(pool.getElement() instanceof SinglePoolElement)
-								&& !(pool.getElement() instanceof FeaturePoolElement))) {
-					continue;
+						|| !(pool.getElement() instanceof SinglePoolElement)) {
+					continue; // features (hay/tree/flower) stay vanilla
 				}
 				BoundingBox box = piece.getBoundingBox();
 				if (box.minX() != cell.x || box.maxX() != cell.x
@@ -661,22 +662,22 @@ public final class VpsPipeline {
 		}
 		VpsVillageSolution solution = new VpsVillageSolution(network);
 		solution.solved = true;
-		// T5 never moves buildings, so the boxes are already final here. Decor is
-		// not a plan-A box any more; its actual blocks are protected by position.
-		int[][] t5BuildingBoxes = BuildingComponents.protectedBoxes(pieces, decor.protectedPieceIndices);
-		solution.buildingBoxes = t5BuildingBoxes;
+		// T5 never moves buildings, so the body mask is already final here. Decor
+		// is not part of plan A; its actual blocks are protected by position.
+		BuildingComponents.TemplateScan t5Scan = BuildingComponents.scanTemplates(pieces, templateManager);
+		BuildingMask t5BuildingMask = BuildingComponents.protectedMask(pieces, t5Scan, decor.protectedPieceIndices);
+		solution.buildingMask = t5BuildingMask;
 		solution.decorBlocks = decor.blocks;
 		java.util.Map<Long, String> t5BaseBlocks = new java.util.HashMap<>(decor.fixtureBaseBlocks);
 		t5BaseBlocks.putAll(decor.baseBlocks);
 		solution.decorBaseBlocks = t5BaseBlocks;
-		BuildingComponents.TemplateScan t5Scan = BuildingComponents.scanTemplates(pieces, templateManager);
 		List<BuildingComponents.Component> t5Components = BuildingComponents.group(pieces);
 		// Door/basis fix plan 2026-10-17: the T5 path uses the same main doors,
 		// the same filtered door target and the same sign format as T1.5; no
-		// building moves here, so the current boxes are the eligibility boxes.
+		// building moves here, so the current mask is the eligibility mask.
 		// Decor footprint columns are excluded from door targets but not from
 		// plan A (audit 2026-10-20 decision 1).
-		int[][] t5Exclusion = T15Planner.mergeBoxesForT5(t5BuildingBoxes, decor.columnBoxes);
+		BuildingMask t5Exclusion = t5BuildingMask.copyWithColumns(decor.columnBoxes);
 		List<List<DoorSigns.DoorTarget>> t5Targets = new java.util.ArrayList<>(t5Components.size());
 		for (BuildingComponents.Component component : t5Components) {
 			t5Targets.add(T15Planner.doorTargetsFor(component, pieces, t5Scan, network, t5Exclusion, true));

@@ -32,6 +32,7 @@ src/main/java/dev/peoplecanfly/village_path_smoothed/
 │   ├── VpsPipeline          # entry from the mixins: gate -> T1.5 plan / solve (cached) -> suppress/write
 │   ├── T15Planner           # T1.5 forward decision: solve + RIGID component shifts + post-shift re-solve
 │   ├── BuildingComponents   # RIGID pieces -> rigid connected components (junction union-find)
+│   ├── BuildingMask         # exact plan-A body + interior protection (pure)
 │   ├── StreetDecor          # seat pools -> decor blocks, base groups, T5 base pins
 │   ├── VpsGenThread         # ThreadLocal MinecraftServer for STRUCTURE_STARTS
 │   ├── RoadCollector        # templates -> road mask (MC-touching, VpsProbe)
@@ -302,16 +303,20 @@ Rules:
   column, and the first seat keeps it when two seats overlap. The writer
   renders the seat's vanilla block at the solved height (dirt fill below,
   clearing only up to the old seat block - the decor stands above it) and
-  dresses no edges. At T1.5 the decor piece (lamp/tree/hay - a 1x1 non-street
-  pool element on the seat's column) is shifted to the seat's solved level by
+  dresses no edges. At T1.5 a 1x1 **RIGID `SinglePoolElement`** decor piece on
+  the seat's column (a lamp) is shifted to the seat's solved level by
   `T15Planner#settleSeats` (`SEAT_DECOR_PIECES_MOVED`), which REPLACES the
   lamp's old singleton-building alignment; such singletons are removed from
-  the building pass (`isSeatRider`). A **multi-block** decor (3x3/3x1/2x1/3x6
-  lamps, stairs, platforms) keeps building semantics and is NOT a seat rider;
-  see the 2026-10-20 audit bullet below. At T5 nothing may move, so a seat with
-  decor pins at the decor's real render level (the phase-2 plaza precedent)
-  and a bare seat rides the solve. The old "pin at the probed vanilla height"
-  design is gone - a seat must never drag the road to vanilla height.
+  the building pass (`isSeatRider`). **2026-10-23: every
+  `FeaturePoolElement` (hay pile, tree, flower) is a feature, not a vertical
+  structure - vanilla places it, it never rides a seat and never pins one.**
+  Its really placed blocks are still protected by the pile/decor record. A
+  **multi-block** decor (3x3/3x1/2x1/3x6 lamps, stairs, platforms) keeps
+  building semantics and is NOT a seat rider; see the 2026-10-20 audit bullet
+  below. At T5 nothing may move, so a seat with a RIGID decor piece pins at
+  the decor's real render level (the phase-2 plaza precedent); a bare seat and
+  a seat carrying a feature ride the solve. The old "pin at the probed vanilla
+  height" design is gone - a seat must never drag the road to vanilla height.
 - **Audit 2026-10-20 (street fixtures): surfaces, decor footprints, piles.**
   The user decisions are recorded in
   `scratch/audit_street_fixture_shapes_2026-10-20.md` §14:
@@ -331,7 +336,7 @@ Rules:
     protected block-by-block through `VpsGenContext#isProtectedDecoration`
     (`DECOR_BLOCKS_SKIPPED`), and the road block/support fill still go
     below/around them. That is what removes the bbox holes under 3x3 lamp air
-    columns, trapdoor rings and stairs. `BuildingComponents#protectedBoxes`
+    columns, trapdoor rings and stairs. `BuildingComponents#protectedMask`
     takes the identified decor indices and keeps only real buildings.
   - **T5 pin = FULL base footprint at `baseWalkY`.** `pinSeatsWithDecor` pins a
     1x1 decor at `2 * baseWalkY`; `StreetDecor#pinBaseFootprints` pins every
@@ -388,7 +393,9 @@ Rules:
     placed at RETURN into `VpsVillageSolution#pileBlocks`; the writer protects
     exactly those (`PILE_BLOCKS_SKIPPED`). Do not protect the whole potential
     box and do not reintroduce the hay 1x1 plan-A box - the hay special case
-    and its `FeaturePoolElement` accessor mixin are gone.
+    and its `FeaturePoolElement` accessor mixin are gone. Since 2026-10-23 the
+    pile is also never moved (not even as a seat rider): vanilla places it and
+    the writer yields to its actual blocks.
   - **structure_void seats**: the large-base overlap (snowy square_01) is
     covered by the decor footprint/pin above; the void seats themselves stay
     out of the mask (audit §8, user decision 5). The savanna `]` NBT typo is
@@ -444,10 +451,10 @@ Rules:
   door had no eligible outward cell. The selected cell is the SAME `DoorTarget`
   the alignment and the railing exemption use
   (`DoorSigns#selectDoorRoadCell`): nearest by horizontal Manhattan distance,
-  on the outward side of the door wall, excluding seats, 2D protected
-  footprints and the writer's 3D `insideBuilding` columns. Cells inside a
-  building are therefore never the sign's road cell even when vanilla routed a
-  side street through the house. A NO FRONT door still gets a sign: line 2 names
+  on the outward side of the door wall, excluding seats and the
+  `BuildingMask`'s protected columns/cells. Cells inside a building body are
+  therefore never the sign's road cell even when vanilla routed a side street
+  through the house; an empty bbox column is eligible now. A NO FRONT door still gets a sign: line 2 names
   the unfiltered nearest whole-network cell and line 4 says `NO FRONT`; the
   building is not moved for it (user decision 2026-10-17). Signs are placed
   after the road cells of their own chunk. Debug visibility beats fidelity (user
@@ -475,15 +482,24 @@ Rules:
   world edge), `NO-CUT FLOOR` (a `baseP` hard floor with `allowCutIntoTerrain=false`),
   else `POLISH RESID`. `seam signs placed / step violations` in `/vps stats`
   documents the volume and the illegal seams.
-- **Plan A: a building always wins its column (user decision 2026-10-15;
-  decor split out by the 2026-10-20 audit).**
-  `VpsVillageSolution#buildingBoxes` carries the 3D boxes of every movable
-  BUILDING (identified decor pieces are excluded; their actual blocks are
-  protected block-by-block, see the audit bullet).
-  `RoadWriter#insideBuilding` skips a claimed column whose road block lands inside
-  one - no road block, no support fill, no clear - so smoothing can never
-  overwrite a building body (`BUILDING_CELLS_SKIPPED`, and the column yields).
-  `roadSmoothing.protectBuildings` gates it.
+- **Plan A: a building wins its real body, not its bounding box (user
+  decision 2026-10-15; decor split out by the 2026-10-20 audit; narrowed to the
+  body + interior on 2026-10-23).**
+  `VpsVillageSolution#buildingMask` is a `BuildingMask`: the template's real
+  non-air building blocks plus every air cell where, along at least five of the
+  six axes, the first block met before leaving the template is a building block
+  (the user's raycast interior rule).
+  `BuildingComponents#protectedMask` builds it from `TemplateScan#bodyCells`;
+  a template that cannot be read falls back to the piece's whole bounding box
+  so an unknown/modded building never becomes unprotected. The empty part of a
+  bbox - courtyard, the empty corner of a template, the air under an eave - is
+  deliberately NOT in the mask and is written normally.
+  `RoadWriter#insideBuilding` skips a claimed column only when its road block
+  lands on a protected cell - no road block, no support fill, no clear - so
+  smoothing can never overwrite a building body (`BUILDING_CELLS_SKIPPED`, and
+  the column yields). There is no Y-direction margin. `BuildingMask` is pure
+  and unit tested (`RoadWritePolicyTest`). `roadSmoothing.protectBuildings`
+  gates the column yield.
 - **Every fill/cut decision is a per-cell directional probe, never the heightmap
   top (user decision 2026-10-14).** `terrain/ColumnScan` + `VpsGenContext`:
   `groundSurfaceTopY` scans **down** from the road block for the first standable
@@ -580,26 +596,24 @@ Rules:
   platform is the fountain.
 - **Building shift rules (user decisions 2026-10-14 and 2026-10-15):**
   - a movable piece is a RIGID `SinglePoolElement` (a building) and nothing
-    else (`BuildingComponents#isMovable`). The hay pile is **not** moved any
-    more (user decision 2026-10-16, report §3.3-2 "非预期，干草堆不应搬动" -
-    reverting the 2026-10-14 rule): a standalone pile stays where vanilla put
-    it and the blocks it really places are protected at write time (audit
-    2026-10-20; the old 1x1 plan-A box is gone); only a pile standing ON a
-    mask seat still moves, because it rides the seat (see the seat bullet).
-    The decor pool's
-    trees and flowers are still deliberately **not** moved - a moved tree
-    fights the vanilla terrain adaptation that raises the ground under it. A
-    `town_centers` piece is **not** a movable building any more (plan C): the
-    plaza group has its own shift;
+    else (`BuildingComponents#isMovable`). **Every `FeaturePoolElement` (hay
+    pile, tree, flower) stays where vanilla placed it** (2026-10-23; the
+    2026-10-16 rule only covered a standalone pile, and the seat-riding
+    exception is gone): features are not vertical structures, they are never
+    moved and never pin a seat. The blocks a pile really places are protected
+    at write time (audit 2026-10-20; the old 1x1 plan-A box is gone). A moved
+    tree would also fight the vanilla terrain adaptation that raises the ground
+    under it. A `town_centers` piece is **not** a movable building any more
+    (plan C): the plaza group has its own shift;
   - the alignment target is the road cell selected at the component's **main
     door** - the real lower door half nearest the template's
     `building_entrance` jigsaw (door/basis fix plan 2026-10-17, D2; the old
     template scan treated tall grass/large ferns as doors, and every side/back/
     upper door entered the median). A double door keeps both leaves. The
     selected cell is the nearest eligible cell on the door wall's outward side
-    (`DoorSigns#selectDoorRoadCell`); it excludes seats, protected 2D
-    footprints and the writer's 3D `insideBuilding` columns, so a hidden
-    vanilla side street through a house can no longer win. Junctions
+    (`DoorSigns#selectDoorRoadCell`); it excludes seats and the protected
+    `BuildingMask` columns/cells, so a hidden vanilla side street through a
+    house can no longer win. Junctions
     (`destProjection` not RIGID) are only the fallback for pieces without real
     doors (`T15Planner#desiredShiftFromJunctions`). No outward cell means
     `NO_FRONT_ROAD` and the building is not moved for that door (D4);
@@ -628,11 +642,10 @@ Rules:
     shift around the median scheme's shift;
   - the overlap guard compares **only against other movable pieces** and only
     on a **strict intersection** (`T15Planner#overlaps`, F-A 2026-10-15: the old
-    `<=`/`>=` counted touching boxes, so any flush neighbour - even a 1x1 hay
-    pile - could pin the component at the vanilla position). A street or
-    terminator box is not an obstacle at all; hay piles left the obstacle set
-    when they stopped being movable (2026-10-16) - the road yields to them,
-    building shifts no longer do;
+    `<=`/`>=` counted touching boxes, so any flush neighbour could pin the
+    component at the vanilla position). A street or terminator box is not an
+    obstacle at all; feature pieces (hay/tree/flower) are not movable and left
+    the obstacle set - the road yields to them, building shifts no longer do;
   - `BuildingShift` has **no `SPAN_TOO_WIDE` refusal** any more. It left the
     building at the vanilla terrain height beside a smoothed road, which is the
     symptom it was supposed to avoid.
@@ -646,7 +659,7 @@ Rules:
   `Component#syncedDy` makes `syncJunctions` propagate exactly that additional
   amount; syncing the total again would double-move the junctions. No
   `RoadCollector#collect` / `RoadSmoother#solve` may run after this pass:
-  `shiftedComponents` / `buildingBoxes` / door signs all read the final pieces
+  `shiftedComponents` / `buildingMask` / door signs all read the final pieces
   and the final network. `SECOND_ALIGN_MOVED` counts the components the second
   pass actually added, and `DOOR_TARGET_CHANGED_BY_RESOLVE` counts main doors
   whose selected cell XZ or solved surface changed between the two networks.

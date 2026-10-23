@@ -211,7 +211,7 @@ public final class RoadWriter {
 	 *        cell may take the single-cell surface nudge (never at a building door)
 	 */
 	public static void write(RoadNetwork net, VpsGenContext ctx, BoundingBox chunkBB, VillagePathSmoothedConfig config,
-			int[][] shiftedComponents, int[][] buildingBoxes, java.util.Set<Long> decorBlocks,
+			int[][] shiftedComponents, BuildingMask buildingMask, java.util.Set<Long> decorBlocks,
 			java.util.Map<Long, String> decorBaseBlocks, java.util.Set<Long> pileBlocks,
 			int[][] doorFronts, int[][] doorSigns,
 			int[][] seamSigns, String village) {
@@ -241,7 +241,7 @@ public final class RoadWriter {
 			}
 			try {
 				writeCell(net, cell, ctx, config, table, sideFacts, countedEdgeColumns, shiftedComponents,
-						buildingBoxes, doorFronts, threeWideMiddles, village);
+						buildingMask, doorFronts, threeWideMiddles, village);
 			} catch (Throwable t) {
 				VillagePathSmoothed.LOGGER.debug("[VPS] failed to write road cell {} {}", cell.x, cell.z, t);
 				// Review 4 risk R3: the cell's vanilla block is NOT there to fall
@@ -445,14 +445,14 @@ public final class RoadWriter {
 	 * the same whole-block delta, per the user's "non-ground blocks move with
 	 * the surface" decision.
 	 */
-	private static void writeGroundOverlapCell(RoadCell cell, VpsGenContext ctx, int[][] buildingBoxes) {
+	private static void writeGroundOverlapCell(RoadCell cell, VpsGenContext ctx, BuildingMask buildingMask) {
 		Block ground = VpsCompat.blockById(cell.groundBlock);
 		if (ground == null) {
 			return;
 		}
 		int targetY = RoadWritePolicy.roadBlockY(cell.solvedP, false);
 		if (targetY < ctx.getMinY() || targetY > ctx.getMaxY()
-				|| RoadWritePolicy.insideBuildingAt(buildingBoxes, cell.x, targetY, cell.z)) {
+				|| RoadWritePolicy.insideBuildingAt(buildingMask, cell.x, targetY, cell.z)) {
 			return;
 		}
 		int oldY = cell.groundOldBlockY;
@@ -470,12 +470,12 @@ public final class RoadWriter {
 			if (cell.groundAboveLocalYs != null) {
 				if (dy > 0) {
 					for (int k = cell.groundAboveLocalYs.length - 1; k >= 0; k--) {
-						moved |= moveGroundBlock(ctx, cell, buildingBoxes,
+						moved |= moveGroundBlock(ctx, cell, buildingMask,
 								oldY + cell.groundAboveLocalYs[k], dy);
 					}
 				} else {
 					for (int k = 0; k < cell.groundAboveLocalYs.length; k++) {
-						moved |= moveGroundBlock(ctx, cell, buildingBoxes,
+						moved |= moveGroundBlock(ctx, cell, buildingMask,
 								oldY + cell.groundAboveLocalYs[k], dy);
 					}
 				}
@@ -496,15 +496,15 @@ public final class RoadWriter {
 		VpsPipeline.ROAD_CELLS_WRITTEN.incrementAndGet();
 	}
 
-	private static boolean moveGroundBlock(VpsGenContext ctx, RoadCell cell, int[][] buildingBoxes,
+	private static boolean moveGroundBlock(VpsGenContext ctx, RoadCell cell, BuildingMask buildingMask,
 			int oldY, int dy) {
 		int newY = oldY + dy;
 		if (oldY < ctx.getMinY() || oldY > ctx.getMaxY()
 				|| newY < ctx.getMinY() || newY > ctx.getMaxY()) {
 			return false;
 		}
-		if (RoadWritePolicy.insideBuildingAt(buildingBoxes, cell.x, oldY, cell.z)
-				|| RoadWritePolicy.insideBuildingAt(buildingBoxes, cell.x, newY, cell.z)) {
+		if (RoadWritePolicy.insideBuildingAt(buildingMask, cell.x, oldY, cell.z)
+				|| RoadWritePolicy.insideBuildingAt(buildingMask, cell.x, newY, cell.z)) {
 			return false;
 		}
 		BlockState state = ctx.blockState(cell.x, oldY, cell.z);
@@ -520,7 +520,7 @@ public final class RoadWriter {
 	private static void writeCell(RoadNetwork net, RoadCell cell, VpsGenContext ctx, VillagePathSmoothedConfig config,
 			RoadMaterialTable table, Map<SideKey, SideFacts> sideFacts,
 			Set<Long> countedEdgeColumns, int[][] shiftedComponents,
-			int[][] buildingBoxes, int[][] doorFronts, java.util.BitSet threeWideMiddles, String village) {
+			BuildingMask buildingMask, int[][] doorFronts, java.util.BitSet threeWideMiddles, String village) {
 		int x = cell.x;
 		int z = cell.z;
 
@@ -529,7 +529,7 @@ public final class RoadWriter {
 		// claimed column was suppressed, so the overlap surface has to be written
 		// here; the roads on both sides then meet the same flat unit.
 		if (cell.groundOverlap) {
-			writeGroundOverlapCell(cell, ctx, buildingBoxes);
+			writeGroundOverlapCell(cell, ctx, buildingMask);
 			return;
 		}
 
@@ -551,7 +551,7 @@ public final class RoadWriter {
 			RoadMaterialTable.StyleMaterials plazaMaterials = table.forStyle(cell.style);
 			applyKerbsAndRailings(net, cell, ctx, config, plazaMaterials,
 					RoadWritePolicy.roadTopBlockY(cell.solvedP), cell.solvedP, sideFacts, countedEdgeColumns,
-					buildingBoxes, doorFronts, RoadWritePolicy.NO_CEILING);
+					buildingMask, doorFronts, RoadWritePolicy.NO_CEILING);
 			return;
 		}
 
@@ -598,7 +598,7 @@ public final class RoadWriter {
 		// smoothing can never overwrite a building body. Counted so the yield is
 		// visible in /vps stats.
 		if (config.roadSmoothing.protectBuildings && !cell.seat
-				&& RoadWritePolicy.insideBuilding(buildingBoxes, x, z, cell.solvedP)) {
+				&& RoadWritePolicy.insideBuilding(buildingMask, x, z, cell.solvedP)) {
 			BUILDING_CELLS_SKIPPED.incrementAndGet();
 			return;
 		}
@@ -775,7 +775,7 @@ public final class RoadWriter {
 					config.roadSmoothing.maxClearLayers);
 			// Clear upward to min(clear cap, the fresh column top): never stop at the
 			// first air, so a cave inside the cap is cleared out too.
-			clearAbove(ctx, x, z, roadTopBlockY, clearTop, buildingBoxes);
+			clearAbove(ctx, x, z, roadTopBlockY, clearTop, buildingMask);
 			if (RoadWritePolicy.tunnelRoof(roadTopBlockY, clearSurfaceTopY, clearTop, config.roadSmoothing.maxClearLayers)) {
 				OVER_BUDGET_CELLS.incrementAndGet();
 			}
@@ -797,7 +797,7 @@ public final class RoadWriter {
 			// return above protects the fountain).
 			if (config.kerb.enabled && !aboveWater) {
 				lineCeiling(ctx, x, z, clearTop, highestBlockY, config.roadSmoothing.maxClearLayers,
-						ceilingBottomY, threeWideMiddles.get(cell.index), buildingBoxes, materials);
+						ceilingBottomY, threeWideMiddles.get(cell.index), buildingMask, materials);
 				// 2026-10-22 (user decision, relaxed 2026-10-23): at a ceiling
 				// end - an open 4-adjacent ROAD cell, along the road or lateral -
 				// the ceiling's end turns upward into a kerb face. The road column
@@ -805,7 +805,7 @@ public final class RoadWriter {
 				// top; probe-2's second cell is one step INTO the hill body,
 				// opposite the open cell, never the open cell itself.
 				try {
-					wrapCeilingEnd(ctx, net, cell, ceilingBottomY, buildingBoxes, materials);
+					wrapCeilingEnd(ctx, net, cell, ceilingBottomY, buildingMask, materials);
 				} catch (Throwable t) {
 					// cosmetic: an unreadable neighbour must not fail the cell
 				}
@@ -815,7 +815,7 @@ public final class RoadWriter {
 
 		// ---- kerbs and railings on side edges (5.5)
 		applyKerbsAndRailings(net, cell, ctx, config, materials, roadTopBlockY, writtenWalkSurface2,
-				sideFacts, countedEdgeColumns, buildingBoxes, doorFronts, ceilingBottomY);
+				sideFacts, countedEdgeColumns, buildingMask, doorFronts, ceilingBottomY);
 	}
 
 	/**
@@ -839,7 +839,7 @@ public final class RoadWriter {
 	 * the terrain top.
 	 */
 	private static void lineCeiling(VpsGenContext ctx, int x, int z, int clearTop, int highestBlockY,
-			int maxClearLayers, int ceilingBottomY, boolean middle, int[][] buildingBoxes,
+			int maxClearLayers, int ceilingBottomY, boolean middle, BuildingMask buildingMask,
 			RoadMaterialTable.StyleMaterials materials) {
 		if (ceilingBottomY == RoadWritePolicy.NO_CEILING || ceilingBottomY > ctx.getMaxY()) {
 			return; // open sky
@@ -851,7 +851,7 @@ public final class RoadWriter {
 			return;
 		}
 		boolean capFormed = RoadWritePolicy.capFormedCeiling(clearTop, highestBlockY, maxClearLayers, ceilingBottomY);
-		boolean protectedBlock = RoadWritePolicy.insideBuildingAt(buildingBoxes, x, ceilingBottomY, z);
+		boolean protectedBlock = RoadWritePolicy.insideBuildingAt(buildingMask, x, ceilingBottomY, z);
 		if (capFormed && middle) {
 			if (!protectedBlock) {
 				setBlock(ctx, x, ceilingBottomY, z, Blocks.GLOWSTONE.defaultBlockState());
@@ -865,7 +865,7 @@ public final class RoadWriter {
 		}
 		if (!capFormed && middle) {
 			// Natural cave roof above the clear cap: hang the lantern from it.
-			placeCeilingLantern(ctx, x, z, clearTop + 1, ceilingBottomY, buildingBoxes);
+			placeCeilingLantern(ctx, x, z, clearTop + 1, ceilingBottomY, buildingMask);
 		}
 	}
 
@@ -886,7 +886,7 @@ public final class RoadWriter {
 	 * railing goes on each wrapped run top.
 	 */
 	private static void wrapCeilingEnd(VpsGenContext ctx, RoadNetwork net, RoadCell cell,
-			int ceilingBottomY, int[][] buildingBoxes, RoadMaterialTable.StyleMaterials materials) {
+			int ceilingBottomY, BuildingMask buildingMask, RoadMaterialTable.StyleMaterials materials) {
 		if (ceilingBottomY == RoadWritePolicy.NO_CEILING) {
 			return;
 		}
@@ -917,9 +917,9 @@ public final class RoadWriter {
 		boolean placed = false;
 		for (int y = ceilingBottomY + 1; y <= topY; y++) {
 			if (ctx.isProtectedDecoration(cell.x, y, cell.z)
-					|| RoadWritePolicy.insideBuildingAt(buildingBoxes, cell.x, y, cell.z)) {
+					|| RoadWritePolicy.insideBuildingAt(buildingMask, cell.x, y, cell.z)) {
 				if (runWrapped) {
-					placeKerbRailing(ctx, cell.x, cell.z, last + 1, buildingBoxes, materials);
+					placeKerbRailing(ctx, cell.x, cell.z, last + 1, buildingMask, materials);
 				}
 				break;
 			}
@@ -934,7 +934,7 @@ public final class RoadWriter {
 			}
 			if (!nearTerrain && !farTerrain) {
 				if (runWrapped) {
-					placeKerbRailing(ctx, cell.x, cell.z, last + 1, buildingBoxes, materials);
+					placeKerbRailing(ctx, cell.x, cell.z, last + 1, buildingMask, materials);
 				}
 				runWrapped = false;
 				continue;
@@ -946,7 +946,7 @@ public final class RoadWriter {
 			CEILING_END_BLOCKS.incrementAndGet();
 		}
 		if (runWrapped) {
-			placeKerbRailing(ctx, cell.x, cell.z, last + 1, buildingBoxes, materials);
+			placeKerbRailing(ctx, cell.x, cell.z, last + 1, buildingMask, materials);
 		}
 		if (placed) {
 			CEILING_END_WRAPS.incrementAndGet();
@@ -968,9 +968,9 @@ public final class RoadWriter {
 
 	/** Hanging lantern at {@code lanternY}, with an iron chain up to the natural roof. */
 	private static void placeCeilingLantern(VpsGenContext ctx, int x, int z, int lanternY, int roofY,
-			int[][] buildingBoxes) {
+			BuildingMask buildingMask) {
 		if (lanternY >= ctx.getMinY() && lanternY <= ctx.getMaxY()
-				&& !RoadWritePolicy.insideBuildingAt(buildingBoxes, x, lanternY, z)) {
+				&& !RoadWritePolicy.insideBuildingAt(buildingMask, x, lanternY, z)) {
 			BlockState lantern = Blocks.LANTERN.defaultBlockState();
 			if (lantern.hasProperty(LanternBlock.HANGING)) {
 				lantern = lantern.setValue(LanternBlock.HANGING, true);
@@ -982,7 +982,7 @@ public final class RoadWriter {
 		}
 		for (int y = lanternY + 1; y < roofY; y++) {
 			if (y < ctx.getMinY() || y > ctx.getMaxY()
-					|| RoadWritePolicy.insideBuildingAt(buildingBoxes, x, y, z)) {
+					|| RoadWritePolicy.insideBuildingAt(buildingMask, x, y, z)) {
 				continue;
 			}
 			BlockState chain = Blocks.CHAIN.defaultBlockState();
@@ -1021,9 +1021,9 @@ public final class RoadWriter {
 	 * (kerbs, leaves, scaffolding) outside those boxes are not protected.
 	 */
 	private static void clearAbove(VpsGenContext ctx, int x, int z, int roadTopBlockY, int clearTop,
-			int[][] buildingBoxes) {
+			BuildingMask buildingMask) {
 		for (int y = roadTopBlockY + 1; y <= clearTop; y++) {
-			if (RoadWritePolicy.insideBuildingAt(buildingBoxes, x, y, z)) {
+			if (RoadWritePolicy.insideBuildingAt(buildingMask, x, y, z)) {
 				continue;
 			}
 			setBlockUnlessProtected(ctx, x, y, z, Blocks.AIR.defaultBlockState(),
@@ -1145,7 +1145,7 @@ public final class RoadWriter {
 	 */
 	private static void applyKerbsAndRailings(RoadNetwork net, RoadCell cell, VpsGenContext ctx, VillagePathSmoothedConfig config,
 			RoadMaterialTable.StyleMaterials materials, int roadTopBlockY, int writtenWalkSurface2,
-			Map<SideKey, SideFacts> sideFacts, Set<Long> countedEdgeColumns, int[][] buildingBoxes,
+			Map<SideKey, SideFacts> sideFacts, Set<Long> countedEdgeColumns, BuildingMask buildingMask,
 			int[][] doorFronts, int ceilingBottomY) {
 		int sRoad2 = writtenWalkSurface2;
 		for (int dir = 0; dir < 4; dir++) {
@@ -1208,13 +1208,13 @@ public final class RoadWriter {
 
 			if (config.kerb.enabled && RoadWritePolicy.kerbApplies(sSide2, sRoad2, config.kerb.minDropHeight)) {
 				int wallTop = placeKerbWall(ctx, outX, outZ, farX, farZ, roadTopBlockY, probeTopY, ceilingBottomY,
-						buildingBoxes, materials);
+						buildingMask, materials);
 				if (wallTop != Integer.MIN_VALUE) {
 					// 2026-10-17 / 2026-10-21: close the wall's along-road end
 					// when the cap cell is open above the current wall top, so
 					// the top does not stop raw.
 					capKerbRunEnds(net, ctx, cell.x, cell.z, outX, outZ, roadTopBlockY, wallTop,
-							buildingBoxes, materials, sideFacts);
+							buildingMask, materials, sideFacts);
 				}
 			}
 
@@ -1290,7 +1290,7 @@ public final class RoadWriter {
 	 * planted at the ceiling level outside the road column.
 	 */
 	private static int placeKerbWall(VpsGenContext ctx, int x, int z, int farX, int farZ, int roadTopBlockY,
-			int topmostY, int ceilingBottomY, int[][] buildingBoxes, RoadMaterialTable.StyleMaterials materials) {
+			int topmostY, int ceilingBottomY, BuildingMask buildingMask, RoadMaterialTable.StyleMaterials materials) {
 		boolean placed = false;
 		boolean runWrapped = false;
 		int runTopY = Integer.MIN_VALUE;
@@ -1303,7 +1303,7 @@ public final class RoadWriter {
 			// the tree nor floats over it.
 			if (ctx.isProtectedDecoration(x, y, z)) {
 				if (runWrapped) {
-					placeKerbRailing(ctx, x, z, runTopY + 1, buildingBoxes, materials);
+					placeKerbRailing(ctx, x, z, runTopY + 1, buildingMask, materials);
 				}
 				runWrapped = false;
 				runTopY = Integer.MIN_VALUE;
@@ -1315,7 +1315,7 @@ public final class RoadWriter {
 					&& ctx.hasCollisionOrFluid(farX, y, farZ);
 			if (nearTerrain || farTerrain) {
 				runTopY = y;
-				if (!RoadWritePolicy.insideBuildingAt(buildingBoxes, x, y, z)) {
+				if (!RoadWritePolicy.insideBuildingAt(buildingMask, x, y, z)) {
 					setBlock(ctx, x, y, z, materials.kerbBlock.defaultBlockState());
 					placed = true;
 					runWrapped = true;
@@ -1324,13 +1324,13 @@ public final class RoadWriter {
 				continue;
 			}
 			if (runWrapped) {
-				placeKerbRailing(ctx, x, z, runTopY + 1, buildingBoxes, materials);
+				placeKerbRailing(ctx, x, z, runTopY + 1, buildingMask, materials);
 			}
 			runWrapped = false;
 			runTopY = Integer.MIN_VALUE;
 		}
 		if (runWrapped && RoadWritePolicy.kerbRailingAllowed(runTopY, ceilingBottomY)) {
-			placeKerbRailing(ctx, x, z, runTopY + 1, buildingBoxes, materials);
+			placeKerbRailing(ctx, x, z, runTopY + 1, buildingMask, materials);
 		}
 		if (placed) {
 			VpsPipeline.KERBS_PLACED.incrementAndGet();
@@ -1367,11 +1367,11 @@ public final class RoadWriter {
 	 */
 	private static void capKerbRunEnds(RoadNetwork net, VpsGenContext ctx, int cellX, int cellZ,
 			int outX, int outZ, int roadTopBlockY, int wallTop,
-			int[][] buildingBoxes, RoadMaterialTable.StyleMaterials materials,
+			BuildingMask buildingMask, RoadMaterialTable.StyleMaterials materials,
 			Map<SideKey, SideFacts> sideFacts) {
 		try {
 			capKerbRunEnds0(net, ctx, cellX, cellZ, outX, outZ, roadTopBlockY, wallTop,
-					buildingBoxes, materials, sideFacts);
+					buildingMask, materials, sideFacts);
 		} catch (Throwable t) {
 			// the cap is cosmetic: an unreadable column must not fail the cell write
 		}
@@ -1379,7 +1379,7 @@ public final class RoadWriter {
 
 	private static void capKerbRunEnds0(RoadNetwork net, VpsGenContext ctx, int cellX, int cellZ,
 			int outX, int outZ, int roadTopBlockY, int wallTop,
-			int[][] buildingBoxes, RoadMaterialTable.StyleMaterials materials,
+			BuildingMask buildingMask, RoadMaterialTable.StyleMaterials materials,
 			Map<SideKey, SideFacts> sideFacts) {
 		// along the road = perpendicular to the kerb's side direction
 		int alongX = outZ - cellZ;
@@ -1437,7 +1437,7 @@ public final class RoadWriter {
 			for (int y = firstY; y <= capTopY; y++) {
 				if (ctx.isProtectedDecoration(outX, y, outZ)) {
 					if (runWrapped) {
-						placeKerbRailing(ctx, outX, outZ, runTopY + 1, buildingBoxes, materials);
+						placeKerbRailing(ctx, outX, outZ, runTopY + 1, buildingMask, materials);
 					}
 					runWrapped = false;
 					runTopY = Integer.MIN_VALUE;
@@ -1453,7 +1453,7 @@ public final class RoadWriter {
 						&& ctx.hasCollisionOrFluid(farX, y, farZ);
 				if (nearTerrain || farTerrain) {
 					runTopY = y;
-					if (!RoadWritePolicy.insideBuildingAt(buildingBoxes, outX, y, outZ)) {
+					if (!RoadWritePolicy.insideBuildingAt(buildingMask, outX, y, outZ)) {
 						setBlock(ctx, outX, y, outZ, materials.kerbBlock.defaultBlockState());
 						placed = true;
 						runWrapped = true;
@@ -1461,13 +1461,13 @@ public final class RoadWriter {
 					continue;
 				}
 				if (runWrapped) {
-					placeKerbRailing(ctx, outX, outZ, runTopY + 1, buildingBoxes, materials);
+					placeKerbRailing(ctx, outX, outZ, runTopY + 1, buildingMask, materials);
 				}
 				runWrapped = false;
 				runTopY = Integer.MIN_VALUE;
 			}
 			if (runWrapped) {
-				placeKerbRailing(ctx, outX, outZ, runTopY + 1, buildingBoxes, materials);
+				placeKerbRailing(ctx, outX, outZ, runTopY + 1, buildingMask, materials);
 			}
 			if (placed) {
 				VpsPipeline.KERBS_PLACED.incrementAndGet();
@@ -1477,10 +1477,10 @@ public final class RoadWriter {
 	}
 
 	/** One leaf layer on top of a wrapped kerb run; never replaces a building block. */
-	private static void placeKerbRailing(VpsGenContext ctx, int x, int z, int y, int[][] buildingBoxes,
+	private static void placeKerbRailing(VpsGenContext ctx, int x, int z, int y, BuildingMask buildingMask,
 			RoadMaterialTable.StyleMaterials materials) {
 		if (y < ctx.getMinY() || y > ctx.getMaxY()
-				|| RoadWritePolicy.insideBuildingAt(buildingBoxes, x, y, z)) {
+				|| RoadWritePolicy.insideBuildingAt(buildingMask, x, y, z)) {
 			return;
 		}
 		BlockState leaves = materials.leavesBlock.defaultBlockState();

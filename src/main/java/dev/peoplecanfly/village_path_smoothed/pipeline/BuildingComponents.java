@@ -10,8 +10,10 @@ import dev.peoplecanfly.village_path_smoothed.duck.SinglePoolElementVpsAccess;
 import dev.peoplecanfly.village_path_smoothed.duck.StructureTemplateVpsAccess;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.core.Vec3i;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.tags.BlockTags;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.JigsawBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
@@ -75,15 +77,12 @@ public final class BuildingComponents {
 	 * A piece T1.5 is allowed to move vertically: a RIGID {@code SinglePoolElement}
 	 * building, and nothing else (user decision 2026-10-16, report §3.3-2).
 	 *
-	 * <p>The hay pile ({@code minecraft:pile_hay}) is deliberately NOT moved any
-	 * more: moving it was an unrequested 5c82bf5 behaviour ("非预期，干草堆不应搬动").
-	 * The only hay that still moves is one standing ON a mask seat, and only
-	 * because it rides the seat's own solved level ({@code T15Planner#settleSeats})
-	 * - the 2026-10-16 seat decision keeps the decor on a seat following the
-	 * base. A standalone hay pile stays where vanilla put it; the pile's really
-	 * placed blocks are recorded at placement and protected at write time
-	 * (audit 2026-10-20), so the road still yields to it block by block.
-	 * The decorative trees and flowers are still left alone - a moved tree would
+	 * <p>{@code FeaturePoolElement}s (the hay pile {@code minecraft:pile_hay},
+	 * trees and flowers) are deliberately NOT moved: they are features, not
+	 * vertical structures, and vanilla places them (2026-10-23, superseding the
+	 * 2026-10-16 seat-riding exception for hay). A pile's really placed blocks
+	 * are recorded at placement and protected at write time (audit 2026-10-20),
+	 * so the road still yields to it block by block. A moved tree would also
 	 * fight the vanilla terrain adaptation, which raises the ground it stands on.
 	 *
 	 * <p>Plan C (user decision 2026-10-15): a {@code town_centers} piece is NOT
@@ -113,42 +112,56 @@ public final class BuildingComponents {
 	}
 
 	/**
-	 * 3D bounding boxes {minX, maxX, minY, maxY, minZ, maxZ} of every movable
-	 * building that is NOT an identified decor piece. The writer refuses to
-	 * write a road column whose road block would land inside one of these: the
-	 * building always wins (plan A, user decision 2026-10-15).
+	 * Exact plan-A protection of every movable building that is NOT an
+	 * identified decor piece (user decision 2026-10-23). The mask contains the
+	 * template's real building blocks plus the interior air cells that meet a
+	 * building block along at least five of their six axes before leaving the
+	 * template ({@link BuildingMask#bodyCells}). The
+	 * empty part of a piece's bounding box - a courtyard, the empty corner of a
+	 * template - is deliberately absent, so the road and its clear may use it.
 	 *
 	 * <p>Audit 2026-10-20 decisions 1/4: decor pieces are excluded here (their
-	 * actual blocks are protected individually by {@link StreetDecor}, so the
-	 * bbox no longer creates holes), and the old hay-pile 1x1 box is gone - a
+	 * actual blocks are protected individually by {@link StreetDecor}), and a
 	 * pile's really placed blocks are recorded by the placement hook and
 	 * protected by position. {@code excludedDecorPieces} are piece indices from
 	 * {@link StreetDecor.Resolved#protectedPieceIndices} (seat decor, fixture
-	 * lamps and recognised-but-unresolved decor). Only a piece that could not be
-	 * recognised as decor stays in this list and keeps the bbox fallback.
+	 * lamps and recognised-but-unresolved decor). If a template cannot be read,
+	 * the piece falls back to its whole bounding box: an unknown/modded building
+	 * must not become unprotected.
 	 */
-	public static int[][] protectedBoxes(List<StructurePiece> pieces, Set<Integer> excludedDecorPieces) {
-		List<int[]> boxes = new ArrayList<>();
-		List<Integer> owners = new ArrayList<>();
+	public static BuildingMask protectedMask(List<StructurePiece> pieces, TemplateScan scan,
+			Set<Integer> excludedDecorPieces) {
+		BuildingMask mask = new BuildingMask();
 		for (int i = 0; i < pieces.size(); i++) {
 			StructurePiece piece = pieces.get(i);
 			if (!isMovable(piece)) {
 				continue;
 			}
+			if (excludedDecorPieces != null && excludedDecorPieces.contains(i)) {
+				continue;
+			}
+			int[][] body = scan == null ? null : scan.bodyCells.get(i);
+			if (body != null && piece instanceof PoolElementStructurePiece pool) {
+				StructurePlaceSettings settings = new StructurePlaceSettings().setRotation(pool.getRotation());
+				BlockPos origin = pool.getPosition();
+				for (int[] cell : body) {
+					BlockPos relative = StructureTemplate.calculateRelativePosition(settings,
+							new BlockPos(cell[0], cell[1], cell[2]));
+					mask.addCell(origin.getX() + relative.getX(),
+							origin.getY() + relative.getY(),
+							origin.getZ() + relative.getZ());
+				}
+				continue;
+			}
 			BoundingBox box = piece.getBoundingBox();
-			boxes.add(new int[]{box.minX(), box.maxX(), box.minY(), box.maxY(), box.minZ(), box.maxZ()});
-			owners.add(i);
+			mask.addBox(box.minX(), box.maxX(), box.minY(), box.maxY(), box.minZ(), box.maxZ());
 		}
-		int[] ownerArray = new int[owners.size()];
-		for (int i = 0; i < ownerArray.length; i++) {
-			ownerArray[i] = owners.get(i);
-		}
-		return RoadWritePolicy.selectPlanABoxes(boxes.toArray(new int[0][]), ownerArray, excludedDecorPieces);
+		return mask;
 	}
 
-	/** No identified decoration: the historical building-only boxes. */
-	public static int[][] protectedBoxes(List<StructurePiece> pieces) {
-		return protectedBoxes(pieces, Set.of());
+	/** No identified decoration: the historical building-only protection. */
+	public static BuildingMask protectedMask(List<StructurePiece> pieces, TemplateScan scan) {
+		return protectedMask(pieces, scan, Set.of());
 	}
 
 	private static final int[][] NONE = new int[0][];
@@ -169,6 +182,12 @@ public final class BuildingComponents {
 		public final Map<Integer, int[][]> doors = new HashMap<>();
 		/** Piece index -> {x, z, frontDX, frontDZ} {@code building_entrance} jigsaws. */
 		public final Map<Integer, int[][]> entrances = new HashMap<>();
+		/**
+		 * Piece index -> template-local protected cells {x, y, z} of the building
+		 * body and its interior (2026-10-23). A missing entry means "template
+		 * unreadable, fall back to the piece bounding box".
+		 */
+		public final Map<Integer, int[][]> bodyCells = new HashMap<>();
 	}
 
 	/**
@@ -204,6 +223,8 @@ public final class BuildingComponents {
 				}
 				StructurePlaceSettings settings = new StructurePlaceSettings().setRotation(pool.getRotation());
 				StructureTemplate.Palette palette = settings.getRandomPalette(palettes, pool.getPosition());
+				Vec3i size = template.getSize();
+				boolean[][][] solid = new boolean[size.getX()][size.getY()][size.getZ()];
 				List<int[]> doors = new ArrayList<>();
 				List<int[]> entrances = new ArrayList<>();
 				for (StructureTemplate.StructureBlockInfo info : palette.blocks()) {
@@ -214,6 +235,18 @@ public final class BuildingComponents {
 					BlockState state = info.state;
 					BlockPos infoPos = info.pos;
 					//#endif
+					// 2026-10-23: the real building body, in template-local
+					// coordinates. Air/void cells are kept false; the six-axis
+					// interior rule runs after the scan.
+					if (isBuildingBlock(state, info)) {
+						int bx = infoPos.getX();
+						int by = infoPos.getY();
+						int bz = infoPos.getZ();
+						if (bx >= 0 && bx < solid.length && by >= 0 && by < solid[bx].length
+								&& bz >= 0 && bz < solid[bx][by].length) {
+							solid[bx][by][bz] = true;
+						}
+					}
 					boolean lowerHalf = state.hasProperty(BlockStateProperties.DOUBLE_BLOCK_HALF)
 							&& state.getValue(BlockStateProperties.DOUBLE_BLOCK_HALF) == DoubleBlockHalf.LOWER;
 					if (lowerHalf && !state.is(BlockTags.DOORS)) {
@@ -241,6 +274,7 @@ public final class BuildingComponents {
 					entrances.add(new int[]{worldPos.getX(), worldPos.getZ(), front.getStepX(), front.getStepZ()});
 				}
 				out.doors.put(i, doors.toArray(new int[0][]));
+				out.bodyCells.put(i, BuildingMask.bodyCells(solid));
 				if (!entrances.isEmpty()) {
 					out.entrances.put(i, entrances.toArray(new int[0][]));
 				}
@@ -267,6 +301,55 @@ public final class BuildingComponents {
 		//$$ return nbt.getString("name").orElse(null);
 		//#else
 		return nbt.getString("name");
+		//#endif
+	}
+
+	/**
+	 * True when the template really renders a building block at this cell
+	 * (2026-10-23). Air, {@code structure_void} and structure blocks are not
+	 * body. A jigsaw cell is the {@code final_state} the
+	 * {@code JigsawReplacementProcessor} renders: {@code structure_void} means
+	 * the cell is dropped, a normal block means it belongs to the body.
+	 */
+	private static boolean isBuildingBlock(BlockState state, StructureTemplate.StructureBlockInfo info) {
+		if (state.isAir() || state.is(Blocks.STRUCTURE_VOID) || state.is(Blocks.STRUCTURE_BLOCK)) {
+			return false;
+		}
+		if (!state.is(Blocks.JIGSAW)) {
+			return true;
+		}
+		String finalState = jigsawFinalState(info);
+		if (finalState == null || finalState.isEmpty()) {
+			return false; // the replacement processor drops a jigsaw with no final_state
+		}
+		String id = finalState;
+		int bracket = id.indexOf('[');
+		if (bracket >= 0) {
+			id = id.substring(0, bracket);
+		}
+		int colon = id.indexOf(':');
+		if (colon >= 0) {
+			id = id.substring(colon + 1);
+		}
+		return !id.equals("air") && !id.equals("cave_air") && !id.equals("void_air")
+				&& !id.equals("structure_void");
+	}
+
+	/** The jigsaw's {@code final_state} NBT, version-correct (like {@link #jigsawName}). */
+	private static String jigsawFinalState(StructureTemplate.StructureBlockInfo info) {
+		CompoundTag nbt;
+		//#if MC >= 12001
+		//$$ nbt = info.nbt();
+		//#else
+		nbt = info.nbt;
+		//#endif
+		if (nbt == null) {
+			return null;
+		}
+		//#if MC >= 12110
+		//$$ return nbt.getString("final_state").orElse(null);
+		//#else
+		return nbt.getString("final_state");
 		//#endif
 	}
 

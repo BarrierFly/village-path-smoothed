@@ -179,15 +179,18 @@ water use scaffolding, and dangerous edges get leaf railings.
      with the same collision/fluid rule. The clear end is re-read at write time
      from the real column (up to the clear cap, default 4), and **only the
      lowest block of the ceiling is lined** - the roof thickness above it is
-     left untouched, except at a **ceiling end**: where the cell one step along
-     the road (including just past the road end) is open sky, the **ceiling's
-     end turns upward into a kerb face in the road column**, from one above the
-     ceiling layer to that column's terrain top, with a leaf railing at each run
-     top. The normal probe-2-wrap-1 rule applies: the first cell is the
-     road/face column, the second is one cell **into the hill along the road**
-     (opposite the open end), never the open along-road cell. A layer where both
-     probed cells are air stays air; the wall end cap uses the same probe rule
-     and cannot place floating cobblestone. When the cap forms the
+     left untouched, except at a **ceiling end**: when any 4-adjacent **road**
+     cell (along the road or laterally) sees open sky above its own walk
+     surface, the **ceiling's end turns upward into a kerb face in the road
+     column**, from one above the ceiling layer to that column's terrain top,
+     with a leaf railing at each run top. The open cell must still be part of
+     the road net - an off-road open cell already carries the road's own side
+     kerb, and wrapping there would stack a kerb on top of that kerb. The
+     normal probe-2-wrap-1 rule applies: the first cell is the road/face
+     column, the second is one cell **into the hill** (opposite the open cell,
+     along the road or laterally), never the open cell itself. A layer where
+     both probed cells are air stays air; the wall end cap uses the same probe
+     rule and cannot place floating cobblestone. When the cap forms the
      ceiling, that bottom block becomes
      **glowstone** on the middle cell of a straight 3-wide road; a natural cave
      roof beyond the cap has its lowest block lined with the kerb material and
@@ -546,10 +549,12 @@ Two things are worth spelling out:
   （每个连续包边段顶端——地形顶端和空隙顶端——放一层树叶，不进入房屋；因顶板或世界
   边界被截断的段不放截断顶叶）；包顶（仍只探测路面本列，改用碰撞/液体判据；清格终点
   写入时重读，默认上限 4；**只处理顶板最低一格**，其上厚度保持原样；**包顶末端例外**
-  （2026-10-22）：沿道路方向顶板结束、沿路一格（含道路尽头外那一格）见天时，**顶板末端
-  在路列内向上转成包边**：从包顶层上一格包到该路列地形顶端，并在各段顶端放护栏。按常规
-  **探2包1**：第1格是路列/转上来的面，第2格是沿路**往山体里退一格**（露天格的反方向），
-  **不会探回沿路见天格**；两格都是空气的层不放圆石，墙端收口同样遵守此规则。
+  （2026-10-22，2026-10-23 放宽）：4 邻格中**是路格**的一格（沿路或横向）在其自身路面
+  以上见天时，**顶板末端就在路列内向上转成包边**：从包顶层上一格包到该路列地形顶端，
+  并在各段顶端放护栏。露天格必须仍在路网内——离开道路的露天格旁边已有道路自己的侧向
+  包边，再向上包就成了“包边上再包边”，不触发。按常规
+  **探2包1**：第1格是路列/转上来的面，第2格是**往山体里退一格**（露天格的反方向，沿路
+  或横向），**不会探回露天格**；两格都是空气的层不放圆石，墙端收口同样遵守此规则。
   最低格若是非地形装饰则整列跳过、不换材质也不挂灯/链；到达上限形成的
   顶板最低格在三格宽直路中间格换**荧石**，超过上限的自然洞顶最低格保留包边材质并在
   上限格放**灯笼 + 铁链**，路口/拐角/非三格宽不做）；树叶落差护栏（条件不变；每条路各管

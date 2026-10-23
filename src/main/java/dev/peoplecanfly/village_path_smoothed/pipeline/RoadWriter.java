@@ -166,13 +166,14 @@ public final class RoadWriter {
 	 */
 	public static final AtomicLong ROOF_LINED_BLOCKS = new AtomicLong();
 	/**
-	 * 2026-10-22: ceiling cells whose side kerb is allowed above the ceiling
-	 * because the ceiling ends along the road (the tunnel-mouth face). The
-	 * sub-counters are arm membership and the open along-road end.
+	 * 2026-10-22, relaxed 2026-10-23: ceiling cells whose exposed end turns
+	 * upward into a kerb face. An end is any 4-adjacent ROAD cell that sees open
+	 * sky above its own walk surface - along the road or laterally. End cells
+	 * have terrain above the ceiling, road neighbours are the adjacent road
+	 * cells inspected, open cells have at least one open road neighbour.
 	 */
 	public static final AtomicLong CEILING_END_CELLS = new AtomicLong();
 	public static final AtomicLong CEILING_END_ROAD_CELLS = new AtomicLong();
-	public static final AtomicLong CEILING_END_ALONG_CELLS = new AtomicLong();
 	public static final AtomicLong CEILING_END_OPEN_CELLS = new AtomicLong();
 	/** Ceiling-end faces that actually wrapped upward, and the blocks they placed. */
 	public static final AtomicLong CEILING_END_WRAPS = new AtomicLong();
@@ -797,11 +798,12 @@ public final class RoadWriter {
 			if (config.kerb.enabled && !aboveWater) {
 				lineCeiling(ctx, x, z, clearTop, highestBlockY, config.roadSmoothing.maxClearLayers,
 						ceilingBottomY, threeWideMiddles.get(cell.index), buildingBoxes, materials);
-				// 2026-10-22 (user decision): at the along-road end of the
-				// ceiling, the ceiling's end turns upward into a kerb face. The
-				// road column itself is wrapped from above the ceiling layer to
-				// its terrain top; probe-2's second cell is one step INTO the
-				// hill body along the road, never the open along-road cell.
+				// 2026-10-22 (user decision, relaxed 2026-10-23): at a ceiling
+				// end - an open 4-adjacent ROAD cell, along the road or lateral -
+				// the ceiling's end turns upward into a kerb face. The road column
+				// itself is wrapped from above the ceiling layer to its terrain
+				// top; probe-2's second cell is one step INTO the hill body,
+				// opposite the open cell, never the open cell itself.
 				try {
 					wrapCeilingEnd(ctx, net, cell, ceilingBottomY, buildingBoxes, materials);
 				} catch (Throwable t) {
@@ -868,69 +870,42 @@ public final class RoadWriter {
 	}
 
 	/**
-	 * 2026-10-22 (user decision): at the along-road end of the ceiling, the
-	 * ceiling's end turns upward into a kerb face. The road column itself is
-	 * wrapped from one above the ceiling layer to its terrain top.
+	 * 2026-10-22 (user decision, relaxed 2026-10-23): at a ceiling end the
+	 * ceiling's exposed face turns upward into a kerb face. The road column
+	 * itself is wrapped from one above the ceiling layer to its terrain top.
+	 *
+	 * <p>The end is any 4-adjacent <b>road</b> cell that sees open sky above its
+	 * own walk surface - along the road or laterally. An off-road open cell does
+	 * not count: its side already carries the road's own kerb, and wrapping the
+	 * road column there would stack a kerb on top of that kerb.
 	 *
 	 * <p>Probe-2-wrap-1 is kept: the first cell is the road/face column, the
-	 * second is one cell **into the hill along the road** (the cell on the
-	 * opposite side of the open end), not the open along-road cell. Only a layer
-	 * where either probed cell has a collision/fluid is wrapped; a layer with
-	 * both air stays air. A leaf railing goes on each wrapped run top.
+	 * second is one cell **into the hill**, opposite each open road neighbour
+	 * (never the open cell). Only a layer where either probed cell has a
+	 * collision/fluid is wrapped; a layer with both air stays air. A leaf
+	 * railing goes on each wrapped run top.
 	 */
 	private static void wrapCeilingEnd(VpsGenContext ctx, RoadNetwork net, RoadCell cell,
 			int ceilingBottomY, int[][] buildingBoxes, RoadMaterialTable.StyleMaterials materials) {
 		if (ceilingBottomY == RoadWritePolicy.NO_CEILING) {
 			return;
 		}
-		CEILING_END_CELLS.incrementAndGet();
 		int topY = ctx.highestTerrainCollisionOrFluidY(cell.x, cell.z, ceilingBottomY + 1);
 		if (topY <= ceilingBottomY) {
 			return; // no terrain above the ceiling to wrap
 		}
-		// Second probe = one step INTO the hill, opposite each open along-road end.
-		java.util.List<int[]> farCells = new java.util.ArrayList<>(2);
-		boolean inArm = false;
-		for (RoadNetwork.Arm arm : net.arms) {
-			boolean found = false;
-			for (int[] slice : arm.slices) {
-				for (int idx : slice) {
-					if (idx == cell.index) {
-						found = true;
-						break;
-					}
-				}
-				if (found) {
-					break;
-				}
+		CEILING_END_CELLS.incrementAndGet();
+		// Second probe = one step INTO the hill, opposite each open road neighbour.
+		java.util.List<int[]> farCells = new java.util.ArrayList<>(4);
+		for (int dir = 0; dir < 4; dir++) {
+			int nx = cell.x + SIDE_DX[dir];
+			int nz = cell.z + SIDE_DZ[dir];
+			if (net.cellAt(nx, nz) < 0) {
+				continue; // only an open ROAD cell marks a ceiling end
 			}
-			if (!found) {
-				continue;
-			}
-			inArm = true;
-			CEILING_END_ALONG_CELLS.incrementAndGet();
-			int dx = arm.sweepAxis == 1 ? 1 : 0;
-			int dz = arm.sweepAxis == 0 ? 1 : 0;
-			for (int sign = -1; sign <= 1; sign += 2) {
-				if (isOpenAlong(ctx, net, cell.x + sign * dx, cell.z + sign * dz, cell)) {
-					farCells.add(new int[]{cell.x - sign * dx, cell.z - sign * dz});
-				}
-			}
-			break;
-		}
-		if (!inArm) {
-			// Junction/region fallback: only a continuing road cell with open sky
-			// marks the end; the into-hill probe is the opposite cell.
-			for (int dir = 0; dir < 4; dir++) {
-				int nx = cell.x + SIDE_DX[dir];
-				int nz = cell.z + SIDE_DZ[dir];
-				if (net.cellAt(nx, nz) < 0) {
-					continue;
-				}
-				CEILING_END_ROAD_CELLS.incrementAndGet();
-				if (isOpenAlong(ctx, net, nx, nz, cell)) {
-					farCells.add(new int[]{cell.x - SIDE_DX[dir], cell.z - SIDE_DZ[dir]});
-				}
+			CEILING_END_ROAD_CELLS.incrementAndGet();
+			if (isOpenSkyAbove(ctx, net, nx, nz)) {
+				farCells.add(new int[]{cell.x - SIDE_DX[dir], cell.z - SIDE_DZ[dir]});
 			}
 		}
 		if (farCells.isEmpty()) {
@@ -979,15 +954,11 @@ public final class RoadWriter {
 	}
 
 	/**
-	 * True when the column one step along the road is open sky above the road:
-	 * the tunnel-mouth test. The neighbour road cell's own solved level is used
-	 * when it exists; otherwise the current cell's level is the reference.
+	 * True when the given road cell is open sky above its own solved walk
+	 * surface: the ceiling-end test. The caller guarantees {@code net.cellAt(x, z) >= 0}.
 	 */
-	private static boolean isOpenAlong(VpsGenContext ctx, RoadNetwork net, int x, int z, RoadCell current) {
-		int index = net.cellAt(x, z);
-		int fromY = index >= 0
-				? RoadWritePolicy.roadTopBlockY(net.cells.get(index).solvedP)
-				: RoadWritePolicy.roadTopBlockY(current.solvedP);
+	private static boolean isOpenSkyAbove(VpsGenContext ctx, RoadNetwork net, int x, int z) {
+		int fromY = RoadWritePolicy.roadTopBlockY(net.cells.get(net.cellAt(x, z)).solvedP);
 		int scanFrom = fromY + 1;
 		// highestTerrainCollisionOrFluidY returns scanFrom - 1 for an empty
 		// column (not Integer.MIN_VALUE), so "open" is "nothing at or above the

@@ -200,6 +200,40 @@ public final class RoadWritePolicy {
 	}
 
 	/**
+	 * Plan A box selection: keep only the boxes whose owning piece is not a
+	 * recognised decor piece. A decor box is never a building obstacle - a 3x3
+	 * lamp owns 8 empty ring columns in its bbox while its real base is 1x1, so
+	 * using the bbox would delete the ring from the road. Extracted pure so the
+	 * exclusion rule is unit tested; {@code BuildingComponents.protectedBoxes}
+	 * is its only production caller.
+	 *
+	 * @param boxes  boxes in the {minX,maxX,minY,maxY,minZ,maxZ} layout
+	 * @param owners piece index for each box (same order)
+	 * @param decorPieces recognised decor piece indices to exclude
+	 */
+	public static int[][] selectPlanABoxes(int[][] boxes, int[] owners, java.util.Set<Integer> decorPieces) {
+		if (boxes == null || boxes.length == 0) {
+			return new int[0][];
+		}
+		int keep = 0;
+		for (int i = 0; i < boxes.length; i++) {
+			int owner = owners != null && i < owners.length ? owners[i] : -1;
+			if (decorPieces == null || !decorPieces.contains(owner)) {
+				keep++;
+			}
+		}
+		int[][] out = new int[keep][];
+		int n = 0;
+		for (int i = 0; i < boxes.length; i++) {
+			int owner = owners != null && i < owners.length ? owners[i] : -1;
+			if (decorPieces == null || !decorPieces.contains(owner)) {
+				out[n++] = boxes[i];
+			}
+		}
+		return out;
+	}
+
+	/**
 	 * Plan 2026-10-17 (door/basis fix, section 3.3): true when the road block of
 	 * a column would land inside one of the protected building boxes
 	 * {minX, maxX, minY, maxY, minZ, maxZ}. This is the SAME test the writer

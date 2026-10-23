@@ -123,20 +123,27 @@ public final class BuildingComponents {
 	 * bbox no longer creates holes), and the old hay-pile 1x1 box is gone - a
 	 * pile's really placed blocks are recorded by the placement hook and
 	 * protected by position. {@code excludedDecorPieces} are piece indices from
-	 * {@link StreetDecor.Resolved#pieceIndices}; an unidentified decor piece
-	 * stays in this list and keeps the old bbox fallback.
+	 * {@link StreetDecor.Resolved#protectedPieceIndices} (seat decor, fixture
+	 * lamps and recognised-but-unresolved decor). Only a piece that could not be
+	 * recognised as decor stays in this list and keeps the bbox fallback.
 	 */
 	public static int[][] protectedBoxes(List<StructurePiece> pieces, Set<Integer> excludedDecorPieces) {
-		List<int[]> out = new ArrayList<>();
+		List<int[]> boxes = new ArrayList<>();
+		List<Integer> owners = new ArrayList<>();
 		for (int i = 0; i < pieces.size(); i++) {
 			StructurePiece piece = pieces.get(i);
-			if (!isMovable(piece) || excludedDecorPieces.contains(i)) {
+			if (!isMovable(piece)) {
 				continue;
 			}
 			BoundingBox box = piece.getBoundingBox();
-			out.add(new int[]{box.minX(), box.maxX(), box.minY(), box.maxY(), box.minZ(), box.maxZ()});
+			boxes.add(new int[]{box.minX(), box.maxX(), box.minY(), box.maxY(), box.minZ(), box.maxZ()});
+			owners.add(i);
 		}
-		return out.toArray(new int[0][]);
+		int[] ownerArray = new int[owners.size()];
+		for (int i = 0; i < ownerArray.length; i++) {
+			ownerArray[i] = owners.get(i);
+		}
+		return RoadWritePolicy.selectPlanABoxes(boxes.toArray(new int[0][]), ownerArray, excludedDecorPieces);
 	}
 
 	/** No identified decoration: the historical building-only boxes. */

@@ -258,6 +258,8 @@ public final class VpsCommands {
 		long largestCells = RoadCollector.MASK_CELLS_LARGEST_COMPONENT.get();
 		long gapSum = RoadCollector.GAP_WIDTH_SUM.get();
 		long splitVillages = RoadCollector.NETWORKS_SPLIT.get();
+		long suppressed = VpsPipeline.SUPPRESSED_VANILLA_ROAD_BLOCKS.get();
+		long written = VpsPipeline.ROAD_CELLS_WRITTEN.get();
 		return String.format(
 				"[VPS] villages solved: %d (%.2f ms avg)%n"
 						+ "  roads      : cells written %d, kerbs %d, roof lining %d (end cells %d/road %d/arm %d/open %d, wraps %d, blocks %d), kerb railings %d, ceiling lights %d (glowstone %d / lanterns %d, chains %d), railings %d (skipped: water %d / door %d), waterlogged slabs/leaves %d, scaffolds %d (water-self %d / water-below %d / dry %d), water bridges %d%n"
@@ -265,10 +267,10 @@ public final class VpsCommands {
 						+ "  integrity  : dropped cells %d (noise-reprobed %d), split masks %d (solved per component), largest component %s%%, widest break avg %s / max %d%n"
 						+ "  defects    : writer overrides %d, nudged to the surface %d, refused %d (out of world %d), surface fallbacks %d, over-budget %d, edge drops > 1 block %d (worst %d half units)%n"
 						+ "  solve      : contradictions %d, step violations %d (worst %d), seam re-solves refused %d, polish moved %d (max delta %d half units, p90 %d, midpoint conflicts %d), water anchor deviations %d, villages without arms %d, solution cache hits %d%n"
-						+ "  suppression: vanilla road blocks dropped %d (passed through %d)%n"
+						+ "  suppression: vanilla road blocks dropped %d (passed through %d), writes %d, delta %d, yielded to buildings %d, zombie placements excluded %d%n"
 						+ "  buildings  : T1.5 applied %d (no-server %d), components %d, shifted %d, no-road %d, overlap guards %d, second align moved %d, floating %d, buried %d, re-solved after shift %d (T15 resolve delta cells %d, door targets changed %d), road cells yielded %d, main doors %d (no entrance %d, non-door lower halves skipped %d, normal ambiguous %d), door targets excluded seat/inside/behind %d/%d/%d, no front %d, front fallback %d, door anchor offsets 0/1/2/3/4+ %d/%d/%d/%d/%d, door signs placed %d (no road %d), seam signs %d computed / %d placed (step violations %d, no-BE %d), base plane mismatch %d, baseY decor %d, align fallback %d, door dir mismatch %d%n"
 						+ "  centres    : town-centre plaza cells %d (non-road cells skipped %d), vanilla-rendered %d, groups %d (shifted %d, pieces %d), plaza guards %d, decor seats %d (written %d, decor pieces moved %d, probe dropped %d, write fallback %d, edge clamped %d)%n"
-						+ "  decor      : pieces %d, actual blocks %d, base groups %d (cells %d), settled %d (clamped %d), protected writes skipped %d (pile %d), cells pinned %d, seat sync mismatches %d, road mismatches %d (worst %d, isolated pieces %d, isolated seats %d), base restored %d, fixture base cells %d, fixture overlap cells %d, farm overlap cells %d, ground overlap written %d (units moved %d, blocks moved %d), resolve failed %d%n"
+						+ "  decor      : pieces %d (plan A excluded %d), actual blocks %d, base groups %d (cells %d), settled %d (clamped %d), protected writes skipped %d (pile %d), cells pinned %d, seat sync mismatches %d, road mismatches %d (worst %d, isolated pieces %d, isolated seats %d), base restored %d, fixture base cells %d, fixture overlap cells %d, farm overlap cells %d, ground overlap written %d (units moved %d, blocks moved %d), resolve failed %d%n"
 						+ "  model gap  : written surface vs real terrain: mean %s half units, worst %d, over threshold %d, cut below terrain %d, fill above %d%n"
 						+ "  misc       : floor-garbage probes %d, probe boundary switches %d, probe mismatch columns %d, y0 non-solid skipped %d, y0 scenery skipped %d, villager freeze: %s (brain ticks skipped: %d)",
 				solved,
@@ -329,6 +331,10 @@ public final class VpsCommands {
 				VpsPipeline.SOLUTION_CACHE_HITS.get(),
 				VpsPipeline.SUPPRESSED_VANILLA_ROAD_BLOCKS.get(),
 				VpsPipeline.SUPPRESSION_PASSED_THROUGH.get(),
+				written,
+				suppressed - written,
+				RoadWriter.BUILDING_CELLS_SKIPPED.get(),
+				VpsPipeline.ZOMBIE_PLACEMENTS_EXCLUDED.get(),
 				VpsPipeline.T15_APPLIED.get(),
 				VpsPipeline.T15_NO_SERVER.get(),
 				VpsPipeline.BUILDING_COMPONENTS.get(),
@@ -380,6 +386,7 @@ public final class VpsCommands {
 				RoadWriter.SEAT_WRITE_FALLBACK.get(),
 				T15Planner.SEAT_EDGE_CLAMPED.get(),
 				VpsPipeline.STREET_DECOR_PIECES.get(),
+				VpsPipeline.STREET_DECOR_PROTECTED_PIECES.get(),
 				VpsPipeline.STREET_DECOR_BLOCKS.get(),
 				VpsPipeline.DECOR_BASE_GROUPS.get(),
 				VpsPipeline.DECOR_BASE_GROUP_CELLS.get(),

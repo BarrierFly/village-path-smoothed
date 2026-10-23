@@ -905,4 +905,33 @@ public final class RoadCollector {
 				&& ((SinglePoolElementVpsAccess) singleElement).village_path_smoothed$getTemplateLocation() != null
 				&& patternFor(config).matcher(((SinglePoolElementVpsAccess) singleElement).village_path_smoothed$getTemplateLocation()).find();
 	}
+
+	/**
+	 * True for a zombie village (every village template lives under
+	 * {@code village/<style>/zombie/}). Zombie villages are excluded as a whole:
+	 * no mask, no y0 suppression, no building move and no writer. Detecting the
+	 * template path is independent of the configurable street regex and of the
+	 * decor/pool resolution, so the exclusion cannot silently degrade into a
+	 * partial rewrite.
+	 */
+	public static boolean isZombieVillage(StructureStart start) {
+		if (start == null) {
+			return false;
+		}
+		for (StructurePiece piece : start.getPieces()) {
+			if (!(piece instanceof PoolElementStructurePiece pool)
+					|| !(pool.getElement() instanceof SinglePoolElement element)) {
+				continue;
+			}
+			try {
+				String location = ((SinglePoolElementVpsAccess) element).village_path_smoothed$getTemplateLocation();
+				if (location != null && location.contains("/zombie/")) {
+					return true;
+				}
+			} catch (Throwable ignored) {
+				// an unreadable location costs this piece's vote, not the village
+			}
+		}
+		return false;
+	}
 }

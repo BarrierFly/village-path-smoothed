@@ -105,7 +105,15 @@ public final class StreetDecor {
 
 	public static final class Resolved {
 		public final List<Piece> pieces;
+		/** Seed/street-seat decor pieces (the ones with a base group). */
 		public final Set<Integer> pieceIndices;
+		/**
+		 * Every piece recognised as decor, including fixture-only pieces (a house
+		 * lamp) and pieces whose template could not be read. Plan A must exclude
+		 * all of them: using the bbox of a 3x3 lamp as a building skips the eight
+		 * empty ring columns even though only the centre 1x1 base is real.
+		 */
+		public final Set<Integer> protectedPieceIndices;
 		public final Set<Long> blocks;
 		public final Set<Long> columns;
 		/** Jigsaw-final base block id per packed XYZ, merged from the pieces. */
@@ -120,27 +128,36 @@ public final class StreetDecor {
 		public final Map<Long, String> fixtureBaseBlocks;
 		/** Full fixture-ground payload per packed XZ column, for the overlap rewrite. */
 		public final Map<Long, FixtureGround> fixtureGrounds;
+		/**
+		 * Actual template blocks of the fixture-only pieces, at their current
+		 * positions. Kept separately so {@link #refresh} can preserve them while
+		 * the street-seat pieces are recomputed.
+		 */
+		public final Set<Long> fixtureBlocks;
 		/** One tight box per actual block column: {minX,maxX,minY,maxY,minZ,maxZ}. */
 		public final int[][] columnBoxes;
 
-		private Resolved(List<Piece> pieces, Set<Integer> pieceIndices, Set<Long> blocks,
-				Set<Long> columns, Map<Long, String> baseBlocks, Map<Long, Integer> fixtureBases,
-				Map<Long, String> fixtureBaseBlocks, Map<Long, FixtureGround> fixtureGrounds,
+		private Resolved(List<Piece> pieces, Set<Integer> pieceIndices, Set<Integer> protectedPieceIndices,
+				Set<Long> blocks, Set<Long> columns, Map<Long, String> baseBlocks,
+				Map<Long, Integer> fixtureBases, Map<Long, String> fixtureBaseBlocks,
+				Map<Long, FixtureGround> fixtureGrounds, Set<Long> fixtureBlocks,
 				int[][] columnBoxes) {
 			this.pieces = pieces;
 			this.pieceIndices = pieceIndices;
+			this.protectedPieceIndices = protectedPieceIndices;
 			this.blocks = blocks;
 			this.columns = columns;
 			this.baseBlocks = baseBlocks;
 			this.fixtureBases = fixtureBases;
 			this.fixtureBaseBlocks = fixtureBaseBlocks;
 			this.fixtureGrounds = fixtureGrounds;
+			this.fixtureBlocks = fixtureBlocks;
 			this.columnBoxes = columnBoxes;
 		}
 	}
 
 	private static final Resolved EMPTY = new Resolved(List.of(), Set.of(), Set.of(), Set.of(),
-			Map.of(), Map.of(), Map.of(), Map.of(), new int[0][]);
+			Set.of(), Map.of(), Map.of(), Map.of(), Map.of(), Set.of(), new int[0][]);
 
 	private StreetDecor() {
 	}
@@ -152,17 +169,18 @@ public final class StreetDecor {
 	 */
 	public static Resolved identify(List<StructurePiece> pieces, RoadNetwork network,
 			StructureTemplateManager templateManager, RegistryAccess registries) {
-		if (registries == null || network.decorPools.isEmpty() || network.allSeatColumns.isEmpty()) {
-			return EMPTY;
-		}
+		// Pool resolution can fail (reflection/API drift) or the village may have
+		// no street seat at all. Do not fall back to "every decor piece is a
+		// building bbox": that is what leaves the 8-cell ring around a 3x3 lamp
+		// empty. Street-seat pieces are still identifiable by their seat column,
+		// and the known vanilla lamp/decoration templates by their file name.
 		Set<String> decorTemplates = decorTemplateLocations(network, registries);
-		if (decorTemplates.isEmpty()) {
-			return EMPTY;
-		}
 		List<Piece> found = new ArrayList<>();
 		Map<Long, String> baseOnly = new HashMap<>();
 		Map<Long, Integer> fixtureBases = new HashMap<>();
 		Map<Long, FixtureGround> fixtureGrounds = new HashMap<>();
+		Set<Long> fixtureBlocks = new HashSet<>();
+		Set<Integer> protectedPieces = new HashSet<>();
 		for (int i = 0; i < pieces.size(); i++) {
 			StructurePiece piece = pieces.get(i);
 			if (!(piece instanceof PoolElementStructurePiece pool)
@@ -175,11 +193,20 @@ public final class StreetDecor {
 			} catch (Throwable t) {
 				continue;
 			}
-			if (location == null || !decorTemplates.contains(location)) {
+			if (location == null) {
 				continue;
 			}
 			BoundingBox box = piece.getBoundingBox();
 			Set<Long> seats = seatColumnsIn(box, network.allSeatColumns);
+			boolean recognised = decorTemplates.contains(location) || isLikelyDecorLocation(location)
+					|| (!isKnownNonDecorLocation(location) && !seats.isEmpty());
+			if (!recognised) {
+				continue;
+			}
+			// Recognised as decor even if the template cannot be read: excluding
+			// the whole bbox from plan A is still safer than punching its air ring
+			// into the road, and the unresolved case is counted below.
+			protectedPieces.add(i);
 			boolean multiBlock = box.minX() != box.maxX() || box.minZ() != box.maxZ();
 			Piece decor = new Piece(i, location, multiBlock);
 			decor.minX = box.minX();
@@ -189,13 +216,22 @@ public final class StreetDecor {
 			decor.seatColumns.addAll(seats);
 			if (!computeBlocks(decor, pool, templateManager)) {
 				VpsPipeline.DECOR_RESOLVE_FAILED.incrementAndGet();
-				continue; // unloadable template: leave the piece to the old bbox fallback
+				// No readable template: protect the bbox POSITIONS, not the bbox
+				// as a plan-A obstacle. The context only treats a position as
+				// protected while the block there is non-air, so the empty ring
+				// columns still receive the road and any real jigsaw/base block
+				// survives. This is the "readable blocks instead of bbox" fallback.
+				addBboxBlockCandidates(fixtureBlocks, box);
+				continue;
 			}
 			if (seats.isEmpty()) {
 				// 2026-10-21: the same template used outside a street seat (a
 				// house lamp) is not road-network decor, but its jigsaw-final
-				// base block is still restored if placement left it air.
+				// base block is still restored if placement left it air. Keep the
+				// actual template blocks so the writer still respects them after
+				// plan A stops using the bbox.
 				baseOnly.putAll(decor.baseBlocks);
+				fixtureBlocks.addAll(decor.blocks);
 				for (Map.Entry<Long, String> base : decor.baseBlocks.entrySet()) {
 					long key = base.getKey();
 					long column = RoadCell.packedXZ(RoadCell.unpackX(key), RoadCell.unpackZ(key));
@@ -207,7 +243,46 @@ public final class StreetDecor {
 			}
 			found.add(decor);
 		}
-		return assemble(found, pieces, baseOnly, fixtureBases, fixtureGrounds);
+		return assemble(found, pieces, baseOnly, fixtureBases, fixtureGrounds, fixtureBlocks, protectedPieces);
+	}
+
+	/**
+	 * File-name fallback used when the template pools cannot be enumerated. The
+	 * vanilla street fixtures that have a horizontal-base footprint are all
+	 * named {@code *lamp*} / {@code *decoration*}; the fallback is deliberately
+	 * narrow so houses and street pieces can never be mistaken for decor.
+	 */
+	private static boolean isLikelyDecorLocation(String location) {
+		if (isKnownNonDecorLocation(location)) {
+			return false;
+		}
+		int slash = location.lastIndexOf('/');
+		String file = slash >= 0 ? location.substring(slash + 1) : location;
+		return file.contains("lamp") || file.contains("decoration") || file.contains("campfire");
+	}
+
+	/** Template folders that are buildings, streets or other non-decor structures. */
+	private static boolean isKnownNonDecorLocation(String location) {
+		return location.contains("/houses/") || location.contains("/streets/")
+				|| location.contains("/terminators/") || location.contains("/town_centers/")
+				|| location.contains("/common/") || location.contains("/zombie/");
+	}
+
+	/**
+	 * Fallback for a decor whose template cannot be read: add every position in
+	 * its box to the protected-position set. {@code VpsGenContext} only honours a
+	 * recorded position while the block there is non-air, so this protects the
+	 * real jigsaw/base blocks without turning the empty ring columns into plan-A
+	 * holes.
+	 */
+	private static void addBboxBlockCandidates(Set<Long> out, BoundingBox box) {
+		for (int x = box.minX(); x <= box.maxX(); x++) {
+			for (int y = box.minY(); y <= box.maxY(); y++) {
+				for (int z = box.minZ(); z <= box.maxZ(); z++) {
+					out.add(RoadCell.packedXYZ(x, y, z));
+				}
+			}
+		}
 	}
 
 	private static FixtureGround fixtureGround(int pieceIndex, int baseY, String blockId, List<Integer> columnYs) {
@@ -233,10 +308,14 @@ public final class StreetDecor {
 		if (previous.pieces.isEmpty()) {
 			return previous;
 		}
-		// Keep the base-only (house decor) cells; only the street pieces move.
+		// Keep the base-only (house decor) cells and the fixture/unresolved
+		// exclusions; only the street-seat pieces are recomputed here. A post-move
+		// fixture set is identified separately by the caller and merged in.
 		Map<Long, String> baseOnly = new HashMap<>(previous.baseBlocks);
 		Map<Long, Integer> fixtureBases = new HashMap<>(previous.fixtureBases);
 		Map<Long, FixtureGround> fixtureGrounds = new HashMap<>(previous.fixtureGrounds);
+		Set<Long> fixtureBlocks = new HashSet<>(previous.fixtureBlocks);
+		Set<Integer> protectedPieces = new HashSet<>(previous.protectedPieceIndices);
 		for (Piece old : previous.pieces) {
 			baseOnly.keySet().removeAll(old.baseBlocks.keySet());
 		}
@@ -263,7 +342,7 @@ public final class StreetDecor {
 				VpsPipeline.DECOR_RESOLVE_FAILED.incrementAndGet();
 			}
 		}
-		return assemble(refreshed, pieces, baseOnly, fixtureBases, fixtureGrounds);
+		return assemble(refreshed, pieces, baseOnly, fixtureBases, fixtureGrounds, fixtureBlocks, protectedPieces);
 	}
 
 	/**
@@ -704,17 +783,11 @@ public final class StreetDecor {
 
 	private static Resolved assemble(List<Piece> found, List<StructurePiece> pieces,
 			Map<Long, String> baseOnly, Map<Long, Integer> fixtureBases,
-			Map<Long, FixtureGround> fixtureGrounds) {
+			Map<Long, FixtureGround> fixtureGrounds, Set<Long> fixtureBlocks,
+			Set<Integer> protectedPieces) {
 		Map<Long, String> baseBlocks = new HashMap<>(baseOnly);
-		if (found.isEmpty()) {
-			if (baseBlocks.isEmpty() && fixtureBases.isEmpty()) {
-				return EMPTY;
-			}
-			return new Resolved(List.of(), Set.of(), Set.of(), Set.of(), baseBlocks,
-					fixtureBases, baseOnly, fixtureGrounds, new int[0][]);
-		}
 		Set<Integer> indices = new HashSet<>();
-		Set<Long> blocks = new HashSet<>();
+		Set<Long> blocks = new HashSet<>(fixtureBlocks);
 		Set<Long> columns = new HashSet<>();
 		Map<Long, int[]> ranges = new HashMap<>();
 		for (Piece piece : found) {
@@ -732,6 +805,11 @@ public final class StreetDecor {
 				}
 			}
 		}
+		protectedPieces.addAll(indices);
+		if (found.isEmpty() && baseBlocks.isEmpty() && fixtureBases.isEmpty()
+				&& protectedPieces.isEmpty() && fixtureBlocks.isEmpty()) {
+			return EMPTY;
+		}
 		int[][] boxes = new int[ranges.size()][];
 		int n = 0;
 		for (Map.Entry<Long, int[]> entry : ranges.entrySet()) {
@@ -740,8 +818,8 @@ public final class StreetDecor {
 			int z = (int) column;
 			boxes[n++] = new int[]{x, x, entry.getValue()[0], entry.getValue()[1], z, z};
 		}
-		return new Resolved(List.copyOf(found), indices, blocks, columns, baseBlocks,
-				fixtureBases, baseOnly, fixtureGrounds, boxes);
+		return new Resolved(List.copyOf(found), indices, protectedPieces, blocks, columns, baseBlocks,
+				fixtureBases, baseOnly, fixtureGrounds, fixtureBlocks, boxes);
 	}
 
 	/** Loads every template location that any collected decor pool can produce. */

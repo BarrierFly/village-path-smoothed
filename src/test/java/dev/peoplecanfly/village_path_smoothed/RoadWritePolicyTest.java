@@ -5,10 +5,13 @@
 
 package dev.peoplecanfly.village_path_smoothed;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
+
+import java.util.Set;
 
 import dev.peoplecanfly.village_path_smoothed.pipeline.RoadWritePolicy;
 import dev.peoplecanfly.village_path_smoothed.terrain.FeatureProtection;
@@ -71,5 +74,39 @@ public class RoadWritePolicyTest {
 		assertTrue(RoadWritePolicy.kerbRailingAllowed(64, 66));
 		assertFalse(RoadWritePolicy.kerbRailingAllowed(65, 66));
 		assertTrue(RoadWritePolicy.kerbRailingAllowed(65, RoadWritePolicy.NO_CEILING));
+	}
+
+	@Test
+	public void aThreeByThreeLampIsRemovedFromPlanASoItsEightCellRingIsWritten() {
+		// plains_lamp_1 is a 3x3 bbox with only the centre 1x1 real base. Keeping
+		// its bbox in plan A skips all eight ring columns (the reported hole).
+		int[][] lampBox = {{0, 2, 64, 67, 0, 2}};
+		int[][] ring = {
+				{0, 0}, {1, 0}, {2, 0},
+				{0, 1},         {2, 1},
+				{0, 2}, {1, 2}, {2, 2}
+		};
+		for (int[] cell : ring) {
+			assertTrue("the lamp bbox would cover a ring cell",
+					RoadWritePolicy.insideBuilding(lampBox, cell[0], cell[1], 130));
+		}
+		int[][] withoutDecor = RoadWritePolicy.selectPlanABoxes(lampBox, new int[]{7}, Set.of(7));
+		assertEquals(0, withoutDecor.length);
+		for (int[] cell : ring) {
+			assertFalse("a recognised decor piece must not be a plan-A obstacle",
+					RoadWritePolicy.insideBuilding(withoutDecor, cell[0], cell[1], 130));
+		}
+	}
+
+	@Test
+	public void planASelectionKeepsRealBuildingsNextToTheDecor() {
+		int[][] boxes = {
+				{0, 2, 64, 67, 0, 2},   // lamp, owned by piece 7
+				{10, 12, 64, 70, 0, 2}  // house, owned by piece 8
+		};
+		int[][] kept = RoadWritePolicy.selectPlanABoxes(boxes, new int[]{7, 8}, Set.of(7));
+		assertEquals(1, kept.length);
+		assertTrue(RoadWritePolicy.insideBuilding(kept, 10, 0, 130));
+		assertFalse(RoadWritePolicy.insideBuilding(kept, 1, 1, 130));
 	}
 }

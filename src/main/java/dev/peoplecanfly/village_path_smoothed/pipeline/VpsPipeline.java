@@ -67,6 +67,10 @@ public final class VpsPipeline {
 	public static final AtomicLong SURFACE_FALLBACK_WRITES = new AtomicLong();
 	public static final AtomicLong T15_APPLIED = new AtomicLong();
 	public static final AtomicLong T15_NO_SERVER = new AtomicLong();
+	/** Placement hooks that saw a zombie village and deliberately did nothing. */
+	public static final AtomicLong ZOMBIE_PLACEMENTS_EXCLUDED = new AtomicLong();
+	/** Recognised decor pieces excluded from plan A (seat decor, house lamps, unresolved). */
+	public static final AtomicLong STREET_DECOR_PROTECTED_PIECES = new AtomicLong();
 	public static final AtomicLong BUILDING_COMPONENTS = new AtomicLong();
 	public static final AtomicLong BUILDINGS_SHIFTED = new AtomicLong();
 	public static final AtomicLong BUILDINGS_NO_ROAD_ACCESS = new AtomicLong();
@@ -352,6 +356,13 @@ public final class VpsPipeline {
 		if (server == null || !VpsWorldSettings.isEnabled(server)) {
 			return null;
 		}
+		if (RoadCollector.isZombieVillage(start)) {
+			// User decision: zombie villages are excluded as a whole. Returning
+			// null means no mask, no y0 suppression and no writer, so the vanilla
+			// zombie street layer is left exactly as generated.
+			ZOMBIE_PLACEMENTS_EXCLUDED.incrementAndGet();
+			return null;
+		}
 		String dimensionKey = dimensionKeyOf(level);
 		boolean isVanillaVillage = VpsCompat.isVanillaVillageStructure(level, start.getStructure());
 		if (!isVanillaVillage && !RoadCollector.hasCustomRegex(config)) {
@@ -414,6 +425,11 @@ public final class VpsPipeline {
 			return;
 		}
 		if (!VpsWorldSettings.isEnabled(server)) {
+			return;
+		}
+		if (RoadCollector.isZombieVillage(start)) {
+			// The T1.5 pass must not move any zombie-village building either; the
+			// FEATURES hook later sees the same exclusion and writes nothing.
 			return;
 		}
 		if (!hasStreetPiece(start, config)) {
@@ -611,6 +627,7 @@ public final class VpsPipeline {
 		// piece, so this footprint is final as-is.
 		StreetDecor.Resolved decor = StreetDecor.identify(pieces, network, templateManager, level.registryAccess());
 		STREET_DECOR_PIECES.addAndGet(decor.pieces.size());
+		STREET_DECOR_PROTECTED_PIECES.addAndGet(decor.protectedPieceIndices.size());
 		STREET_DECOR_BLOCKS.addAndGet(decor.blocks.size());
 		if (config.roadSmoothing.enabled) {
 			network = StreetDecor.addFixtureBases(network, decor, config.roadSmoothing.maxExactSectionWidth, false);
@@ -646,7 +663,7 @@ public final class VpsPipeline {
 		solution.solved = true;
 		// T5 never moves buildings, so the boxes are already final here. Decor is
 		// not a plan-A box any more; its actual blocks are protected by position.
-		int[][] t5BuildingBoxes = BuildingComponents.protectedBoxes(pieces, decor.pieceIndices);
+		int[][] t5BuildingBoxes = BuildingComponents.protectedBoxes(pieces, decor.protectedPieceIndices);
 		solution.buildingBoxes = t5BuildingBoxes;
 		solution.decorBlocks = decor.blocks;
 		java.util.Map<Long, String> t5BaseBlocks = new java.util.HashMap<>(decor.fixtureBaseBlocks);

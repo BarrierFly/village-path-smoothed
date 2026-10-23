@@ -122,6 +122,7 @@ public final class T15Planner {
 		network = StreetDecor.addFarmGrounds(network, start.getPieces(), templateManager,
 				config.roadSmoothing.maxExactSectionWidth);
 		VpsPipeline.STREET_DECOR_PIECES.addAndGet(decor.pieces.size());
+		VpsPipeline.STREET_DECOR_PROTECTED_PIECES.addAndGet(decor.protectedPieceIndices.size());
 		VpsPipeline.STREET_DECOR_BLOCKS.addAndGet(decor.blocks.size());
 		if (config.roadSmoothing.enabled) {
 			// plan C phase 1: the plaza groups solve flat at the solver's own level
@@ -139,7 +140,7 @@ public final class T15Planner {
 		VpsPipeline.VILLAGES_SOLVED.incrementAndGet();
 
 		if (!config.roadSmoothing.enabled) {
-			solution.buildingBoxes = BuildingComponents.protectedBoxes(start.getPieces(), decor.pieceIndices);
+			solution.buildingBoxes = BuildingComponents.protectedBoxes(start.getPieces(), decor.protectedPieceIndices);
 			solution.decorBlocks = decor.blocks;
 			solution.decorBaseBlocks = decor.baseBlocks;
 			return solution;
@@ -169,7 +170,7 @@ public final class T15Planner {
 			// 1x1 decor moved with its seat in settleSeats; refresh the footprint
 			// so the writer protects where the blocks really are.
 			decor = StreetDecor.refresh(decor, pieces, templateManager);
-			int[][] boxes = BuildingComponents.protectedBoxes(pieces, decor.pieceIndices);
+			int[][] boxes = BuildingComponents.protectedBoxes(pieces, decor.protectedPieceIndices);
 			int[][] exclusion = mergeBoxes(boxes, decor.columnBoxes);
 			List<List<DoorSigns.DoorTarget>> targets = collectDoorTargets(components, pieces, scan,
 					solution.network, exclusion, true);
@@ -188,7 +189,7 @@ public final class T15Planner {
 
 		int maxShift = config.roadSmoothing.maxBuildingShift;
 		List<int[]> shifted = new ArrayList<>();
-		int[][] firstBoxes = BuildingComponents.protectedBoxes(pieces, decor.pieceIndices);
+		int[][] firstBoxes = BuildingComponents.protectedBoxes(pieces, decor.protectedPieceIndices);
 		int[][] firstExclusion = mergeBoxes(firstBoxes, decor.columnBoxes);
 		List<List<DoorSigns.DoorTarget>> firstTargets = new ArrayList<>(components.size());
 
@@ -298,6 +299,11 @@ public final class T15Planner {
 
 		StreetDecor.Resolved finalDecor = settledDecor;
 
+		// The post-shift identify re-reads fixture-only pieces (house lamps);
+		// merge them with the refreshed street-seat set for plan A and the writer.
+		java.util.Set<Integer> protectedDecorPieces = new java.util.HashSet<>(finalDecor.protectedPieceIndices);
+		protectedDecorPieces.addAll(fixtures.protectedPieceIndices);
+
 		List<List<DoorSigns.DoorTarget>> finalTargets = new ArrayList<>(components.size());
 		for (BuildingComponents.Component component : components) {
 			if (isMultiBlockDecorComponent(component, decor)) {
@@ -309,7 +315,7 @@ public final class T15Planner {
 			}
 			// Recompute per component: earlier iterations of this loop may have moved
 			// a building, and the old code read fresh boxes for exactly this reason.
-			int[][] boxes = BuildingComponents.protectedBoxes(pieces, finalDecor.pieceIndices);
+			int[][] boxes = BuildingComponents.protectedBoxes(pieces, protectedDecorPieces);
 			int[][] exclusion = mergeBoxes(boxes, finalDecor.columnBoxes);
 			List<DoorSigns.DoorTarget> targets = doorTargets(component, pieces, scan, finalNetwork, exclusion, true);
 			finalTargets.add(targets);
@@ -350,8 +356,16 @@ public final class T15Planner {
 		// Decor is excluded from plan A; its actual blocks are protected block by
 		// block (audit 2026-10-20 decision 1).
 		StreetDecor.Resolved decorFinal = StreetDecor.refresh(settledDecor, pieces, templateManager);
-		solution.buildingBoxes = BuildingComponents.protectedBoxes(pieces, decorFinal.pieceIndices);
-		solution.decorBlocks = decorFinal.blocks;
+		java.util.Set<Integer> finalProtectedPieces = new java.util.HashSet<>(decorFinal.protectedPieceIndices);
+		finalProtectedPieces.addAll(fixtures.protectedPieceIndices);
+		solution.buildingBoxes = BuildingComponents.protectedBoxes(pieces, finalProtectedPieces);
+		java.util.Set<Long> finalDecorBlocks = new java.util.HashSet<>(decorFinal.blocks);
+		// The refresh kept the pre-shift fixture blocks; replace them with the
+		// post-shift fixture identify so a moved house lamp cannot leave stale
+		// protected cells at its old position.
+		finalDecorBlocks.removeAll(decorFinal.fixtureBlocks);
+		finalDecorBlocks.addAll(fixtures.fixtureBlocks);
+		solution.decorBlocks = finalDecorBlocks;
 		java.util.Map<Long, String> finalBase = new java.util.HashMap<>(fixtures.fixtureBaseBlocks);
 		finalBase.putAll(decorFinal.baseBlocks);
 		solution.decorBaseBlocks = finalBase;

@@ -88,7 +88,12 @@ water use scaffolding, and dangerous edges get leaf railings.
    the writer protects the decor's **actual template blocks** (including its
    cobblestone/snow bases) and still writes the road and the support fill
    below/around them, so a 3×3 lamp no longer leaves holes under its empty bbox
-   columns. At T5 a multi-block decor pins its **full base footprint** (seat,
+   columns. This applies to **every recognised decor piece**, including a house
+   lamp that contributes only a pinned fixture base: the plan-A obstacle list
+   excludes it as well, so its 8/2/1 empty ring columns are still paved. A
+   template/pool read failure no longer falls back to the whole bbox either; the
+   piece is excluded from plan A and its readable blocks are protected
+   (`resolve failed` in `/vps stats`). At T5 a multi-block decor pins its **full base footprint** (seat,
    actual blocks and the air columns over road) flat at `baseWalkY`; at T1.5
    that same footprint is one **movable flat unit** in the final solve, and the
    decor is moved onto the level it settles on. The base is therefore part of
@@ -252,10 +257,26 @@ cell hit the per-village cap — keep their vanilla road, so a failed probe can
 never leave a hole in the world. Non-village structures and disabled worlds see
 no behaviour change at all.
 
-`/vps stats` counts both sides (`suppressed vanilla road blocks`), which is how
-you confirm in game that the two are reconciling: the suppressed count tracks
-the written count, and digging under a bridge deck shows no leftover
-`dirt_path`.
+`/vps stats` prints both sides (`dropped`, `writes`, `delta`, `yielded to
+buildings`), which is how you confirm in game that the two are reconciling. A
+positive delta is not automatically a hole: seats, plazas, fixture bases and
+ground overlaps are deliberately not plain road writes and are counted in their
+own lines. Digging under a bridge deck shows no leftover `dirt_path`.
+
+## Zombie villages are excluded as a whole / 僵尸村庄整村排除
+
+Zombie villages (`minecraft:village/<style>/zombie/...`) are deliberately
+**excluded from road smoothing as a whole**. The mod detects the `/zombie/`
+template path on the structure start and returns before solving, so it does not
+claim a road mask, does not suppress the vanilla y=0 street layer, does not move
+buildings and does not run the writer. The generated zombie village is therefore
+exactly vanilla. This is not a per-cell degradation: if any piece of the start
+belongs to a zombie template, the entire start is left alone.
+
+僵尸村庄（`minecraft:village/<style>/zombie/...`）**整村排除**：模组在结构开始处
+检测模板路径里的 `/zombie/`，在求解前直接返回，因此不会占路网、不会抑制原版
+y=0 街道层、不会移动建筑，也不会执行 writer。生成的僵尸村庄与原版完全一致；
+只要该 start 的任意一个 piece 属于 zombie 模板，整个 start 都不处理。
 
 ## Supported versions / 支持版本
 
@@ -310,9 +331,12 @@ ModMenu is installed) but optional. / 无必装依赖；装有 ModMenu 时会出
   diagnostics (including the probe caliber boundary switches and the mismatch
   columns the alignment pass rewrote), solver residual diagnostics (candidate
   contradictions, residual step violations and their worst step, water anchor
-   deviations), the vanilla-block suppression counters, the `feature` line
+   deviations), the vanilla-block suppression/reconciliation counters
+   (`dropped`, `writes`, `delta`, `yielded to buildings`, `zombie placements
+   excluded`), the `feature` line
    (protected decoration blocks kept, broken down by road/fill/clear/kerb/
-   ceiling/railing), the `decor` line (identified decor pieces/blocks, base
+   ceiling/railing), the `decor` line (identified and plan-A excluded decor
+   pieces, actual blocks, base
    groups and cells, settled pieces, protected writes, pile blocks, pin cells,
    seat-sync and road-mismatch counters, isolated seats and resolve failures),
    and villages that degenerated into a single region

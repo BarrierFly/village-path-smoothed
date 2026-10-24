@@ -324,8 +324,13 @@ Rules:
     seeds the y1 `minecraft:street` connector columns and flood-fills the y0
     surface through road-like blocks. Farmland, water and terracotta inside a
     street template are `RoadNetwork#streetScenery`: not in the mask, left
-    vanilla, and the writer never dresses a side toward them (no kerb/railing,
-    including the kerb end cap). A few connector bases are plain dirt; they
+    vanilla, and the writer never builds a kerb toward them (including the
+    kerb end cap). Since the analysis report of 2026-10-23 the drop railing is
+    still judged on a scenery side column: a road several blocks above the
+    scenery gets its leaf railing (the target sits at the road's own level,
+    high above the scenery block; the door exemption applies), while at the
+    scenery's own level the drop threshold never fires, so fields, channels
+    and trim keep their vanilla look. A few connector bases are plain dirt; they
     are seeds regardless of material, so a crossroad seam never opens a hole.
     `TEMPLATE_Y0_ROAD_MATERIAL` narrows the material test but keeps the seeds.
   - **Decor footprint = actual blocks.** `StreetDecor` resolves the seat
@@ -544,10 +549,16 @@ Rules:
   and mid-column air-gap tops); a run artificially cut off at the ceiling or
   the world edge gets no cutoff-top leaves.
 - **A plaza piece's own interior is never dressed, and a kerb run's along-road
-  end is capped (user request 2026-10-17).** `RoadCollector` records every y=0
-  column of a `town_centers` piece - ALL blocks, including the well/fountain
-  water and jigsaw holes that are not road cells - in
-  `RoadNetwork#plazaFootprint`. The writer skips a side whose outward cell is
+  end is capped (user request 2026-10-17; air filtered out 2026-10-24).**
+  `RoadCollector` records every y=0 column of a `town_centers` piece that is
+  NOT air - the well/fountain water and jigsaw holes that are not road cells
+  stay in - in `RoadNetwork#plazaFootprint`. Vanilla templates store air as a
+  real palette entry; before 2026-10-24 the template's empty corners entered
+  the footprint too, and the writer then skipped every side toward them BEFORE
+  the kerb/railing probes, so an elevated road crossing those corners ran the
+  whole span bare (taiga_meeting_point_1: 324 air of 396 y=0 columns;
+  `TOWN_CENTER_AIR_SKIPPED` counts the excluded entries). The writer skips a
+  side whose outward cell is
   in that footprint, so the central well/fountain mouth is never wrapped and
   plugged; the plaza's outer boundary (outside the piece footprint) still gets
   its kerb. Separately, when the road actually continues along the wall (a

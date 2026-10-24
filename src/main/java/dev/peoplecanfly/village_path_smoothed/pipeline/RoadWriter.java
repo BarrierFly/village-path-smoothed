@@ -1164,8 +1164,26 @@ public final class RoadWriter {
 			}
 			// Decision 6 (audit 2026-10-20): farmland, water, terracotta and the
 			// structure_void seat columns are street scenery, not road. They keep
-			// their vanilla block, and a kerb/railing must not grow into them.
+			// their vanilla block and a kerb must never grow into them. The skip
+			// used to be unconditional, so a bridge deck passing several blocks
+			// ABOVE the scenery lost its drop railing for the whole run (analysis
+			// report 2026-10-23 §7.3/§8.3). The column is now still judged as a
+			// drop edge: the kerb stays skipped (the scenery block is never
+			// touched - the railing target sits at the road's own level, high
+			// above it) and the railing follows the same drop threshold as any
+			// open side. At the scenery's own level the drop is at most one
+			// block, so the threshold never fires there and the vanilla look of
+			// the fields, channels and trim is unchanged.
 			if (net.streetScenery.contains(RoadCell.packedXZ(outX, outZ))) {
+				SideFacts sceneryFacts = sideFacts.computeIfAbsent(new SideKey(outX, outZ, roadTopBlockY),
+						k -> probeSideFacts(ctx, k.x(), k.z(), k.roadTopBlockY()));
+				if (sceneryFacts != null && config.railing.enabled) {
+					if (config.railing.skipAtBuildingDoors && doorFrontBlocksRailing(doorFronts, outX, outZ)) {
+						RAILINGS_SKIPPED_AT_DOOR.incrementAndGet();
+					} else if (RoadWritePolicy.railingApplies(2 * sceneryFacts.groundTopY(), sRoad2, config.railing.minDropHeight)) {
+						placeRailing(ctx, outX, outZ, roadTopBlockY + 1, materials);
+					}
+				}
 				continue;
 			}
 			// User decision 2026-10-17 ("探2包1"): probe the first and the second

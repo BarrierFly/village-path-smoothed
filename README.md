@@ -44,7 +44,9 @@ water use scaffolding, and dangerous edges get leaf railings.
      from the street jigsaw connectors (plus the decor seats) are road.
      Farmland, water channels and terracotta trim inside a street template are
      scenery, not road: they keep their vanilla block and the writer builds no
-     kerb or railing into them. A connector base that is plain dirt still counts,
+     kerb into them. A road that passes **several blocks above** the scenery
+     still gets its drop railing on that edge (2026-10-24); at the scenery's
+     own level nothing changes. A connector base that is plain dirt still counts,
      so a crossroad seam keeps its column;
    - the default objective (`SMOOTH_FIRST`) ranks *cliff penalty > total step
      count > deviation from the terrain* — so "smooth" means "as few half-block
@@ -171,9 +173,14 @@ water use scaffolding, and dangerous edges get leaf railings.
      road's ceiling or the world edge gets no cutoff-top leaves;
    - the **plaza interior / well mouth** is never dressed: a side that points
      into a `town_centers` piece's own y=0 footprint (the well/fountain water and
-     jigsaw holes, which are not road cells) gets no kerb or railing. The kerb
-     used to wrap the central well's water column and plug the well shut; the
-     plaza's outer boundary is unaffected;
+     jigsaw holes, which are not road cells) gets no kerb or railing. The
+     footprint holds the template's **real y=0 blocks only**: vanilla stores air
+     as a palette entry too, and since 2026-10-24 those empty corners are
+     excluded, so an elevated road crossing them gets its normal kerb and
+     railing back (the air corners of `taiga_meeting_point_1` used to blank a
+     whole ring around the plaza). The kerb used to wrap the central well's
+     water column and plug the well shut; the plaza's outer boundary is
+     unaffected;
    - the **kerb end cap** closes the wall's along-road end where the road keeps
      going. The end is judged on the **next side cell alone** (the sky-visible
      cell): it is open when there is no terrain above the current wall top
@@ -189,7 +196,10 @@ water use scaffolding, and dangerous edges get leaf railings.
      standable ground. When the road is **at least 2 whole blocks** above it,
      persistent leaves (plains `oak`, desert/savanna `acacia`, snowy/taiga
      `spruce`) are placed on the road edge at the road block's height plus one;
-     a protected decoration in that target cell is skipped instead;
+     a protected decoration in that target cell is skipped instead. A street
+     scenery column (farmland, channel water, terracotta) is judged on the same
+     scan, so an elevated road over it is railed too - only the kerb stays
+     suppressed toward scenery (2026-10-24);
    - the **ceiling lining** (包顶) still probes only the road's own column, now
      with the same collision/fluid rule. The clear end is re-read at write time
      from the real column (up to the clear cap, default 4), and **only the
@@ -501,10 +511,12 @@ Two things are worth spelling out:
     the cells between them keep their vanilla blocks (`split masks` in
     `/vps stats`). Before 2026-10-14 a split mask handed the whole village back
     to vanilla, which made the mod look like it did nothing in real worlds.
-12. **Street scenery is deliberately not dressed** — farmland, water channels
+12. **Street scenery is deliberately not kerbed** — farmland, water channels
     and terracotta trim inside a street template are not road (decision
-    2026-10-20). They get no kerb or railing, so a road cut beside a field can
-    show a raw edge by design. The 2026-10-22 overlap unit deliberately does
+    2026-10-20). They get no kerb, so a road cut beside a field can
+    show a raw edge by design; since 2026-10-24 an elevated road still gets
+    its **drop railing** over them, and at the scenery's own level nothing
+    is placed. The 2026-10-22 overlap unit deliberately does
     not take them; only fixed-shape `*_farm_*` house pieces are rewritten at the
     solved height. Decor and piles are
     protected by their actual blocks; a multi-block decor's T5/T1.5 pin can
@@ -546,7 +558,8 @@ Two things are worth spelling out:
   兜底且计数）；整格土径路面改铺**泥砖**，半砖仍是泥砖台阶，路面下方垫的土径、
   广场/街件/房屋的土径均不改；**路面掩膜只取与街道 jigsaw 连接点连通的街面**
   （2026-10-20 决策）：savanna 农田/水渠、desert 陶瓦镶边视为街面景物，不进掩膜、
-  保留原版方块，writer 也不向其包边/护栏；连接点下的普通 dirt 仍算路，接缝不破洞；
+  保留原版方块，writer 也不向其包边；高于景物数格的架空路仍按落差规则放护栏
+  （2026-10-24），景物自身高度处不加任何东西；连接点下的普通 dirt 仍算路，接缝不破洞；
   **结构地面与路格重叠**（2026-10-22，修正于同日）：同一列既有路格又有结构地面时，
   被认领列的 vanilla y=0 方块本就被抑制。只有两类来源参与：**街件底座**与
   **原版固定形状农舍件**（`village/<style>/[zombie/]houses/*farm*`，RIGID；整个 y=0
@@ -564,7 +577,9 @@ Two things are worth spelling out:
   作物/藤蔓/家具/灯具等**所有非地形装饰**逐格跳过，包边遇到装饰断开而不攀爬；有顶板时包边在
   顶板下一格截止，不再沿山坡包到顶板之上；开放天空仍包到侧列探测顶）；**广场件自身的
   y=0 足迹（井口/喷泉水格、jigsaw 格，均非路格）不向里包边**，避免把中心水井糊住，
-  广场外边界不受影响；包边墙沿道路方向（且道路确实继续）的末端，**只按外侧那格（能看到天空的格）判定露天**：
+  广场外边界不受影响；足迹只登记模板**真实的 y=0 方块**——原版把空气也存成正式条目，
+  2026-10-24 起空气角不再入足迹，从模板空角上方经过的架空路恢复正常的包边与落差护栏
+  （此前 `taiga_meeting_point_1` 的 324 个空气角曾把广场外一整圈架空路的护栏清空）；包边墙沿道路方向（且道路确实继续）的末端，**只按外侧那格（能看到天空的格）判定露天**：
   该格在当前墙顶以上完全无地形时（`skyFacts.topmostY() <= wallTop`）才收口；包边**写在墙端本列**
   （不是外侧那格），从墙顶+1 起按常规“探2包1”向上包到本列与外侧探测列的地形顶端，每段顶端放
   包边护栏。外侧那格是下一道路格自己的落差护栏目标，不再被端帽占用。实际道路尽头（没有下一格路）
@@ -581,7 +596,8 @@ Two things are worth spelling out:
   最低格若是非地形装饰则整列跳过、不换材质也不挂灯/链；到达上限形成的
   顶板最低格在三格宽直路中间格换**荧石**，超过上限的自然洞顶最低格保留包边材质并在
   上限格放**灯笼 + 铁链**，路口/拐角/非三格宽不做）；树叶落差护栏（条件不变；每条路各管
-  各的边缘，同侧列可同时出现矮路的包边和高路的护栏）；过水段脚手架（`distance` 有
+  各的边缘，同侧列可同时出现矮路的包边和高路的护栏；街道景物列走同一落差判定，
+  架空路从农田/水渠/陶瓦上方经过时也放护栏，包边仍一律不伸入景物，2026-10-24）；过水段脚手架（`distance` 有
   支撑 0 / 无支撑 1，`waterlogged=true`；过水锚点为软约束，偏离水面会被计数）。
   广场（town_centers）进路网并钉定为水平（T1.5 把广场件整体移到解出的高度，写入端
   由原版刚性平台自己呈现，井沿/喷泉原样）；房屋对齐到原版基面

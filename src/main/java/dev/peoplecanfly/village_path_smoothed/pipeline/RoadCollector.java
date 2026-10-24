@@ -124,6 +124,14 @@ public final class RoadCollector {
 	/** Centre-piece cells skipped because their y=0 block is not road material. */
 	public static final AtomicLong TOWN_CENTER_NON_ROAD_SKIPPED = new AtomicLong();
 	/**
+	 * Analysis report 2026-10-23 §8.1: centre-piece y=0 palette entries that are
+	 * AIR. Vanilla templates store air as a real palette entry, so these used to
+	 * join the plaza footprint and the writer then refused every kerb and drop
+	 * railing toward the template's empty corners (taiga_meeting_point_1 holds
+	 * 324 air of 396 y=0 columns). They are neither footprint nor non-road skips.
+	 */
+	public static final AtomicLong TOWN_CENTER_AIR_SKIPPED = new AtomicLong();
+	/**
 	 * Decor seats taken into the mask (原版多向道路结构调查 2026-10-15, reworked
 	 * 2026-10-16): a street piece's up-facing y=0 jigsaw whose final_state is
 	 * one of the base materials. The vanilla data carries 248 such seats per
@@ -539,6 +547,18 @@ public final class RoadCollector {
 				continue;
 			}
 			if (townCentre) {
+				// Analysis report 2026-10-23 §8.1: air is a real palette entry, so
+				// this loop used to register the template's empty corners into
+				// the plaza footprint too. The writer then skipped every side toward
+				// those columns BEFORE the kerb/railing probes, and an elevated road
+				// crossing a template's empty corners ran the whole span bare - no
+				// kerb, no drop railing. Air is not the plaza's interior; the
+				// well/fountain water and jigsaw entries handled below are non-air
+				// and keep their protection.
+				if (infoState.isAir()) {
+					TOWN_CENTER_AIR_SKIPPED.incrementAndGet();
+					continue;
+				}
 				// The plaza's y=0 footprint is recorded BEFORE the road-material
 				// whitelist: the well/fountain water and jigsaw cells are not road
 				// cells, but they are the plaza's own interior. The writer must

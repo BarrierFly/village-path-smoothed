@@ -166,11 +166,13 @@ public final class RoadWriter {
 	 */
 	public static final AtomicLong ROOF_LINED_BLOCKS = new AtomicLong();
 	/**
-	 * 2026-10-22, relaxed 2026-10-23: ceiling cells whose exposed end turns
-	 * upward into a kerb face. An end is any 4-adjacent ROAD cell that sees open
-	 * sky above its own walk surface - along the road or laterally. End cells
-	 * have terrain above the ceiling, road neighbours are the adjacent road
-	 * cells inspected, open cells have at least one open road neighbour.
+	 * 2026-10-22, relaxed 2026-10-23, zero-wrap ends included 2026-10-24:
+	 * ceiling cells whose exposed end turns upward into a kerb face. An end is
+	 * any 4-adjacent ROAD cell that sees open sky above its own walk surface -
+	 * along the road or laterally. End cells are detected before the terrain
+	 * check, so a mouth with no terrain above the ceiling counts too (it takes
+	 * the zero-wrap leaf attempt); road neighbours are the adjacent road cells
+	 * inspected, open cells have at least one open road neighbour.
 	 */
 	public static final AtomicLong CEILING_END_CELLS = new AtomicLong();
 	public static final AtomicLong CEILING_END_ROAD_CELLS = new AtomicLong();
@@ -184,6 +186,27 @@ public final class RoadWriter {
 	 * where the run was artificially cut off at the world edge.
 	 */
 	public static final AtomicLong KERB_RAILINGS_PLACED = new AtomicLong();
+	/**
+	 * 2026-10-24 (user decision): kerb layers whose probe-2 detection found a
+	 * protected building cell (building body or interior, never the whole bbox)
+	 * in either probed column. The layer is not wrapped and the run closes with
+	 * its usual top leaf; the building block itself is never the reason a wall
+	 * climbs or continues.
+	 */
+	public static final AtomicLong KERB_BUILDING_INTERRUPTS = new AtomicLong();
+	/**
+	 * 2026-10-24 (user decision): kerb walls not built at all because their
+	 * second layer (roadTopBlockY + 2) is vacant at both probed cells - the
+	 * single-block wall a slab road's 1.5-block rise used to produce.
+	 */
+	public static final AtomicLong KERB_SINGLE_LAYER_SUPPRESSED = new AtomicLong();
+	/**
+	 * 2026-10-24 (user request): leaf railings actually placed at ceiling ends
+	 * that wrapped zero layers (no terrain above the ceiling in the road column,
+	 * or the first layer already protected). The attempt is made at the first
+	 * layer above the ceiling, subject to every protection.
+	 */
+	public static final AtomicLong CEILING_END_ZERO_WRAP_RAILINGS = new AtomicLong();
 	/** Ceiling lights on straight 3-wide road middle cells: glowstone at a capped ceiling. */
 	public static final AtomicLong CEILING_GLOWSTONE_PLACED = new AtomicLong();
 	/** Ceiling lights on straight 3-wide road middle cells: hanging lantern + chain at a natural roof. */
@@ -805,7 +828,8 @@ public final class RoadWriter {
 				// top; probe-2's second cell is one step INTO the hill body,
 				// opposite the open cell, never the open cell itself.
 				try {
-					wrapCeilingEnd(ctx, net, cell, ceilingBottomY, buildingMask, materials);
+					wrapCeilingEnd(ctx, net, cell, ceilingBottomY, buildingMask, doorFronts,
+							config.railing.skipAtBuildingDoors, materials);
 				} catch (Throwable t) {
 					// cosmetic: an unreadable neighbour must not fail the cell
 				}
@@ -883,19 +907,24 @@ public final class RoadWriter {
 	 * second is one cell **into the hill**, opposite each open road neighbour
 	 * (never the open cell). Only a layer where either probed cell has a
 	 * collision/fluid is wrapped; a layer with both air stays air. A leaf
-	 * railing goes on each wrapped run top.
+	 * railing goes on each wrapped run top. A protected building cell in either
+	 * probed column interrupts the face (probe-stage building rule, 2026-10-24).
+	 *
+	 * <p>2026-10-24 (user request): even when the upward wrap is <b>zero</b>
+	 * blocks - no terrain above the ceiling in this column, or the first layer
+	 * is already protected - the end still attempts its leaf railing at the
+	 * first layer above the ceiling, subject to every protection (bounds,
+	 * building mask, decorations, the doorway railing skip).
 	 */
 	private static void wrapCeilingEnd(VpsGenContext ctx, RoadNetwork net, RoadCell cell,
-			int ceilingBottomY, BuildingMask buildingMask, RoadMaterialTable.StyleMaterials materials) {
+			int ceilingBottomY, BuildingMask buildingMask, int[][] doorFronts, boolean skipRailingsAtDoors,
+			RoadMaterialTable.StyleMaterials materials) {
 		if (ceilingBottomY == RoadWritePolicy.NO_CEILING) {
 			return;
 		}
-		int topY = ctx.highestTerrainCollisionOrFluidY(cell.x, cell.z, ceilingBottomY + 1);
-		if (topY <= ceilingBottomY) {
-			return; // no terrain above the ceiling to wrap
-		}
-		CEILING_END_CELLS.incrementAndGet();
-		// Second probe = one step INTO the hill, opposite each open road neighbour.
+		// Second probe = one step INTO the hill, opposite each open road
+		// neighbour. The end is detected first so a mouth with no terrain above
+		// the ceiling still reaches the zero-wrap leaf attempt below.
 		java.util.List<int[]> farCells = new java.util.ArrayList<>(4);
 		for (int dir = 0; dir < 4; dir++) {
 			int nx = cell.x + SIDE_DX[dir];
@@ -911,7 +940,9 @@ public final class RoadWriter {
 		if (farCells.isEmpty()) {
 			return;
 		}
+		CEILING_END_CELLS.incrementAndGet();
 		CEILING_END_OPEN_CELLS.incrementAndGet();
+		int topY = ctx.highestTerrainCollisionOrFluidY(cell.x, cell.z, ceilingBottomY + 1);
 		int last = Integer.MIN_VALUE;
 		boolean runWrapped = false;
 		boolean placed = false;
@@ -919,22 +950,39 @@ public final class RoadWriter {
 			if (ctx.isProtectedDecoration(cell.x, y, cell.z)
 					|| RoadWritePolicy.insideBuildingAt(buildingMask, cell.x, y, cell.z)) {
 				if (runWrapped) {
-					placeKerbRailing(ctx, cell.x, cell.z, last + 1, buildingMask, materials);
+					placeKerbRailing(ctx, cell.x, cell.z, last + 1, buildingMask, doorFronts, skipRailingsAtDoors, materials);
+				}
+				if (RoadWritePolicy.insideBuildingAt(buildingMask, cell.x, y, cell.z)) {
+					KERB_BUILDING_INTERRUPTS.incrementAndGet();
 				}
 				break;
 			}
 			boolean nearTerrain = ctx.hasCollisionOrFluid(cell.x, y, cell.z);
 			boolean farTerrain = false;
+			boolean farBuilding = false;
 			for (int[] far : farCells) {
+				if (RoadWritePolicy.insideBuildingAt(buildingMask, far[0], y, far[1])) {
+					farBuilding = true;
+					break;
+				}
 				if (!ctx.isProtectedDecoration(far[0], y, far[1])
 						&& ctx.hasCollisionOrFluid(far[0], y, far[1])) {
 					farTerrain = true;
 					break;
 				}
 			}
+			if (farBuilding) {
+				// 2026-10-24: a protected building cell in a probed hill column
+				// interrupts the upward face like one in the road column does.
+				if (runWrapped) {
+					placeKerbRailing(ctx, cell.x, cell.z, last + 1, buildingMask, doorFronts, skipRailingsAtDoors, materials);
+				}
+				KERB_BUILDING_INTERRUPTS.incrementAndGet();
+				break;
+			}
 			if (!nearTerrain && !farTerrain) {
 				if (runWrapped) {
-					placeKerbRailing(ctx, cell.x, cell.z, last + 1, buildingMask, materials);
+					placeKerbRailing(ctx, cell.x, cell.z, last + 1, buildingMask, doorFronts, skipRailingsAtDoors, materials);
 				}
 				runWrapped = false;
 				continue;
@@ -946,10 +994,16 @@ public final class RoadWriter {
 			CEILING_END_BLOCKS.incrementAndGet();
 		}
 		if (runWrapped) {
-			placeKerbRailing(ctx, cell.x, cell.z, last + 1, buildingMask, materials);
+			placeKerbRailing(ctx, cell.x, cell.z, last + 1, buildingMask, doorFronts, skipRailingsAtDoors, materials);
 		}
 		if (placed) {
 			CEILING_END_WRAPS.incrementAndGet();
+		} else {
+			// 2026-10-24 (user request): zero wrapped layers still get the leaf
+			// attempt at the wall's first position, one above the ceiling.
+			if (placeKerbRailing(ctx, cell.x, cell.z, ceilingBottomY + 1, buildingMask, doorFronts, skipRailingsAtDoors, materials)) {
+				CEILING_END_ZERO_WRAP_RAILINGS.incrementAndGet();
+			}
 		}
 	}
 
@@ -1226,13 +1280,13 @@ public final class RoadWriter {
 
 			if (config.kerb.enabled && RoadWritePolicy.kerbApplies(sSide2, sRoad2, config.kerb.minDropHeight)) {
 				int wallTop = placeKerbWall(ctx, outX, outZ, farX, farZ, roadTopBlockY, probeTopY, ceilingBottomY,
-						buildingMask, materials);
+						buildingMask, doorFronts, config.railing.skipAtBuildingDoors, materials);
 				if (wallTop != Integer.MIN_VALUE) {
 					// 2026-10-17 / 2026-10-21: close the wall's along-road end
 					// when the cap cell is open above the current wall top, so
 					// the top does not stop raw.
 					capKerbRunEnds(net, ctx, cell.x, cell.z, outX, outZ, roadTopBlockY, wallTop,
-							buildingMask, materials, sideFacts);
+							buildingMask, doorFronts, config.railing.skipAtBuildingDoors, materials, sideFacts);
 				}
 			}
 
@@ -1297,6 +1351,24 @@ public final class RoadWriter {
 	 * into a retaining wall. The block material is no longer restricted to the
 	 * dirt tag. A building block is never replaced.
 	 *
+	 * <p>2026-10-24 (user decision): the building protection is checked at the
+	 * <b>probe</b> stage too, not only at the wrap. A protected building cell
+	 * (the building body or its interior air, {@link BuildingMask} - never the
+	 * whole bbox) in <em>either</em> probed column interrupts the run at that
+	 * layer: nothing is wrapped there, the run closes and its top leaf is placed
+	 * as usual (the leaves themselves are not subject to this rule, only to the
+	 * doorway railing skip). The wall therefore no longer passes through
+	 * building layers, and a house wall in the second column no longer drives
+	 * the wall. A protected cell in the second layer also never counts as
+	 * "vacant" (see {@link RoadWritePolicy#singleLayerKerbSuppressed}).
+	 *
+	 * <p>2026-10-24 (user decision): a wall whose second layer is vacant at both
+	 * probed cells is not built at all - the first layer is skipped with it. The
+	 * vacancy test follows the probe's own semantics (the far cell's protected
+	 * decorations count as "not found"), so the single-block wall a slab road's
+	 * 1.5-block rise used to produce is gone, while a building block in the
+	 * second layer keeps the first layer (the interrupt above handles it).
+	 *
 	 * <p>When the road has a ceiling, the wall stops one block below it
 	 * ({@link RoadWritePolicy#kerbTopY}): the ceiling layer belongs to the road
 	 * column only, and the kerb never climbs the hillside above the tunnel. Open
@@ -1308,20 +1380,30 @@ public final class RoadWriter {
 	 * planted at the ceiling level outside the road column.
 	 */
 	private static int placeKerbWall(VpsGenContext ctx, int x, int z, int farX, int farZ, int roadTopBlockY,
-			int topmostY, int ceilingBottomY, BuildingMask buildingMask, RoadMaterialTable.StyleMaterials materials) {
+			int topmostY, int ceilingBottomY, BuildingMask buildingMask, int[][] doorFronts,
+			boolean skipRailingsAtDoors, RoadMaterialTable.StyleMaterials materials) {
 		boolean placed = false;
 		boolean runWrapped = false;
 		int runTopY = Integer.MIN_VALUE;
 		int topWrittenY = Integer.MIN_VALUE;
 		int limit = Math.min(ctx.getMaxY(), RoadWritePolicy.kerbTopY(topmostY, ceilingBottomY));
-		for (int y = roadTopBlockY + 1; y <= limit; y++) {
+		int start = roadTopBlockY + 1;
+		if (start + 1 <= ctx.getMaxY()) {
+			int secondY = start + 1;
+			if (RoadWritePolicy.singleLayerKerbSuppressed(ctx.hasCollisionOrFluid(x, secondY, z),
+					ctx.hasCollisionOrFluid(farX, secondY, farZ), ctx.isProtectedDecoration(farX, secondY, farZ))) {
+				start = roadTopBlockY + 2;
+				KERB_SINGLE_LAYER_SUPPRESSED.incrementAndGet();
+			}
+		}
+		for (int y = start; y <= limit; y++) {
 			// User decision 2026-10-17: a non-terrain decoration breaks the kerb
 			// run. Skip the decoration block itself (never wrap through it) and
 			// close the current run before the skip, so the wall neither replaces
 			// the tree nor floats over it.
 			if (ctx.isProtectedDecoration(x, y, z)) {
 				if (runWrapped) {
-					placeKerbRailing(ctx, x, z, runTopY + 1, buildingMask, materials);
+					placeKerbRailing(ctx, x, z, runTopY + 1, buildingMask, doorFronts, skipRailingsAtDoors, materials);
 				}
 				runWrapped = false;
 				runTopY = Integer.MIN_VALUE;
@@ -1332,23 +1414,34 @@ public final class RoadWriter {
 			boolean farTerrain = !ctx.isProtectedDecoration(farX, y, farZ)
 					&& ctx.hasCollisionOrFluid(farX, y, farZ);
 			if (nearTerrain || farTerrain) {
-				runTopY = y;
-				if (!RoadWritePolicy.insideBuildingAt(buildingMask, x, y, z)) {
-					setBlock(ctx, x, y, z, materials.kerbBlock.defaultBlockState());
-					placed = true;
-					runWrapped = true;
-					topWrittenY = y;
+				// 2026-10-24: a protected building cell in either probed column
+				// interrupts the run like a decoration does - the wall never
+				// replaces, passes through or climbs a building.
+				if (RoadWritePolicy.insideBuildingAt(buildingMask, x, y, z)
+						|| RoadWritePolicy.insideBuildingAt(buildingMask, farX, y, farZ)) {
+					if (runWrapped) {
+						placeKerbRailing(ctx, x, z, runTopY + 1, buildingMask, doorFronts, skipRailingsAtDoors, materials);
+					}
+					runWrapped = false;
+					runTopY = Integer.MIN_VALUE;
+					KERB_BUILDING_INTERRUPTS.incrementAndGet();
+					continue;
 				}
+				runTopY = y;
+				setBlock(ctx, x, y, z, materials.kerbBlock.defaultBlockState());
+				placed = true;
+				runWrapped = true;
+				topWrittenY = y;
 				continue;
 			}
 			if (runWrapped) {
-				placeKerbRailing(ctx, x, z, runTopY + 1, buildingMask, materials);
+				placeKerbRailing(ctx, x, z, runTopY + 1, buildingMask, doorFronts, skipRailingsAtDoors, materials);
 			}
 			runWrapped = false;
 			runTopY = Integer.MIN_VALUE;
 		}
 		if (runWrapped && RoadWritePolicy.kerbRailingAllowed(runTopY, ceilingBottomY)) {
-			placeKerbRailing(ctx, x, z, runTopY + 1, buildingMask, materials);
+			placeKerbRailing(ctx, x, z, runTopY + 1, buildingMask, doorFronts, skipRailingsAtDoors, materials);
 		}
 		if (placed) {
 			VpsPipeline.KERBS_PLACED.incrementAndGet();
@@ -1385,11 +1478,12 @@ public final class RoadWriter {
 	 */
 	private static void capKerbRunEnds(RoadNetwork net, VpsGenContext ctx, int cellX, int cellZ,
 			int outX, int outZ, int roadTopBlockY, int wallTop,
-			BuildingMask buildingMask, RoadMaterialTable.StyleMaterials materials,
+			BuildingMask buildingMask, int[][] doorFronts, boolean skipRailingsAtDoors,
+			RoadMaterialTable.StyleMaterials materials,
 			Map<SideKey, SideFacts> sideFacts) {
 		try {
 			capKerbRunEnds0(net, ctx, cellX, cellZ, outX, outZ, roadTopBlockY, wallTop,
-					buildingMask, materials, sideFacts);
+					buildingMask, doorFronts, skipRailingsAtDoors, materials, sideFacts);
 		} catch (Throwable t) {
 			// the cap is cosmetic: an unreadable column must not fail the cell write
 		}
@@ -1397,7 +1491,8 @@ public final class RoadWriter {
 
 	private static void capKerbRunEnds0(RoadNetwork net, VpsGenContext ctx, int cellX, int cellZ,
 			int outX, int outZ, int roadTopBlockY, int wallTop,
-			BuildingMask buildingMask, RoadMaterialTable.StyleMaterials materials,
+			BuildingMask buildingMask, int[][] doorFronts, boolean skipRailingsAtDoors,
+			RoadMaterialTable.StyleMaterials materials,
 			Map<SideKey, SideFacts> sideFacts) {
 		// along the road = perpendicular to the kerb's side direction
 		int alongX = outZ - cellZ;
@@ -1455,7 +1550,7 @@ public final class RoadWriter {
 			for (int y = firstY; y <= capTopY; y++) {
 				if (ctx.isProtectedDecoration(outX, y, outZ)) {
 					if (runWrapped) {
-						placeKerbRailing(ctx, outX, outZ, runTopY + 1, buildingMask, materials);
+						placeKerbRailing(ctx, outX, outZ, runTopY + 1, buildingMask, doorFronts, skipRailingsAtDoors, materials);
 					}
 					runWrapped = false;
 					runTopY = Integer.MIN_VALUE;
@@ -1470,22 +1565,34 @@ public final class RoadWriter {
 						&& !ctx.isProtectedDecoration(farX, y, farZ)
 						&& ctx.hasCollisionOrFluid(farX, y, farZ);
 				if (nearTerrain || farTerrain) {
-					runTopY = y;
-					if (!RoadWritePolicy.insideBuildingAt(buildingMask, outX, y, outZ)) {
-						setBlock(ctx, outX, y, outZ, materials.kerbBlock.defaultBlockState());
-						placed = true;
-						runWrapped = true;
+					// 2026-10-24: the cap respects the same probe-stage building
+					// rule as the wall - a protected building cell in either
+					// probed column interrupts the run instead of being wrapped
+					// through or driving the layer.
+					if (RoadWritePolicy.insideBuildingAt(buildingMask, outX, y, outZ)
+							|| RoadWritePolicy.insideBuildingAt(buildingMask, farX, y, farZ)) {
+						if (runWrapped) {
+							placeKerbRailing(ctx, outX, outZ, runTopY + 1, buildingMask, doorFronts, skipRailingsAtDoors, materials);
+						}
+						runWrapped = false;
+						runTopY = Integer.MIN_VALUE;
+						KERB_BUILDING_INTERRUPTS.incrementAndGet();
+						continue;
 					}
+					runTopY = y;
+					setBlock(ctx, outX, y, outZ, materials.kerbBlock.defaultBlockState());
+					placed = true;
+					runWrapped = true;
 					continue;
 				}
 				if (runWrapped) {
-					placeKerbRailing(ctx, outX, outZ, runTopY + 1, buildingMask, materials);
+					placeKerbRailing(ctx, outX, outZ, runTopY + 1, buildingMask, doorFronts, skipRailingsAtDoors, materials);
 				}
 				runWrapped = false;
 				runTopY = Integer.MIN_VALUE;
 			}
 			if (runWrapped) {
-				placeKerbRailing(ctx, outX, outZ, runTopY + 1, buildingMask, materials);
+				placeKerbRailing(ctx, outX, outZ, runTopY + 1, buildingMask, doorFronts, skipRailingsAtDoors, materials);
 			}
 			if (placed) {
 				VpsPipeline.KERBS_PLACED.incrementAndGet();
@@ -1494,12 +1601,21 @@ public final class RoadWriter {
 		}
 	}
 
-	/** One leaf layer on top of a wrapped kerb run; never replaces a building block. */
-	private static void placeKerbRailing(VpsGenContext ctx, int x, int z, int y, BuildingMask buildingMask,
-			RoadMaterialTable.StyleMaterials materials) {
+	/**
+	 * One leaf layer on top of a wrapped kerb run; never replaces a building
+	 * block. Since 2026-10-24 the leaf also respects the drop railing's doorway
+	 * rule: the 3x3 in front of a movable building's door is never fenced
+	 * ({@code railing.skipAtBuildingDoors}). Returns true when the leaf was set.
+	 */
+	private static boolean placeKerbRailing(VpsGenContext ctx, int x, int z, int y, BuildingMask buildingMask,
+			int[][] doorFronts, boolean skipRailingsAtDoors, RoadMaterialTable.StyleMaterials materials) {
 		if (y < ctx.getMinY() || y > ctx.getMaxY()
 				|| RoadWritePolicy.insideBuildingAt(buildingMask, x, y, z)) {
-			return;
+			return false;
+		}
+		if (skipRailingsAtDoors && doorFrontBlocksRailing(doorFronts, x, z)) {
+			RAILINGS_SKIPPED_AT_DOOR.incrementAndGet();
+			return false;
 		}
 		BlockState leaves = materials.leavesBlock.defaultBlockState();
 		if (leaves.hasProperty(LeavesBlock.PERSISTENT)) {
@@ -1507,7 +1623,9 @@ public final class RoadWriter {
 		}
 		if (setWaterloggableBlockUnlessProtected(ctx, x, y, z, leaves, FEATURE_RAILING_BLOCKS_SKIPPED)) {
 			KERB_RAILINGS_PLACED.incrementAndGet();
+			return true;
 		}
+		return false;
 	}
 
 	private static void placeRailing(VpsGenContext ctx, int x, int z, int walkSurfaceY, RoadMaterialTable.StyleMaterials materials) {

@@ -529,13 +529,27 @@ Rules:
   railing apart" - that combination is the point. The drop metric still counts a
   column once (`countedEdgeColumns`).
 - **The kerb probes two cells outward but wraps only the first (user decision
-  2026-10-17, reworking 2026-10-15).** The wrap still starts at
-  `roadTopBlockY + 1` and skips air gaps. The trigger is now: at every layer
+  2026-10-17, reworking 2026-10-15; probe-stage building rule 2026-10-24).**
+  The wrap starts at `roadTopBlockY + 1` and skips air gaps - unless the wall
+  is suppressed (below). The trigger is now: at every layer
   from one above the road to the highest **terrain** collision/fluid block in
   either of the two outward columns, if **either** cell has a non-empty
   collision shape or a fluid, the first cell gets the kerb material. Protected
   non-terrain decorations are ignored by the probe and skipped in the first
-  cell (a decoration there breaks the run); building boxes are never replaced.
+  cell (a decoration there breaks the run); building cells are never replaced.
+  **A protected building cell - the exact body/interior `BuildingMask`, never
+  the whole bbox - in *either* probed column interrupts the run at that layer
+  (2026-10-24)**: nothing is wrapped there, the run closes with its usual top
+  leaf, and the wall neither passes through building layers (the old
+  pass-through is gone) nor is driven by a house wall in the second column.
+  The wall end cap and the ceiling end follow the same rule.
+  **A wall whose second layer (`roadTopBlockY + 2`) is vacant at both probed
+  cells is not built at all** (2026-10-24,
+  `RoadWritePolicy#singleLayerKerbSuppressed`): the first layer is skipped with
+  it, so the single-block wall a slab road's 1.5-block rise used to produce is
+  gone. The vacancy test follows the probe's own semantics - the far cell's
+  protected decoration counts as "not found", a building block never does (that
+  case is the building interrupt, which keeps the first layer).
   An air first cell is filled up
   to the probe top, so a one-block setback becomes a retaining wall. The
   material is no longer restricted to `#minecraft:dirt`. `kerb.minDropHeight` is **kept**: the two-column probe top must
@@ -547,7 +561,10 @@ Rules:
   ceiling (open sky) it keeps wrapping to the probed side top. A leaf **kerb
   railing** is placed at the top of every contiguous wrapped run (terrain top
   and mid-column air-gap tops); a run artificially cut off at the ceiling or
-  the world edge gets no cutoff-top leaves.
+  the world edge gets no cutoff-top leaves. Since 2026-10-24 the kerb railing
+  also respects the drop railing's **doorway skip**: the 3x3 in front of a
+  movable building's door is never fenced
+  (`railing.skipAtBuildingDoors`, counted in `RAILINGS_SKIPPED_AT_DOOR`).
 - **A plaza piece's own interior is never dressed, and a kerb run's along-road
   end is capped (user request 2026-10-17; air filtered out 2026-10-24).**
   `RoadCollector` records every y=0 column of a `town_centers` piece that is
@@ -590,11 +607,18 @@ Rules:
   Building blocks and non-terrain decorations are never replaced; if the lowest
   ceiling block is a protected decoration, the whole ceiling treatment (lining,
   glowstone, lantern, chain) is skipped. **Ceiling end (2026-10-22, relaxed
-  2026-10-23):** an end is any 4-adjacent **road** cell that is open sky above
+  2026-10-23; zero-wrap leaf 2026-10-24):** an end is any 4-adjacent **road**
+  cell that is open sky above
   its own walk surface - along the road or laterally - and the **ceiling's end
   turns upward into a kerb face in the road column**: wrap from one above the
   ceiling layer to that column's terrain top, with the usual leaf railing at
-  each run top. The open cell must be in the road net; an off-road open cell
+  each run top. **The end is detected before the terrain check, and even a
+  zero-wrap end still attempts one leaf** at the first layer above the ceiling
+  (no terrain above the ceiling in the column, or the first layer already
+  protected) - under every protection (bounds, building mask, decorations, the
+  doorway skip; `CEILING_END_ZERO_WRAP_RAILINGS`). A building cell in either
+  probed column interrupts the face (probe-stage building rule, 2026-10-24).
+  The open cell must be in the road net; an off-road open cell
   already carries the road's own side kerb, and wrapping the road column there
   would stack a kerb on top of that kerb. The normal **probe-2-wrap-1** rule
   applies: first cell = the road/face column, second = one cell **into the

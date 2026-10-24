@@ -190,4 +190,23 @@ public class RoadWritePolicyTest {
 		// the empty corner of the same piece's old bbox is free
 		assertFalse(RoadWritePolicy.insideBuilding(mask, 11, 0, 130));
 	}
+
+	@Test
+	public void aSingleLayerKerbWallIsSuppressedOnlyWhenBothProbedCellsAreVacant() {
+		// 2026-10-24: the second layer (roadTopBlockY + 2) decides whether a
+		// first kerb layer is built at all. The vacancy test follows the kerb
+		// probe's own semantics: the far cell's protected decoration counts as
+		// "not found" (the wrap loop ignores it the same way), while any block
+		// with a collision/fluid - a building block included - is never vacant
+		// (that case belongs to the probe-stage building interrupt).
+		assertTrue(RoadWritePolicy.singleLayerKerbSuppressed(false, false, false));
+		// a tree in the far second-layer cell is "not found" by the probe
+		assertTrue(RoadWritePolicy.singleLayerKerbSuppressed(false, true, true));
+		// a tree trunk / building block in the near cell has a collision: no
+		assertFalse(RoadWritePolicy.singleLayerKerbSuppressed(true, false, false));
+		// a building block in the far cell has a collision and is no decoration
+		assertFalse(RoadWritePolicy.singleLayerKerbSuppressed(false, true, false));
+		// a solid near cell always keeps the wall regardless of the far cell
+		assertFalse(RoadWritePolicy.singleLayerKerbSuppressed(true, true, true));
+	}
 }

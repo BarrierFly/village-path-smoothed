@@ -134,6 +134,31 @@ public final class RoadWritePolicy {
 	}
 
 	/**
+	 * 2026-10-24 (user decision): a kerb wall whose second layer - two blocks
+	 * above the road block - has nothing the probe can wrap is not built at all:
+	 * the first layer is skipped with it. A one-block rise next to a slab road
+	 * passes the {@code kerb.minDropHeight} threshold (the walk surfaces are 1.5
+	 * blocks apart) yet produced a single-block wall; this rule removes it, the
+	 * same spirit as the drop threshold but judged on the second layer's
+	 * vacancy instead of the total drop.
+	 *
+	 * <p>The vacancy test follows the kerb probe's own semantics: the near cell
+	 * must have no collision/fluid, and the far cell counts as "not found" when
+	 * it has no collision/fluid <em>or</em> is a protected decoration (the wrap
+	 * loop ignores those exactly the same way). A building block is never
+	 * "not found" - that case belongs to the probe-stage building interrupt,
+	 * which keeps the first layer and closes the run with its leaf.
+	 *
+	 * @param nearCollisionOrFluid the near probed cell has a collision shape or a fluid
+	 * @param farCollisionOrFluid the far probed cell has a collision shape or a fluid
+	 * @param farProtectedDecoration the far probed cell is a protected non-terrain decoration
+	 */
+	public static boolean singleLayerKerbSuppressed(boolean nearCollisionOrFluid, boolean farCollisionOrFluid,
+			boolean farProtectedDecoration) {
+		return !nearCollisionOrFluid && (!farCollisionOrFluid || farProtectedDecoration);
+	}
+
+	/**
 	 * End-cap trigger (user decision 2026-10-21): the cap cell alone decides
 	 * whether the wall's along-road end is open. "Open" means there is no
 	 * terrain above the current wall top: the cap cell's highest terrain block

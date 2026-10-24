@@ -262,7 +262,7 @@ public final class VpsCommands {
 		long written = VpsPipeline.ROAD_CELLS_WRITTEN.get();
 		return String.format(
 				"[VPS] villages solved: %d (%.2f ms avg)%n"
-						+ "  roads      : cells written %d, kerbs %d, roof lining %d (end cells %d/road neighbours %d/open %d, wraps %d, blocks %d), kerb railings %d, ceiling lights %d (glowstone %d / lanterns %d, chains %d), railings %d (skipped: water %d / door %d), waterlogged slabs/leaves %d, scaffolds %d (water-self %d / water-below %d / dry %d), water bridges %d%n"
+						+ "  roads      : cells written %d, kerbs %d, roof lining %d (end cells %d/road neighbours %d/open %d, wraps %d, blocks %d, zero-wrap leaves %d), kerb railings %d (building interrupts %d, single-layer walls suppressed %d), ceiling lights %d (glowstone %d / lanterns %d, chains %d), railings %d (skipped: water %d / door %d), waterlogged slabs/leaves %d, scaffolds %d (water-self %d / water-below %d / dry %d), water bridges %d%n"
 						+ "  feature    : protected decoration blocks kept: road %d, fill %d, clear %d, kerb %d, ceiling %d, railing %d%n"
 						+ "  integrity  : dropped cells %d (noise-reprobed %d), split masks %d (solved per component), largest component %s%%, widest break avg %s / max %d%n"
 						+ "  defects    : writer overrides %d, nudged to the surface %d, refused %d (out of world %d), surface fallbacks %d, over-budget %d, edge drops > 1 block %d (worst %d half units)%n"
@@ -283,7 +283,10 @@ public final class VpsCommands {
 				RoadWriter.CEILING_END_OPEN_CELLS.get(),
 				RoadWriter.CEILING_END_WRAPS.get(),
 				RoadWriter.CEILING_END_BLOCKS.get(),
+				RoadWriter.CEILING_END_ZERO_WRAP_RAILINGS.get(),
 				RoadWriter.KERB_RAILINGS_PLACED.get(),
+				RoadWriter.KERB_BUILDING_INTERRUPTS.get(),
+				RoadWriter.KERB_SINGLE_LAYER_SUPPRESSED.get(),
 				RoadWriter.CEILING_GLOWSTONE_PLACED.get() + RoadWriter.CEILING_LANTERNS_PLACED.get(),
 				RoadWriter.CEILING_GLOWSTONE_PLACED.get(),
 				RoadWriter.CEILING_LANTERNS_PLACED.get(),

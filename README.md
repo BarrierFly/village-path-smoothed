@@ -163,13 +163,23 @@ water use scaffolding, and dangerous edges get leaf railings.
       (logs, leaves, plants, crops, vines, furniture, lamps, modded blocks) are
       never replaced; the kerb skips the decoration layer and breaks the run
       there. A decorated side column therefore stops the wall instead of
-      climbing the tree. When the road has a ceiling (a cap-formed roof or a
+      climbing the tree. **The probe now also checks the building protection**
+      (2026-10-24): a protected building cell - the building body or its
+      interior air, never the whole bbox - in **either** probed column
+      interrupts the run at that layer, so the wall no longer passes through
+      building layers and a house wall in the second column no longer drives
+      it. A wall whose **second layer is vacant at both probed cells** (the far
+      cell's decorations count as "not found") is not built at all, so the
+      single-block wall a slab road's 1.5-block rise used to produce is gone.
+      When the road has a ceiling (a cap-formed roof or a
       natural cave roof), the wall stops one block below it, so the ceiling
       layer stays road-only and the kerb never climbs the hillside above the
       tunnel; open sky keeps the old wrap-to-side-top behaviour;
    - the **kerb railing** puts one persistent-leaf layer on top of every
      contiguous wrapped run - the natural terrain top and every mid-column
-     air-gap top - never into a building; a run artificially cut off at the
+     air-gap top - never into a building and, since 2026-10-24, never into the
+     3×3 in front of a movable building's door (the drop railing's doorway
+     rule); a run artificially cut off at the
      road's ceiling or the world edge gets no cutoff-top leaves;
    - the **plaza interior / well mouth** is never dressed: a side that points
      into a `town_centers` piece's own y=0 footprint (the well/fountain water and
@@ -208,7 +218,12 @@ water use scaffolding, and dangerous edges get leaf railings.
      cell (along the road or laterally) sees open sky above its own walk
      surface, the **ceiling's end turns upward into a kerb face in the road
      column**, from one above the ceiling layer to that column's terrain top,
-     with a leaf railing at each run top. The open cell must still be part of
+     with a leaf railing at each run top - and, since 2026-10-24, **even when
+     the upward wrap is zero blocks** (no terrain above the ceiling in the
+     column, or the first layer already protected) the end still attempts its
+     leaf at the first layer above the ceiling, under every protection. A
+     building cell in either probed column interrupts the face like anywhere
+     else (2026-10-24). The open cell must still be part of
      the road net - an off-road open cell already carries the road's own side
      kerb, and wrapping there would stack a kerb on top of that kerb. The
      normal probe-2-wrap-1 rule applies: the first cell is the road/face
@@ -464,7 +479,11 @@ Two things are worth spelling out:
    other natural terrain are wrapped (the dirt-only rule is gone), and the first
    cell outward is filled even when it was air. Protected building boxes and all
    non-terrain decorations are never replaced; a decoration in the probed side
-   column breaks the kerb run and is skipped. Because the writer skips only the
+   column breaks the kerb run and is skipped. Since 2026-10-24 a protected
+   building cell in either probed column interrupts the run the same way, and a
+   wall whose second layer is vacant at both probed cells is not built at all -
+   a low rise next to a slab road that used to get a single kerb block now stays
+   bare (the requested look, not a missing edge). Because the writer skips only the
    decoration block, a tree or other feature standing in a road/fill/clear
    column can leave a gap there — that is the requested "let the decoration win"
    behaviour, not a missing-road bug. The ceiling light is only placed on
@@ -574,7 +593,12 @@ Two things are worth spelling out:
   接缝带向区域侧延伸保证合法坡道可达）；路肩包边（**探2包1**：向外探测两格、只包
   第1格；写入时重读最高碰撞/液体方块，保留侧比路高 >1 格阈值，逐层只要两格中任一格
   有碰撞或液体就包第1格，空气也补成挡土墙，不再限土类，不替换房屋；原木/树叶/花草/
-  作物/藤蔓/家具/灯具等**所有非地形装饰**逐格跳过，包边遇到装饰断开而不攀爬；有顶板时包边在
+  作物/藤蔓/家具/灯具等**所有非地形装饰**逐格跳过，包边遇到装饰断开而不攀爬；
+  **2026-10-24 起探2阶段也检测建筑保护**：探2两格（外1/外2）任一格在建筑保护范围
+  （建筑体及内部空气，非整个 bbox）内则该层不包、当前包边段中断并照常在段顶放树叶
+  ——包边墙不再穿过建筑层继续，远格的房屋墙也不再驱动包边；**第2格两探格均"空置"
+  （按包边探测口径：远格装饰视为没探到，建筑方块不算空置）时整墙不建、第1格也不包**，
+  半砖路 1.5 格落差不再产生单格包边墙；有顶板时包边在
   顶板下一格截止，不再沿山坡包到顶板之上；开放天空仍包到侧列探测顶）；**广场件自身的
   y=0 足迹（井口/喷泉水格、jigsaw 格，均非路格）不向里包边**，避免把中心水井糊住，
   广场外边界不受影响；足迹只登记模板**真实的 y=0 方块**——原版把空气也存成正式条目，
@@ -585,11 +609,14 @@ Two things are worth spelling out:
   包边护栏。外侧那格是下一道路格自己的落差护栏目标，不再被端帽占用。实际道路尽头（没有下一格路）
   暂不处理；包边护栏
   （每个连续包边段顶端——地形顶端和空隙顶端——放一层树叶，不进入房屋；因顶板或世界
-  边界被截断的段不放截断顶叶）；包顶（仍只探测路面本列，改用碰撞/液体判据；清格终点
+  边界被截断的段不放截断顶叶；2026-10-24 起包边顶树叶同样受**房屋门前 3×3 不设
+  护栏**豁免，与落差护栏同规则）；包顶（仍只探测路面本列，改用碰撞/液体判据；清格终点
   写入时重读，默认上限 4；**只处理顶板最低一格**，其上厚度保持原样；**包顶末端例外**
   （2026-10-22，2026-10-23 放宽）：4 邻格中**是路格**的一格（沿路或横向）在其自身路面
   以上见天时，**顶板末端就在路列内向上转成包边**：从包顶层上一格包到该路列地形顶端，
-  并在各段顶端放护栏。露天格必须仍在路网内——离开道路的露天格旁边已有道路自己的侧向
+  并在各段顶端放护栏；2026-10-24 起即使向上包 **0 格**（本列顶板上方无地形，或首层
+  即被保护中断），也在顶板上一格尝试放树叶，受各项保护限制；探2任一格在建筑保护范围内
+  则该面向上包同样中断。露天格必须仍在路网内——离开道路的露天格旁边已有道路自己的侧向
   包边，再向上包就成了“包边上再包边”，不触发。按常规
   **探2包1**：第1格是路列/转上来的面，第2格是**往山体里退一格**（露天格的反方向，沿路
   或横向），**不会探回露天格**；两格都是空气的层不放圆石，墙端收口同样遵守此规则。
@@ -637,7 +664,9 @@ Two things are worth spelling out:
 - **原理**：见上方 "How it works"。
 - **已知问题**：脚手架无支撑段会按原版规则衰减；沙漠村过水不处理；包边现已接受
   任意有碰撞/液体方块（沙壁、雪层、土径都会包，第1格为空时补墙），但房屋结构和所有
-  非地形装饰都不替换，遇到装饰时包边断开并跳过该格；因此树/装饰正好长在路块、填方或
+  非地形装饰都不替换，遇到装饰时包边断开并跳过该格；2026-10-24 起探2任一格探到建筑
+  保护方块同样中断包边，且第2格空置时整墙不建——半砖路旁 1 格落差处不再出现单格
+  包边墙，属既定观感而非漏包；因此树/装饰正好长在路块、填方或
   清格列时会在那里留下缺格，这是“装饰赢”的既定行为，不是漏写路；街面景物（农田/水渠/
   陶瓦）按 2026-10-20 决策不进路网、不包边，路切过田边时可能露出原始断面；多格装饰的
   T5/T1.5 钉可能在与自由路格衔接处留下计数可见的台阶；包边止于道路顶板下

@@ -513,13 +513,18 @@ public final class RoadNetwork {
 		return network;
 	}
 
-	/** Group key prefixes so a farm piece and a fixture piece never collide. */
+	/** Group key prefixes so a farm piece, a fixture piece and a house piece never collide. */
 	public static long farmGroupKey(int pieceIndex) {
 		return 0x2000_0000_0000_0000L | (pieceIndex & 0xFFFF_FFFFL);
 	}
 
 	public static long fixtureGroupKey(int pieceIndex) {
 		return 0x1000_0000_0000_0000L | (pieceIndex & 0xFFFF_FFFFL);
+	}
+
+	/** 2026-11-01: one flat house-path unit per houses-pool piece (its y=0 dirt path columns). */
+	public static long housePathGroupKey(int pieceIndex) {
+		return 0x3000_0000_0000_0000L | (pieceIndex & 0xFFFF_FFFFL);
 	}
 
 	/**

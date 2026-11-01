@@ -121,6 +121,14 @@ public final class T15Planner {
 		network = StreetDecor.addFixtureBases(network, decor, config.roadSmoothing.maxExactSectionWidth, true);
 		network = StreetDecor.addFarmGrounds(network, start.getPieces(), templateManager,
 				config.roadSmoothing.maxExactSectionWidth);
+		// 2026-11-01: every house's dirt-path ground joins the solve as ONE
+		// fixed-shape flat unit per piece. On this movable T1.5 pass the unit may
+		// move as a whole; the owning building component aligns to its solved level
+		// below, so the house is fixed at the solved height after the second pass.
+		java.util.Map<Integer, java.util.Map<Long, StreetDecor.FixtureGround>> housePaths =
+				StreetDecor.identifyHousePathGrounds(start.getPieces(), templateManager);
+		network = StreetDecor.addHousePathGrounds(network, housePaths,
+				config.roadSmoothing.maxExactSectionWidth, true);
 		VpsPipeline.STREET_DECOR_PIECES.addAndGet(decor.pieces.size());
 		VpsPipeline.STREET_DECOR_PROTECTED_PIECES.addAndGet(decor.protectedPieceIndices.size());
 		VpsPipeline.STREET_DECOR_BLOCKS.addAndGet(decor.blocks.size());
@@ -197,9 +205,7 @@ public final class T15Planner {
 		for (BuildingComponents.Component component : components) {
 			List<DoorSigns.DoorTarget> targets = doorTargets(component, pieces, scan, network, firstExclusion, false);
 			firstTargets.add(targets);
-			int desired = targets.isEmpty()
-					? desiredShiftFromJunctions(network, component, pieces, config)
-					: desiredShiftFromTargets(targets, component, config);
+			int desired = desiredShiftForComponent(network, component, targets, pieces, config, housePaths);
 			if (desired == BuildingShift.DO_NOT_MOVE) {
 				VpsPipeline.BUILDINGS_NO_ROAD_ACCESS.incrementAndGet();
 				continue; // no road access / no outward front: left where it is
@@ -268,6 +274,12 @@ public final class T15Planner {
 				resolved = StreetDecor.addFixtureBases(resolved, fixtures, config.roadSmoothing.maxExactSectionWidth, true);
 				resolved = StreetDecor.addFarmGrounds(resolved, start.getPieces(), templateManager,
 						config.roadSmoothing.maxExactSectionWidth);
+				// 2026-11-01: the house path grounds are re-identified at the moved
+				// houses, so the final solve re-decides their level there; the second
+				// alignment then fixes each owning house onto the final level.
+				housePaths = StreetDecor.identifyHousePathGrounds(start.getPieces(), templateManager);
+				resolved = StreetDecor.addHousePathGrounds(resolved, housePaths,
+						config.roadSmoothing.maxExactSectionWidth, true);
 				// plan C phase 2: pin every plaza group at the level its pieces really
 				// render at after the move - the solve and the world agree by construction
 				resolved.applyPlazaPins(false);
@@ -320,9 +332,10 @@ public final class T15Planner {
 			BuildingMask exclusion = mask.copyWithColumns(finalDecor.columnBoxes);
 			List<DoorSigns.DoorTarget> targets = doorTargets(component, pieces, scan, finalNetwork, exclusion, true);
 			finalTargets.add(targets);
-			int desired = targets.isEmpty()
-					? desiredShiftFromJunctions(finalNetwork, component, pieces, config)
-					: desiredShiftFromTargets(targets, component, config);
+			// 2026-11-01: a house with a dirt-path ground fixes onto the path area's
+			// FINAL solved level (this pass is the settle); other components keep
+			// the main-door alignment.
+			int desired = desiredShiftForComponent(finalNetwork, component, targets, pieces, config, housePaths);
 			// D4 (user decision 2026-10-17): no outward road cell means no
 			// alignment. The user confirmed the second pass keeps the first pass's
 			// shift in that case (additional = 0) instead of undoing it.
@@ -967,6 +980,61 @@ public final class T15Planner {
 		}
 		BuildingShift.ShiftDecision decision = BuildingShift.desiredShift(adjacent, component.baseWalkY);
 		return applyDecision(decision, config);
+	}
+
+	/**
+	 * The authoritative first/final shift of one component (2026-11-01). A
+	 * component that owns a house dirt-path ground aligns to the path area's
+	 * solved level - the path area is in the solve as a fixed-shape local
+	 * structure and the solved height is what the house is fixed at; every other
+	 * component aligns to its main-door road cells (or the junction fallback).
+	 * The path levels go through the same legal-interval decision as door
+	 * targets, so a component owning several path units keeps the median
+	 * fallback when they disagree.
+	 */
+	private static int desiredShiftForComponent(RoadNetwork network, BuildingComponents.Component component,
+			List<DoorSigns.DoorTarget> targets, List<StructurePiece> pieces, VillagePathSmoothedConfig config,
+			java.util.Map<Integer, java.util.Map<Long, StreetDecor.FixtureGround>> housePaths) {
+		List<Integer> pathLevels = pathGroundLevels(network, component, housePaths);
+		if (!pathLevels.isEmpty()) {
+			return decisionFromHeights(pathLevels, component, config);
+		}
+		return targets.isEmpty()
+				? desiredShiftFromJunctions(network, component, pieces, config)
+				: desiredShiftFromTargets(targets, component, config);
+	}
+
+	/**
+	 * Solved walk surfaces (half units) of the component's own dirt-path ground
+	 * columns. Every path column is a network cell - {@code StreetDecor#
+	 * addHousePathGrounds} adds the columns no road cell claims - so this reads
+	 * the level the house is fixed at, on the network the pass aligns against.
+	 */
+	private static List<Integer> pathGroundLevels(RoadNetwork network, BuildingComponents.Component component,
+			java.util.Map<Integer, java.util.Map<Long, StreetDecor.FixtureGround>> housePaths) {
+		if (housePaths.isEmpty()) {
+			return List.of();
+		}
+		java.util.Set<Integer> indices = new java.util.HashSet<>();
+		for (int idx : component.pieceIndices) {
+			java.util.Map<Long, StreetDecor.FixtureGround> grounds = housePaths.get(idx);
+			if (grounds == null) {
+				continue;
+			}
+			for (long column : grounds.keySet()) {
+				int x = (int) (column >> 32);
+				int z = (int) column;
+				int index = network.cellAt(x, z);
+				if (index >= 0) {
+					indices.add(index);
+				}
+			}
+		}
+		List<Integer> out = new ArrayList<>(indices.size());
+		for (int index : indices) {
+			out.add(network.cells.get(index).solvedP);
+		}
+		return out;
 	}
 
 	private static int decisionFromHeights(List<Integer> values, BuildingComponents.Component component,

@@ -138,6 +138,70 @@ public class RoadPolishTest {
 		assertEquals("the profile is still legal", 0, violations(net));
 	}
 
+	/**
+	 * 2026-11-01: a house's dirt-path ground is a fixed-shape local structure in
+	 * the solve - ONE movable flat unit per houses-pool piece, added even where
+	 * no road cell claims it. The street connects to the house through its own
+	 * walkway, and the solved level is the height the house is fixed at.
+	 */
+	@Test
+	public void aHousePathGroundJoinsTheSolveAsAFixedShapeUnit() {
+		List<RoadCell> cells = street(10, z -> 64);
+		// the house's own walkway: two dirt-path columns beside the street, on the
+		// house's ground two blocks above the vanilla street surface
+		RoadCell a = new RoadCell(1, 4, "plains", 136, false);
+		RoadCell b = new RoadCell(2, 4, "plains", 136, false);
+		for (RoadCell cell : new RoadCell[]{a, b}) {
+			cell.groundOverlap = true;
+			cell.groundBlock = "minecraft:dirt_path";
+			cell.groundGroupKey = RoadNetwork.housePathGroupKey(0);
+			cell.groundGroupMovable = true;
+		}
+		cells.add(a);
+		cells.add(b);
+		RoadNetwork net = RoadNetwork.build(cells, 4);
+		assertTrue("the house key never collides with the farm/fixture keys",
+				RoadNetwork.housePathGroupKey(0) != RoadNetwork.farmGroupKey(0)
+						&& RoadNetwork.housePathGroupKey(0) != RoadNetwork.fixtureGroupKey(0));
+		assertEquals("the path area is one flat unit", 1, net.groundOverlapGroups.size());
+		assertEquals("both walkway columns are in it", 2, net.groundOverlapGroups.get(0).cells.length);
+		RoadSmoother.solve(net, params());
+		assertEquals("the walkway is flat", a.solvedP, b.solvedP);
+		assertEquals("the walkway stays on an even (full-block) walk surface", 0, a.solvedP & 1);
+		assertEquals("the street meets the house walkway legally", 0, violations(net));
+		assertTrue("the seam stays within half a block",
+				Math.abs(a.solvedP - net.cells.get(net.cellAt(0, 4)).solvedP) <= 1);
+	}
+
+	/**
+	 * 2026-11-01: on the T5 path nothing may move, so a house path ground pins at
+	 * the house's real render level (the T5 fixture-base rule) and the road is
+	 * re-solved to it instead.
+	 */
+	@Test
+	public void aPinnedHousePathGroundHoldsTheRoadOnT5() {
+		List<RoadCell> cells = street(10, z -> 64);
+		RoadCell a = new RoadCell(1, 4, "plains", 136, false);
+		RoadCell b = new RoadCell(2, 4, "plains", 136, false);
+		for (RoadCell cell : new RoadCell[]{a, b}) {
+			cell.groundOverlap = true;
+			cell.groundBlock = "minecraft:dirt_path";
+			cell.groundGroupKey = RoadNetwork.housePathGroupKey(0);
+			cell.groundGroupMovable = false;
+			cell.plazaPinned = true;
+			cell.plazaPinP = 136;
+		}
+		cells.add(a);
+		cells.add(b);
+		RoadNetwork net = RoadNetwork.build(cells, 4);
+		RoadSmoother.solve(net, params());
+		assertEquals("the pinned walkway keeps the house's level", 136, a.solvedP);
+		assertEquals("flat", a.solvedP, b.solvedP);
+		assertEquals("the street comes to the house legally", 0, violations(net));
+		assertTrue("the seam stays within half a block",
+				Math.abs(a.solvedP - net.cells.get(net.cellAt(0, 4)).solvedP) <= 1);
+	}
+
 	/** A profile the optimiser already made legal must not be touched. */
 	@Test
 	public void aFlatProfileIsNotTouched() {

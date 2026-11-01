@@ -654,6 +654,172 @@ public final class StreetDecor {
 	}
 
 	/**
+	 * 2026-11-01: the y=0 dirt-path ground of every houses-pool RIGID piece
+	 * ({@code village/<style>/[zombie/]houses/*}), keyed by piece index and world
+	 * column. The path area is the house's own walkway to the street; like a
+	 * plaza or a street fixture it joins the road network solve as a fixed-shape
+	 * local structure, and the solved level is the height the house is fixed at.
+	 *
+	 * <p>Only template y=0 {@code dirt_path} counts: a dirt path one or two blocks
+	 * up ({@code taiga_medium_house_1}'s interior floor at y=2) is a floor, not a
+	 * road surface. Farms are included - {@link #addFarmGrounds} still owns their
+	 * whole y=0 ground where it overlaps a road cell, this only adds the path
+	 * columns the street never claims. Zombie villages never reach the pipeline
+	 * ({@code RoadCollector#isZombieVillage} excludes the whole village).
+	 */
+	public static Map<Integer, Map<Long, FixtureGround>> identifyHousePathGrounds(List<StructurePiece> pieces,
+			StructureTemplateManager templateManager) {
+		if (templateManager == null) {
+			return Map.of();
+		}
+		Map<Integer, Map<Long, FixtureGround>> out = new HashMap<>();
+		for (int i = 0; i < pieces.size(); i++) {
+			StructurePiece piece = pieces.get(i);
+			if (!(piece instanceof PoolElementStructurePiece pool)
+					|| !(pool.getElement() instanceof SinglePoolElement element)) {
+				continue;
+			}
+			if (element.getProjection() != StructureTemplatePool.Projection.RIGID || !isHousePiece(element)) {
+				continue;
+			}
+			StructureTemplate template;
+			try {
+				template = VpsCompat.loadTemplate(templateManager,
+						((SinglePoolElementVpsAccess) element).village_path_smoothed$getTemplateLocation());
+			} catch (Throwable t) {
+				continue;
+			}
+			List<StructureTemplate.Palette> palettes =
+					((StructureTemplateVpsAccess) template).village_path_smoothed$getPalettes();
+			if (palettes == null || palettes.isEmpty()) {
+				continue;
+			}
+			StructurePlaceSettings settings = new StructurePlaceSettings().setRotation(pool.getRotation());
+			StructureTemplate.Palette palette = settings.getRandomPalette(palettes, pool.getPosition());
+			BlockPos origin = pool.getPosition();
+			Map<Long, List<Integer>> columnYs = new HashMap<>();
+			Map<Long, BlockPos> pathBlocks = new HashMap<>();
+			for (StructureTemplate.StructureBlockInfo info : palette.blocks()) {
+				//#if MC >= 12001
+				//$$ BlockPos infoPos = info.pos();
+				//$$ BlockState infoState = info.state();
+				//#else
+				BlockPos infoPos = info.pos;
+				BlockState infoState = info.state;
+				//#endif
+				if (infoPos.getY() < 0 || infoState.isAir()
+						|| infoState.is(Blocks.STRUCTURE_VOID) || infoState.is(Blocks.STRUCTURE_BLOCK)
+						|| infoState.is(Blocks.JIGSAW)) {
+					continue;
+				}
+				BlockPos world = StructureTemplate.calculateRelativePosition(settings, infoPos).offset(origin);
+				long column = RoadCell.packedXZ(world.getX(), world.getZ());
+				columnYs.computeIfAbsent(column, k -> new ArrayList<>()).add(infoPos.getY());
+				if (infoPos.getY() == 0 && infoState.is(Blocks.DIRT_PATH)) {
+					pathBlocks.putIfAbsent(column, world);
+				}
+			}
+			if (pathBlocks.isEmpty()) {
+				continue;
+			}
+			Map<Long, FixtureGround> grounds = new HashMap<>();
+			for (Map.Entry<Long, BlockPos> entry : pathBlocks.entrySet()) {
+				long column = entry.getKey();
+				grounds.put(column, fixtureGround(i, entry.getValue().getY(), "minecraft:dirt_path",
+						columnYs.get(column)));
+			}
+			out.put(i, grounds);
+		}
+		return out;
+	}
+
+	/** True for an original {@code village/<style>/[zombie/]houses/*} template. */
+	private static boolean isHousePiece(SinglePoolElement element) {
+		try {
+			String location = ((SinglePoolElementVpsAccess) element).village_path_smoothed$getTemplateLocation();
+			return location != null && location.contains("/houses/");
+		} catch (Throwable t) {
+			return false;
+		}
+	}
+
+	/**
+	 * 2026-11-01: brings every house's dirt-path ground into the network as ONE
+	 * flat unit per piece ({@link #housePathGroupKey}). A path column that a road
+	 * cell already claims becomes a ground-overlap cell (the writer renders the
+	 * path block at the solved level); a path column with no road cell is ADDED
+	 * as a solve cell so the street connects to the house through its own walkway
+	 * and the solved level is the height the house is fixed at.
+	 *
+	 * <p>On T1.5 ({@code movable = true}) the unit may move as a whole and the
+	 * owning building component follows it in both alignment passes. On T5
+	 * nothing may move at placement, so the unit pins at the house's real render
+	 * level (the T5 fixture-base rule) and the road comes to the house instead.
+	 */
+	public static RoadNetwork addHousePathGrounds(RoadNetwork network, Map<Integer, Map<Long, FixtureGround>> grounds,
+			int maxWidth, boolean movable) {
+		if (grounds.isEmpty()) {
+			return network;
+		}
+		List<RoadCell> cells = new ArrayList<>(network.cells);
+		boolean changed = false;
+		for (Map.Entry<Integer, Map<Long, FixtureGround>> pieceEntry : grounds.entrySet()) {
+			int pieceIndex = pieceEntry.getKey();
+			for (Map.Entry<Long, FixtureGround> entry : pieceEntry.getValue().entrySet()) {
+				long column = entry.getKey();
+				int x = (int) (column >> 32);
+				int z = (int) column;
+				int index = network.cellAt(x, z);
+				FixtureGround ground = entry.getValue();
+				if (index >= 0) {
+					RoadCell cell = network.cells.get(index);
+					if (cell.seat || cell.plaza || cell.fixtureBase || cell.groundOverlap) {
+						continue; // an existing structure already owns this cell (the farm ground may)
+					}
+					cell.groundOverlap = true;
+					cell.groundBlock = ground.blockId;
+					cell.groundOldBlockY = ground.baseBlockY;
+					cell.groundAboveLocalYs = ground.aboveLocalYs;
+					cell.groundGroupKey = RoadNetwork.housePathGroupKey(pieceIndex);
+					cell.groundGroupMovable = movable;
+					cell.baseP = 2 * (ground.baseBlockY + 1);
+					cell.solvedP = cell.baseP;
+					if (!movable) {
+						cell.plazaPinned = true;
+						cell.plazaPinP = cell.baseP;
+					}
+					VpsPipeline.HOUSE_PATH_OVERLAP_CELLS.incrementAndGet();
+					changed = true;
+					continue;
+				}
+				RoadCell cell = new RoadCell(x, z, "plains", 2 * (ground.baseBlockY + 1), false);
+				cell.groundOverlap = true;
+				cell.groundBlock = ground.blockId;
+				cell.groundOldBlockY = ground.baseBlockY;
+				cell.groundAboveLocalYs = ground.aboveLocalYs;
+				cell.groundGroupKey = RoadNetwork.housePathGroupKey(pieceIndex);
+				cell.groundGroupMovable = movable;
+				if (!movable) {
+					cell.plazaPinned = true;
+					cell.plazaPinP = cell.baseP;
+				}
+				cells.add(cell);
+				VpsPipeline.HOUSE_PATH_GROUND_CELLS.incrementAndGet();
+				changed = true;
+			}
+		}
+		if (!changed) {
+			return network;
+		}
+		RoadNetwork rebuilt = RoadNetwork.build(cells, maxWidth);
+		rebuilt.plazaFootprint.addAll(network.plazaFootprint);
+		rebuilt.streetScenery.addAll(network.streetScenery);
+		rebuilt.allSeatColumns.addAll(network.allSeatColumns);
+		rebuilt.decorPools.addAll(network.decorPools);
+		return rebuilt;
+	}
+
+	/**
 	 * Moves every multi-block decor to the level its base group settled on.
 	 * The group is flat and even, so this is a whole-block move; the refreshed
 	 * footprint then matches the road/seat the writer renders. A world-height

@@ -148,6 +148,25 @@ ground is writer-rendered and still follows the solve). `fixture overlap
 cells`, `farm overlap cells` and `ground overlap written` in `/vps stats`
 observe this.
 
+### House dirt-path grounds
+
+A houses-pool RIGID piece whose template holds `dirt_path` on the y=0 ground
+layer brings that path area into the road network solve like a plaza or a
+street piece: the columns of one piece form ONE fixed-shape flat unit
+(`house path cells` in `/vps stats`). A path column a road cell already claims
+becomes a ground-overlap cell (rendered like the farm ground above); a path
+column with no road cell is **added** as a solve cell, so the street connects
+to the house through its own walkway. Only the ground layer counts — a dirt
+path one or two blocks up (`taiga_medium_house_1`'s interior floor) is a
+floor, not a road surface.
+
+At T1.5 the unit may move as a whole, and the owning building component
+aligns to the path area's solved level in BOTH alignment passes (instead of
+the main-door targets) — after the solve the house is fixed at the height its
+path area solved to, with the usual world-height and overlap guards. At T5
+nothing may move, so the unit pins at the house's real render level and the
+road is re-solved to the house instead.
+
 ### Kerbs and railings
 
 Each side is probed **from the road block's own height**, and the two cells

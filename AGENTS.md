@@ -425,6 +425,25 @@ Rules:
   leaves the two road sides at different heights. `fixture overlap cells`,
   `farm overlap cells` and `ground overlap written (units moved, blocks moved)`
   in `/vps stats` are the observation set.
+- **A house's dirt-path ground is a fixed-shape local structure in the solve,
+  and the house is fixed at its solved height (2026-11-01).** Every houses-pool
+  RIGID piece (`village/<style>/[zombie/]houses/*`) whose template holds
+  `dirt_path` on the y=0 GROUND layer joins the network as ONE flat unit per
+  piece (`StreetDecor#identifyHousePathGrounds` / `#addHousePathGrounds`, unit
+  key `RoadNetwork#housePathGroupKey`): a path column a road cell claims
+  becomes a ground-overlap cell (the unit above), a path column with no road
+  cell is ADDED as a solve cell so the street connects to the house through its
+  own walkway. Only y=0 counts - a dirt path one or two blocks up
+  (`taiga_medium_house_1`'s interior floor at y=2) is a floor, not a road
+  surface. Farms are included, but `addFarmGrounds` still owns their whole y=0
+  ground where it overlaps, so no cell is ever claimed twice. On T1.5
+  (`movable = true`) the unit may move as a whole and the owning building
+  component aligns to the path area's solved level in BOTH passes
+  (`T15Planner#desiredShiftForComponent`, replacing the main-door targets; the
+  same legal-interval decision, guards and median-wing clamp apply). On T5 the
+  unit pins at the house's real render level (the T5 fixture-base rule) and the
+  road is re-solved to the house instead. `house path cells (overlap N)` in the
+  `/vps stats` decor line is the observation set.
 - **The polish never moves a physically fixed cell, but it DOES move a movable
   unit before placement (2026-10-15, reworked 2026-10-17).** A T5 decor-seat pin
   and a T5/phase-2 plaza pin are immovable: the free side takes the correction

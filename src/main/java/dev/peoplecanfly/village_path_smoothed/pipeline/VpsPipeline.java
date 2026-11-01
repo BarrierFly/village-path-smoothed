@@ -196,6 +196,17 @@ public final class VpsPipeline {
 	public static final AtomicLong FIXTURE_BASE_OVERLAP_CELLS = new AtomicLong();
 	/** Fixed-shape farm y=0 ground cells that overlap a road cell. */
 	public static final AtomicLong FARM_OVERLAP_CELLS = new AtomicLong();
+	/**
+	 * 2026-11-01: house dirt-path ground columns claimed by an existing road cell
+	 * (the writer renders the path block there at the solved level).
+	 */
+	public static final AtomicLong HOUSE_PATH_OVERLAP_CELLS = new AtomicLong();
+	/**
+	 * 2026-11-01: house dirt-path ground columns with no road cell, added to the
+	 * solve as new cells so the street connects to the house through its own
+	 * walkway and the house is fixed at the path area's solved height.
+	 */
+	public static final AtomicLong HOUSE_PATH_GROUND_CELLS = new AtomicLong();
 	/** Overlap cells written as their structure ground instead of a road. */
 	public static final AtomicLong GROUND_OVERLAP_CELLS_WRITTEN = new AtomicLong();
 	/** Overlap units the writer actually shifted. */
@@ -634,6 +645,12 @@ public final class VpsPipeline {
 			network = StreetDecor.addFixtureBases(network, decor, config.roadSmoothing.maxExactSectionWidth, false);
 			network = StreetDecor.addFarmGrounds(network, pieces, templateManager,
 					config.roadSmoothing.maxExactSectionWidth);
+			// 2026-11-01: house dirt-path grounds join the solve as fixed-shape flat
+			// units. T5 never moves a piece, so each unit pins at the house's real
+			// render level and the road is re-solved to it (the T5 fixture-base rule).
+			network = StreetDecor.addHousePathGrounds(network,
+					StreetDecor.identifyHousePathGrounds(pieces, templateManager),
+					config.roadSmoothing.maxExactSectionWidth, false);
 			// plan 2026-10-16: nothing may move at feature placement, so a seat
 			// with a RIGID decor piece on top pins at the level that piece
 			// actually renders at (the phase-2 plaza precedent: the pieces are

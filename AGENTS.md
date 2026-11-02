@@ -272,12 +272,25 @@ Rules:
   `NON_DOOR_LOWER_HALF_SKIPPED`). The main door is the real door nearest the
   template's `building_entrance` jigsaw by horizontal Chebyshev distance, with
   a double door keeping both equally-close leaves
-  (`DoorSigns#mainDoorIndices`). The front is one step from that door toward the
+  (`DoorSigns#mainDoorIndices`); XZ ties are broken by the smaller
+  |door floor Y - entrance Y| (2026-11-03, door audit 2026-11-01 §5.1: the
+  upper balcony doors of desert_tannery_1 / desert_tool_smith_1 /
+  plains_library_2 drop out), and the name also matches vanilla's own
+  `buidling_entrance` typo (snowy_shepherds_house_1, every supported version;
+  the exact match used to elect its interior back door as a second main door,
+  audit §3.1). The front is one step from that door toward the
   selected road target (`DoorSigns#selectDoorRoadCell`: outside every protected
   footprint, not a seat, outside the door wall); without a target the front is
-  the door wall's outward normal and `DOOR_FRONT_FALLBACK` is counted. A piece
+  the door wall's outward normal and `DOOR_FRONT_FALLBACK` is counted, and a NO
+  FRONT door whose road cells all sit on the door column or behind the wall
+  counts `DOOR_FRONT_NORMAL_MISMATCH` (audit §5.2 - the outward normal points
+  away from every road; pure observation). A piece
   without real doors (farm/pen, unloaded template) keeps the non-RIGID junction
-  fallback. The writer skips railings within one block of that front (the 3x3
+  fallback, which covers only the connection-side entrance: fence gates two or
+  more blocks lateral to it stay outside the ±1 exemption box
+  (plains_animal_pen_1, savanna_animal_pen_3, snowy_animal_pen_2 - 4 gates,
+  audit §4A.3; deliberately unfixed until their railing look is seen in game).
+  The writer skips railings within one block of that front (the 3x3
   box shape is kept per the R8 decision of 2026-10-15) so a doorway can never be
   fenced in (`RAILINGS_SKIPPED_AT_DOOR`); `railing.skipAtBuildingDoors` gates
   it. `door anchor offsets 0/1/2/3/4+` in /vps stats is the junction-to-door

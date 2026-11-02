@@ -33,7 +33,7 @@ public class DoorSignsTest {
 	@Test
 	public void aSingleRealDoorIsTheMainDoor() {
 		int[][] doors = {{1, 1, 64}};
-		int[][] entrances = {{0, 0}};
+		int[][] entrances = {{0, 0, 64}};
 		assertArrayEquals(new int[]{0}, DoorSigns.mainDoorIndices(doors, entrances));
 	}
 
@@ -41,7 +41,7 @@ public class DoorSignsTest {
 	public void aDoubleDoorKeepsBothLeavesWhenTheyAreEquallyClose() {
 		// both leaves are Chebyshev 1 from the entrance: a double door stays a pair
 		int[][] doors = {{1, 1, 64}, {1, 2, 64}};
-		int[][] entrances = {{0, 1}};
+		int[][] entrances = {{0, 1, 64}};
 		assertArrayEquals(new int[]{0, 1}, DoorSigns.mainDoorIndices(doors, entrances));
 	}
 
@@ -49,7 +49,7 @@ public class DoorSignsTest {
 	public void sideAndUpperDoorsAreExcludedWhenFartherFromTheEntrance() {
 		// main door at (1,1), side door at (7,1), upper door at (5,5)
 		int[][] doors = {{1, 1, 64}, {7, 1, 64}, {5, 5, 69}};
-		int[][] entrances = {{0, 1}};
+		int[][] entrances = {{0, 1, 64}};
 		assertArrayEquals(new int[]{0}, DoorSigns.mainDoorIndices(doors, entrances));
 	}
 
@@ -58,6 +58,25 @@ public class DoorSignsTest {
 		int[][] doors = {{1, 1, 64}, {7, 1, 64}};
 		assertArrayEquals(new int[]{0, 1}, DoorSigns.mainDoorIndices(doors, new int[0][]));
 		assertArrayEquals(doors, DoorSigns.mainDoors(doors, new int[0][]));
+	}
+
+	@Test
+	public void anUpperDoorAtTheSameXzDistanceLosesToTheGroundDoor() {
+		// desert_tannery_1 shape (door audit 2026-11-01 §3.6): the two upper
+		// balcony doors are XZ-equidistant from the entrance but three floors
+		// above it - only the ground doors stay main
+		int[][] doors = {{1, 2, 64}, {3, 2, 64}, {5, 2, 64}, {2, 2, 70}, {4, 2, 70}};
+		int[][] entrances = {{3, 0, 64}};
+		assertArrayEquals(new int[]{0, 1, 2}, DoorSigns.mainDoorIndices(doors, entrances));
+	}
+
+	@Test
+	public void anUpperDoubleDoorKeepsBothLeavesWhenTheyShareItsFloor() {
+		// savanna_library_1 shape: both leaves sit on the same upper floor, so
+		// the Y tie-break still keeps the pair
+		int[][] doors = {{2, 3, 67}, {2, 5, 67}};
+		int[][] entrances = {{0, 4, 65}};
+		assertArrayEquals(new int[]{0, 1}, DoorSigns.mainDoorIndices(doors, entrances));
 	}
 
 	@Test

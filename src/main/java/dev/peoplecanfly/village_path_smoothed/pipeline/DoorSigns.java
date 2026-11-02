@@ -56,11 +56,15 @@ public final class DoorSigns {
 	 * The main-door indices: for each real door take the horizontal Chebyshev
 	 * distance ({@code max(|dx|, |dz|)}) to every {@code building_entrance},
 	 * keep the global minimum and return EVERY door at that distance, so a
-	 * double door keeps both leaves. Without any entrance every real door is a
-	 * main door (the caller counts {@code MAIN_DOOR_NO_ENTRANCE}).
+	 * double door keeps both leaves. Doors tied on the XZ distance are decided
+	 * by the smaller {@code |door floor Y - entrance Y|} (2026-11-03, door audit
+	 * 2026-11-01 §5.1): the upper balcony doors of desert_tannery_1,
+	 * desert_tool_smith_1 and plains_library_2 lose to their ground doors.
+	 * Without any entrance every real door is a main door (the caller counts
+	 * {@code MAIN_DOOR_NO_ENTRANCE}).
 	 *
 	 * @param doors {x, z, floorY} real lower door halves
-	 * @param entrances {x, z} {@code building_entrance} jigsaw positions
+	 * @param entrances {x, z, floorY} {@code building_entrance} jigsaw positions
 	 */
 	public static int[] mainDoorIndices(int[][] doors, int[][] entrances) {
 		if (doors == null || doors.length == 0) {
@@ -73,35 +77,42 @@ public final class DoorSigns {
 			}
 			return all;
 		}
-		int best = Integer.MAX_VALUE;
-		for (int[] door : doors) {
-			int nearest = Integer.MAX_VALUE;
+		int[] nearestXz = new int[doors.length];
+		int[] nearestDy = new int[doors.length];
+		for (int i = 0; i < doors.length; i++) {
+			int xz = Integer.MAX_VALUE;
+			int dy = Integer.MAX_VALUE;
 			for (int[] entrance : entrances) {
-				nearest = Math.min(nearest,
-						Math.max(Math.abs(door[0] - entrance[0]), Math.abs(door[1] - entrance[1])));
+				int d = Math.max(Math.abs(doors[i][0] - entrance[0]), Math.abs(doors[i][1] - entrance[1]));
+				int vertical = Math.abs(doors[i][2] - entrance[2]);
+				if (d < xz) {
+					xz = d;
+					dy = vertical;
+				} else if (d == xz && vertical < dy) {
+					dy = vertical;
+				}
 			}
-			best = Math.min(best, nearest);
+			nearestXz[i] = xz;
+			nearestDy[i] = dy;
+		}
+		int bestXz = Integer.MAX_VALUE;
+		int bestDy = Integer.MAX_VALUE;
+		for (int i = 0; i < doors.length; i++) {
+			if (nearestXz[i] < bestXz || (nearestXz[i] == bestXz && nearestDy[i] < bestDy)) {
+				bestXz = nearestXz[i];
+				bestDy = nearestDy[i];
+			}
 		}
 		int count = 0;
-		for (int[] door : doors) {
-			int nearest = Integer.MAX_VALUE;
-			for (int[] entrance : entrances) {
-				nearest = Math.min(nearest,
-						Math.max(Math.abs(door[0] - entrance[0]), Math.abs(door[1] - entrance[1])));
-			}
-			if (nearest == best) {
+		for (int i = 0; i < doors.length; i++) {
+			if (nearestXz[i] == bestXz && nearestDy[i] == bestDy) {
 				count++;
 			}
 		}
 		int[] out = new int[count];
 		int n = 0;
 		for (int i = 0; i < doors.length; i++) {
-			int nearest = Integer.MAX_VALUE;
-			for (int[] entrance : entrances) {
-				nearest = Math.min(nearest,
-						Math.max(Math.abs(doors[i][0] - entrance[0]), Math.abs(doors[i][1] - entrance[1])));
-			}
-			if (nearest == best) {
+			if (nearestXz[i] == bestXz && nearestDy[i] == bestDy) {
 				out[n++] = i;
 			}
 		}

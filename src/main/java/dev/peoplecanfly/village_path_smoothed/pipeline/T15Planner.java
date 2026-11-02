@@ -538,7 +538,8 @@ public final class T15Planner {
 		int[][] doorArray = doors.toArray(new int[0][]);
 		int[][] entrancePositions = new int[entrances.size()][];
 		for (int i = 0; i < entrances.size(); i++) {
-			entrancePositions[i] = new int[]{entrances.get(i)[0], entrances.get(i)[1]};
+			// {x, z, y}: the Y feeds the main-door tie-break for XZ-equidistant doors
+			entrancePositions[i] = new int[]{entrances.get(i)[0], entrances.get(i)[1], entrances.get(i)[4]};
 		}
 		int[] main = DoorSigns.mainDoorIndices(doorArray, entrancePositions);
 		if (countStats) {
@@ -580,6 +581,14 @@ public final class T15Planner {
 			}
 			if (road == null && countStats) {
 				VpsPipeline.NO_FRONT_ROAD.incrementAndGet();
+				// Door audit 2026-11-01 §5.2: the outward half-plane held no road
+				// cell while the filter rejected road cells on the door column or
+				// behind the wall - the normal points away from every road. A door
+				// reached through a courtyard keeps this at zero because its
+				// half-plane still holds the street; pure observation, no behaviour.
+				if (selection.behindExcluded() > 0) {
+					VpsPipeline.DOOR_FRONT_NORMAL_MISMATCH.incrementAndGet();
+				}
 			}
 			int floorY = door.length > 2 ? door[2] : component.baseWalkY;
 			out.add(new DoorSigns.DoorTarget(door[0], door[1], floorY,

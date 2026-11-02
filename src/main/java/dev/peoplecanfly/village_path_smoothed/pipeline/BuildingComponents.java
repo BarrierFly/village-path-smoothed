@@ -180,7 +180,7 @@ public final class BuildingComponents {
 	public static final class TemplateScan {
 		/** Piece index -> {x, z, floorY} real lower door halves. */
 		public final Map<Integer, int[][]> doors = new HashMap<>();
-		/** Piece index -> {x, z, frontDX, frontDZ} {@code building_entrance} jigsaws. */
+		/** Piece index -> {x, z, frontDX, frontDZ, y} {@code building_entrance} jigsaws. */
 		public final Map<Integer, int[][]> entrances = new HashMap<>();
 		/**
 		 * Piece index -> template-local protected cells {x, y, z} of the building
@@ -266,12 +266,20 @@ public final class BuildingComponents {
 						continue;
 					}
 					String name = jigsawName(info);
-					if (!"minecraft:building_entrance".equals(name)) {
+					// "buidling_entrance" is vanilla's own typo in
+					// snowy_shepherds_house_1 (every supported version). Matching it
+					// keeps that template's real street door as the only main door;
+					// the exact match used to fall into the no-entrance branch and
+					// elect the interior back door as a second main door (door audit
+					// 2026-11-01 §3.1).
+					if (!"minecraft:building_entrance".equals(name) && !"minecraft:buidling_entrance".equals(name)) {
 						continue;
 					}
-					BlockPos worldPos = StructureTemplate.calculateRelativePosition(settings, infoPos).offset(pool.getPosition());
-					Direction front = pool.getRotation().rotate(JigsawBlock.getFrontFacing(state));
-					entrances.add(new int[]{worldPos.getX(), worldPos.getZ(), front.getStepX(), front.getStepZ()});
+						BlockPos worldPos = StructureTemplate.calculateRelativePosition(settings, infoPos).offset(pool.getPosition());
+						Direction front = pool.getRotation().rotate(JigsawBlock.getFrontFacing(state));
+						// the trailing y feeds the main-door Y tie-break (DoorSigns#mainDoorIndices)
+						entrances.add(new int[]{worldPos.getX(), worldPos.getZ(), front.getStepX(), front.getStepZ(),
+								worldPos.getY()});
 				}
 				out.doors.put(i, doors.toArray(new int[0][]));
 				out.bodyCells.put(i, BuildingMask.bodyCells(solid));

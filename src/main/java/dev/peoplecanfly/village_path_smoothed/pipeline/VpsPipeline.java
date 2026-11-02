@@ -156,6 +156,13 @@ public final class VpsPipeline {
 	public static final AtomicLong DOOR_TARGET_BEHIND = new AtomicLong();
 	/** Main doors with no eligible outward road cell (the building is not moved for them, D4). */
 	public static final AtomicLong NO_FRONT_ROAD = new AtomicLong();
+	/**
+	 * 2026-11-03 (door audit 2026-11-01 §5.2): NO FRONT main doors whose half-plane
+	 * filter rejected road cells on the door column or behind the wall - the normal
+	 * points away from every road. Pure observation: a door reached through a
+	 * courtyard stays uncounted because its half-plane still holds the street.
+	 */
+	public static final AtomicLong DOOR_FRONT_NORMAL_MISMATCH = new AtomicLong();
 	/** Railing exemptions that fell back to the door wall normal because no road target existed. */
 	public static final AtomicLong DOOR_FRONT_FALLBACK = new AtomicLong();
 	/** Components the second authoritative alignment moved after the final re-solve (D5). */

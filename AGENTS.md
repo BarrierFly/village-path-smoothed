@@ -48,7 +48,8 @@ src/main/java/dev/peoplecanfly/village_path_smoothed/
 │   ├── VpsNoiseContext      # T1.5: pure noise, no world access
 │   ├── FeatureProtection    # write-time non-terrain decoration classifier
 │   └── WaterCrossings       # pure water-crossing predicate (unit tested)
-├── compat/      # VpsCompat: version shims; modmenu/: optional client screen
+├── compat/      # VpsCompat: version shims; ConfigValueCodec: config-screen value
+│                #   parsing (pure, unit tested); modmenu/: optional client screen
 └── command/     # /vps brigadier tree
 ```
 
@@ -1015,6 +1016,33 @@ launch it detached with output redirected to a file, watch the file, then kill
 the process tree. `run/` already carries `-Dmixin.debug.export=true`, so
 `run/.mixin.out/` holds the transformed classes; grep them for the
 `village_path_smoothed$...` handler names to prove an injection actually landed.
+
+- **The ModMenu screen edits a DRAFT and every option is reachable there
+  (2026-11-04).** `compat/modmenu/VpsConfigScreen` covers all of
+  `VillagePathSmoothedConfig` (general / decorations / solver / advanced /
+  diagnostics / debug), paginated, one `Default` button per row plus `Reset
+  all`. Three rules hold it together:
+  - **Nothing is live until `Save & Close`.** The screen works on
+    `VillagePathSmoothedConfig.copyOf(...)` and only calls
+    `replace` + `save` on save; ESC discards the draft. Toggling a field must
+    never mutate the live instance, because generation reads it per use.
+  - **Saving clears the solution cache.** A solution is a function of the
+    config, so `VpsPipeline.clearSolutionCache()` runs on save exactly like
+    `/vps config reload` does; skipping it makes saved settings look ignored for
+    every already-cached village.
+  - **Invalid input is surfaced, never clamped.** The per-field range check
+    lives in `compat/ConfigValueCodec` (pure, unit tested); a value outside the
+    row's range or one that does not parse keeps the typed text, marks the field
+    red and blocks saving, and the page holding it is reopened. Clamping would
+    silently rewrite `-1` "unlimited" into `0` "none" - a different feature.
+    The screen must not be reachable on a dedicated server: it is client-only
+    and stays behind the `modmenu` entrypoint.
+- Version notes for the screen (each cost a compile failure otherwise): 1.21.11
+  folded `CycleButton.Builder#withInitialValue` into the builder factory (pass
+  the initial value there), 1.21.10 dropped `StringWidget#alignLeft`, 26.3
+  dropped `EditBox#setFilter` (validate in the responder) and moved the current
+  screen to `Minecraft#gui#setScreen`, and 26.3's `Screen` takes
+  `(Minecraft, Font, Component)`.
 
 ## Do not
 

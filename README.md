@@ -398,7 +398,22 @@ it is installed) but optional.
 
 ## Configuration
 
-`config/village_path_smoothed.json`, reloaded with `/vps config reload`
+Config screen (recommended): with ModMenu installed, open the mod's config button
+in the Mods list and edit **every** option below in game. The screen groups the
+options into general / decorations / solver / advanced / diagnostics / debug
+sections, paginates them automatically, gives each row a tooltip and its own
+`Default` button, and offers `Reset all`. Edits only touch a draft: `Save &
+Close` writes the file, installs it and clears the solution cache, while ESC or
+`Cancel` throws the whole draft away. Numeric rows are validated text fields
+with `-`/`+` step buttons; an invalid entry turns red and blocks saving instead
+of being silently clamped into range (which is what would happen to the `-1`
+"unlimited" values).
+
+The config is an input of the solve, and the mod only rewrites roads while a
+chunk is generated, so a saved change affects worlds and chunks generated
+afterwards - existing roads stay as they are.
+
+File: `config/village_path_smoothed.json`, reloaded with `/vps config reload`
 (op permission level). Main options:
 
 | Option | Default | Meaning |

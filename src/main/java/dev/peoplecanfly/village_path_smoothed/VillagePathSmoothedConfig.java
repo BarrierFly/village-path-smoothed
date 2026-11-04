@@ -307,6 +307,25 @@ public final class VillagePathSmoothedConfig {
 		return FabricLoader.getInstance().getConfigDir().resolve(VillagePathSmoothed.MOD_ID + ".json");
 	}
 
+	/**
+	 * Deep copy through Gson. The ModMenu screen edits a draft so that closing it
+	 * without saving cannot leave half-applied options in the live instance, and
+	 * so that {@code Cancel} has something to throw away. Every consumer reads
+	 * {@link #get()} per use, so replacing the instance is safe.
+	 */
+	public static VillagePathSmoothedConfig copyOf(VillagePathSmoothedConfig source) {
+		if (source == null) {
+			return new VillagePathSmoothedConfig();
+		}
+		VillagePathSmoothedConfig copy = GSON.fromJson(GSON.toJson(source), VillagePathSmoothedConfig.class);
+		return copy != null ? copy : new VillagePathSmoothedConfig();
+	}
+
+	/** Installs a (draft) config as the live one; the caller still has to {@link #save()} it. */
+	public static synchronized void replace(VillagePathSmoothedConfig replacement) {
+		instance = replacement != null ? replacement : new VillagePathSmoothedConfig();
+	}
+
 	public static synchronized void load() {
 		Path path = getConfigPath();
 		try {

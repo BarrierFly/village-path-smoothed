@@ -46,13 +46,40 @@ tasks.register('buildAndGather') {
 			include '*'
 		}
 		subprojects {
+			// Only the artifact THIS build just produced. A subproject's libs folder
+			// keeps whatever an earlier run left there, and a release run
+			// (BUILD_RELEASE=true) writes the same jar WITHOUT the -SNAPSHOT suffix.
+			// Copying '*/*.jar' therefore gathered a stale release jar next to the
+			// fresh one, and the copy reset its timestamp so the two looked equally
+			// new - installing the release-named one silently ran the old code.
+			// The artifact name is exactly "<archivesName>-<version>.jar", so match it.
+			def artifactName = "${project.base.archivesName.get()}-${project.version}.jar"
 			copy {
 				from(buildLibs(project)) {
-					include '*.jar'
+					include artifactName
 					exclude '*-dev.jar', '*-sources.jar', '*-shadow.jar'
 				}
 				into buildLibs(rootProject)
 				duplicatesStrategy = DuplicatesStrategy.INCLUDE
+			}
+		}
+	}
+	doLast {
+		def gathered = fileTree(rootProject.buildDir.toPath().resolve('libs')) {
+			include '*.jar'
+		}.files.sort { it.name }
+		println "Gathered ${gathered.size()} jar(s) into build/libs:"
+		gathered.each { println "  ${it.name}" }
+		// A jar from another run cannot slip in any more, but a leftover release
+		// jar in a subproject still confuses whoever copies files by hand.
+		subprojects {
+			def stale = fileTree(project.buildDir.toPath().resolve('libs')) {
+				include '*.jar'
+				exclude "${project.base.archivesName.get()}-${project.version}.jar"
+				exclude '*-dev.jar', '*-sources.jar', '*-shadow.jar'
+			}.files
+			stale.each {
+				println "  note: ${project.path} also holds ${it.name}, which is NOT part of this build"
 			}
 		}
 	}

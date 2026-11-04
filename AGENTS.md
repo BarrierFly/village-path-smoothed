@@ -984,6 +984,19 @@ skipped hook. The safety net is the smoke test below, not `require`.
 ./gradlew :1.21.11:runServer   # smoke test (needs run/eula.txt)
 ```
 
+**`buildAndGather` gathers only the artifact this run produced, and it prints
+what it gathered (2026-11-04).** A subproject's `build/libs/` keeps whatever an
+earlier run left there, and a release run (`BUILD_RELEASE=true`) writes the
+SAME mod version without the `-SNAPSHOT` suffix. The task used to copy every
+`*.jar` from every subproject, so a stale release jar landed next to the fresh
+SNAPSHOT one, and Gradle reset the copied file's timestamp - the two looked
+equally new and installing the release-named one silently ran the old code
+(measured: a jar whose `en_us.json` still had the 14 pre-config-screen keys).
+The copy now includes exactly `"<archivesName>-<version>.jar"`, `doLast` prints
+the gathered file names, and it also names any leftover jar in a subproject that
+is NOT part of the build. When handing jars out, read that list - never trust
+directory timestamps.
+
 `RoadNetworkBenchTest` is the fix plan v4 M0 bench and is part of `test`: the
 three-dimensional rig (4 terrain shapes x 4 network shapes x 2 probe calibers)
 with the integrity / defect columns as hard assertions and the style column

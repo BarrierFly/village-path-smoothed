@@ -519,10 +519,14 @@ public final class StreetDecor {
 	 * ground-overlap solve. The scattered farmland inside savanna street
 	 * templates stays street scenery and is deliberately excluded.
 	 *
-	 * <p>Returns the piece's complete y=0 ground (farmland, water, dirt/grass
-	 * paths, ...) keyed by packed XZ, with the template offsets of the blocks
-	 * above it. The piece is RIGID, so the recorded world Y is the real rendered
-	 * ground Y even before any T1.5 shift.
+	 * <p>Returns the piece's complete ground (farmland, water, dirt/grass paths,
+	 * ...) keyed by packed XZ, with the template offsets of the blocks above it.
+	 * The ground layer is the one the {@code building_entrance} jigsaws stand on
+	 * (the lowest entrance template Y minus 1, 2026-11-04) - y=0 for a normal
+	 * farm, y=1 for a terraced one like savanna_large_farm_2 whose walkway
+	 * surface sits one above the buried base; without any entrance the layer
+	 * falls back to y=0. The piece is RIGID, so the recorded world Y is the real
+	 * rendered ground Y even before any T1.5 shift.
 	 */
 	public static Map<Long, FixtureGround> identifyFarmGrounds(List<StructurePiece> pieces,
 			StructureTemplateManager templateManager) {
@@ -557,6 +561,7 @@ public final class StreetDecor {
 			Map<Long, List<Integer>> columnYs = new HashMap<>();
 			Map<Long, BlockState> ground = new HashMap<>();
 			Map<Long, Integer> groundY = new HashMap<>();
+			int groundLayer = groundLayerOf(palette);
 			for (StructureTemplate.StructureBlockInfo info : palette.blocks()) {
 				//#if MC >= 12001
 				//$$ BlockPos infoPos = info.pos();
@@ -573,7 +578,7 @@ public final class StreetDecor {
 				BlockPos world = StructureTemplate.calculateRelativePosition(settings, infoPos).offset(origin);
 				long column = RoadCell.packedXZ(world.getX(), world.getZ());
 				columnYs.computeIfAbsent(column, k -> new ArrayList<>()).add(infoPos.getY());
-				if (infoPos.getY() == 0) {
+				if (infoPos.getY() == groundLayer) {
 					ground.putIfAbsent(column, infoState);
 					groundY.putIfAbsent(column, world.getY());
 				}
@@ -605,7 +610,44 @@ public final class StreetDecor {
 	}
 
 	/**
-	 * Marks the road cells that overlap a fixed-shape farm's y=0 ground as one
+	 * The template Y of the ground layer a {@code building_entrance} jigsaw
+	 * stands on: the LOWEST entrance template Y minus 1 (the jigsaws sit on the
+	 * walkway surface, so the foot level minus one is the surface block layer),
+	 * clamped at 0. Without any entrance jigsaw the layer falls back to y=0 -
+	 * the pre-2026-11-04 behaviour. This handles the stepped pieces whose
+	 * walkway is not at template y=0 (savanna_large_farm_2's terraced surface at
+	 * y=1, taiga_medium_house_1's exterior ground walkway at y=2); the name also
+	 * matches vanilla's own {@code buidling_entrance} typo, like
+	 * {@code BuildingComponents#scanTemplates}.
+	 */
+	private static int groundLayerOf(StructureTemplate.Palette palette) {
+		int lowest = Integer.MAX_VALUE;
+		for (StructureTemplate.StructureBlockInfo info : palette.blocks()) {
+			//#if MC >= 12001
+			//$$ BlockState infoState = info.state();
+			//#else
+			BlockState infoState = info.state;
+			//#endif
+			if (!infoState.is(Blocks.JIGSAW)) {
+				continue;
+			}
+			String name = nbtString(info, "name");
+			if ("minecraft:building_entrance".equals(name) || "minecraft:buidling_entrance".equals(name)) {
+				//#if MC >= 12001
+				//$$ lowest = Math.min(lowest, info.pos().getY());
+				//#else
+				lowest = Math.min(lowest, info.pos.getY());
+				//#endif
+			}
+		}
+		if (lowest == Integer.MAX_VALUE) {
+			return 0;
+		}
+		return Math.max(0, lowest - 1);
+	}
+
+	/**
+	 * Marks the road cells that overlap a fixed-shape farm's ground layer as one
 	 * movable flat unit per farm piece. A farm column that is already a road
 	 * cell is rewritten at the solved height; non-overlapping farm ground needs
 	 * no solve cell.
@@ -654,17 +696,24 @@ public final class StreetDecor {
 	}
 
 	/**
-	 * 2026-11-01: the y=0 dirt-path ground of every houses-pool RIGID piece
+	 * 2026-11-01: the dirt-path ground of every houses-pool RIGID piece
 	 * ({@code village/<style>/[zombie/]houses/*}), keyed by piece index and world
 	 * column. The path area is the house's own walkway to the street; like a
 	 * plaza or a street fixture it joins the road network solve as a fixed-shape
 	 * local structure, and the solved level is the height the house is fixed at.
 	 *
-	 * <p>Only template y=0 {@code dirt_path} counts: a dirt path one or two blocks
-	 * up ({@code taiga_medium_house_1}'s interior floor at y=2) is a floor, not a
-	 * road surface. Farms are included - {@link #addFarmGrounds} still owns their
-	 * whole y=0 ground where it overlaps a road cell, this only adds the path
-	 * columns the street never claims. Zombie villages never reach the pipeline
+	 * <p>The walkway layer is the template layer the {@code building_entrance}
+	 * jigsaws stand on ({@code groundLayerOf}: lowest entrance Y minus 1, y=0
+	 * without an entrance) - y=0 for a normal house, but one or two up for the
+	 * stepped pieces (savanna_large_farm_2's terraced path network at y=1,
+	 * taiga_medium_house_1's exterior ground walkway along its east wall at y=2,
+	 * whose 2026-11-01 "interior floor" note was wrong - the strip is open above
+	 * and reaches the entrance column; corrected 2026-11-04). A dirt path on any
+	 * OTHER layer is a floor, not a road surface (snowy_fisher_cottage's y=1
+	 * interior path, entrance y=1 -> walkway layer y=0, stays excluded). Farms
+	 * are included - {@link #addFarmGrounds} still owns their whole ground layer
+	 * where it overlaps a road cell, this only adds the path columns the street
+	 * never claims. Zombie villages never reach the pipeline
 	 * ({@code RoadCollector#isZombieVillage} excludes the whole village).
 	 */
 	public static Map<Integer, Map<Long, FixtureGround>> identifyHousePathGrounds(List<StructurePiece> pieces,
@@ -699,6 +748,10 @@ public final class StreetDecor {
 			BlockPos origin = pool.getPosition();
 			Map<Long, List<Integer>> columnYs = new HashMap<>();
 			Map<Long, BlockPos> pathBlocks = new HashMap<>();
+			int walkwayLayer = groundLayerOf(palette);
+			if (walkwayLayer > 0) {
+				VpsPipeline.HOUSE_PATH_LAYER_ABOVE_Y0.incrementAndGet();
+			}
 			for (StructureTemplate.StructureBlockInfo info : palette.blocks()) {
 				//#if MC >= 12001
 				//$$ BlockPos infoPos = info.pos();
@@ -715,7 +768,7 @@ public final class StreetDecor {
 				BlockPos world = StructureTemplate.calculateRelativePosition(settings, infoPos).offset(origin);
 				long column = RoadCell.packedXZ(world.getX(), world.getZ());
 				columnYs.computeIfAbsent(column, k -> new ArrayList<>()).add(infoPos.getY());
-				if (infoPos.getY() == 0 && infoState.is(Blocks.DIRT_PATH)) {
+				if (infoPos.getY() == walkwayLayer && infoState.is(Blocks.DIRT_PATH)) {
 					pathBlocks.putIfAbsent(column, world);
 				}
 			}
@@ -751,6 +804,16 @@ public final class StreetDecor {
 	 * as a solve cell so the street connects to the house through its own walkway
 	 * and the solved level is the height the house is fixed at.
 	 *
+	 * <p>2026-11-04: the piece's path columns split into 4-connected areas and
+	 * only an area with a 4-adjacency edge to the road network joins the solve -
+	 * the area's own columns count as cells, so a walkway that reaches the street
+	 * through its own columns connects. A decorative path area with no road edge
+	 * (plains_meeting_point_4's scattered hall paths, savanna_tannery_1's side
+	 * strips) is dropped: it rides the house without solve cells and without
+	 * taking over the alignment, which falls back to the main-door/junction
+	 * targets as before the 2026-11-01 feature
+	 * ({@code HOUSE_PATH_DISCONNECTED_AREAS} / {@code _CELLS}).
+	 *
 	 * <p>On T1.5 ({@code movable = true}) the unit may move as a whole and the
 	 * owning building component follows it in both alignment passes. On T5
 	 * nothing may move at placement, so the unit pins at the house's real render
@@ -765,47 +828,53 @@ public final class StreetDecor {
 		boolean changed = false;
 		for (Map.Entry<Integer, Map<Long, FixtureGround>> pieceEntry : grounds.entrySet()) {
 			int pieceIndex = pieceEntry.getKey();
-			for (Map.Entry<Long, FixtureGround> entry : pieceEntry.getValue().entrySet()) {
-				long column = entry.getKey();
-				int x = (int) (column >> 32);
-				int z = (int) column;
-				int index = network.cellAt(x, z);
-				FixtureGround ground = entry.getValue();
-				if (index >= 0) {
-					RoadCell cell = network.cells.get(index);
-					if (cell.seat || cell.plaza || cell.fixtureBase || cell.groundOverlap) {
-						continue; // an existing structure already owns this cell (the farm ground may)
+			for (java.util.Set<Long> area : splitXzAreas(pieceEntry.getValue().keySet())) {
+				if (!hasRoadEdge(network, area)) {
+					VpsPipeline.HOUSE_PATH_DISCONNECTED_AREAS.incrementAndGet();
+					VpsPipeline.HOUSE_PATH_DISCONNECTED_CELLS.addAndGet(area.size());
+					continue;
+				}
+				for (long column : area) {
+					int x = (int) (column >> 32);
+					int z = (int) column;
+					int index = network.cellAt(x, z);
+					FixtureGround ground = pieceEntry.getValue().get(column);
+					if (index >= 0) {
+						RoadCell cell = network.cells.get(index);
+						if (cell.seat || cell.plaza || cell.fixtureBase || cell.groundOverlap) {
+							continue; // an existing structure already owns this cell (the farm ground may)
+						}
+						cell.groundOverlap = true;
+						cell.groundBlock = ground.blockId;
+						cell.groundOldBlockY = ground.baseBlockY;
+						cell.groundAboveLocalYs = ground.aboveLocalYs;
+						cell.groundGroupKey = RoadNetwork.housePathGroupKey(pieceIndex);
+						cell.groundGroupMovable = movable;
+						cell.baseP = 2 * (ground.baseBlockY + 1);
+						cell.solvedP = cell.baseP;
+						if (!movable) {
+							cell.plazaPinned = true;
+							cell.plazaPinP = cell.baseP;
+						}
+						VpsPipeline.HOUSE_PATH_OVERLAP_CELLS.incrementAndGet();
+						changed = true;
+						continue;
 					}
+					RoadCell cell = new RoadCell(x, z, "plains", 2 * (ground.baseBlockY + 1), false);
 					cell.groundOverlap = true;
 					cell.groundBlock = ground.blockId;
 					cell.groundOldBlockY = ground.baseBlockY;
 					cell.groundAboveLocalYs = ground.aboveLocalYs;
 					cell.groundGroupKey = RoadNetwork.housePathGroupKey(pieceIndex);
 					cell.groundGroupMovable = movable;
-					cell.baseP = 2 * (ground.baseBlockY + 1);
-					cell.solvedP = cell.baseP;
 					if (!movable) {
 						cell.plazaPinned = true;
 						cell.plazaPinP = cell.baseP;
 					}
-					VpsPipeline.HOUSE_PATH_OVERLAP_CELLS.incrementAndGet();
+					cells.add(cell);
+					VpsPipeline.HOUSE_PATH_GROUND_CELLS.incrementAndGet();
 					changed = true;
-					continue;
 				}
-				RoadCell cell = new RoadCell(x, z, "plains", 2 * (ground.baseBlockY + 1), false);
-				cell.groundOverlap = true;
-				cell.groundBlock = ground.blockId;
-				cell.groundOldBlockY = ground.baseBlockY;
-				cell.groundAboveLocalYs = ground.aboveLocalYs;
-				cell.groundGroupKey = RoadNetwork.housePathGroupKey(pieceIndex);
-				cell.groundGroupMovable = movable;
-				if (!movable) {
-					cell.plazaPinned = true;
-					cell.plazaPinP = cell.baseP;
-				}
-				cells.add(cell);
-				VpsPipeline.HOUSE_PATH_GROUND_CELLS.incrementAndGet();
-				changed = true;
 			}
 		}
 		if (!changed) {
@@ -817,6 +886,62 @@ public final class StreetDecor {
 		rebuilt.allSeatColumns.addAll(network.allSeatColumns);
 		rebuilt.decorPools.addAll(network.decorPools);
 		return rebuilt;
+	}
+
+	/**
+	 * Splits packed-XZ columns into their 4-connected areas (pure; the same
+	 * adjacency the solver's edges and {@code RoadNetwork#connectedColumns} use).
+	 */
+	public static java.util.List<java.util.Set<Long>> splitXzAreas(java.util.Set<Long> columns) {
+		java.util.List<java.util.Set<Long>> areas = new ArrayList<>();
+		java.util.Set<Long> seen = new HashSet<>();
+		for (long start : columns) {
+			if (seen.contains(start)) {
+				continue;
+			}
+			java.util.Set<Long> area = new HashSet<>();
+			java.util.ArrayDeque<Long> queue = new java.util.ArrayDeque<>();
+			seen.add(start);
+			area.add(start);
+			queue.add(start);
+			while (!queue.isEmpty()) {
+				long column = queue.poll();
+				int x = (int) (column >> 32);
+				int z = (int) column;
+				for (int[] d : new int[][]{{1, 0}, {-1, 0}, {0, 1}, {0, -1}}) {
+					long next = RoadCell.packedXZ(x + d[0], z + d[1]);
+					if (columns.contains(next) && !seen.contains(next)) {
+						seen.add(next);
+						area.add(next);
+						queue.add(next);
+					}
+				}
+			}
+			areas.add(area);
+		}
+		return areas;
+	}
+
+	/**
+	 * True when any column of the area IS a network cell or has a 4-adjacent one
+	 * - the edge the solver needs to pull the road and the walkway together. A
+	 * network cell of any kind counts (road, seat, plaza, another structure's
+	 * ground overlap).
+	 */
+	public static boolean hasRoadEdge(RoadNetwork network, java.util.Set<Long> area) {
+		for (long column : area) {
+			int x = (int) (column >> 32);
+			int z = (int) column;
+			if (network.cellAt(x, z) >= 0) {
+				return true;
+			}
+			for (int[] d : new int[][]{{1, 0}, {-1, 0}, {0, 1}, {0, -1}}) {
+				if (network.cellAt(x + d[0], z + d[1]) >= 0) {
+					return true;
+				}
+			}
+		}
+		return false;
 	}
 
 	/**

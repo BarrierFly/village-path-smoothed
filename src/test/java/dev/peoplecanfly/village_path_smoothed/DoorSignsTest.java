@@ -151,4 +151,51 @@ public class DoorSignsTest {
 		assertEquals(1, signs.length);
 		assertArrayEquals(new int[]{0, 65, 0, 1, 0, 1, 132, 0, 64, 0}, signs[0]);
 	}
+
+	@Test
+	public void anAnchoredStreetCellBeatsANearerCellWithoutAnchors() {
+		// 2026-11-04: door at (0,0) facing +x, long front stairs descending over a
+		// crossing road at (2,0); the street the walkway lands on is at (4,0) and
+		// vanilla recorded it as the junction anchor. The anchor pick wins even
+		// though (2,0) is strictly nearer - the XZ choice only, no Y restriction.
+		RoadNetwork network = net(List.of(
+				new RoadCell(2, 0, "plains", 130, false),
+				new RoadCell(4, 0, "plains", 124, false)));
+		Selection selection = DoorSigns.selectDoorRoadCell(network, 0, 0, 1, 0,
+				java.util.Set.of(RoadCell.packedXZ(4, 0)), null);
+		assertEquals(4, selection.cell().x);
+		assertEquals(0, selection.cell().z);
+		assertEquals(true, selection.anchorPreferred());
+		// without the anchor the nearest cell wins as before
+		Selection plain = DoorSigns.selectDoorRoadCell(network, 0, 0, 1, 0, null);
+		assertEquals(2, plain.cell().x);
+		assertEquals(false, plain.anchorPreferred());
+	}
+
+	@Test
+	public void aCellBesideTheAnchorCountsAsAnchored() {
+		// the anchor is the street connector column; its 4 neighbours on the
+		// street are the same connected road and qualify
+		RoadNetwork network = net(List.of(
+				new RoadCell(2, 0, "plains", 130, false),
+				new RoadCell(4, 0, "plains", 124, false)));
+		Selection selection = DoorSigns.selectDoorRoadCell(network, 0, 0, 1, 0,
+				java.util.Set.of(RoadCell.packedXZ(4, 1)), null);
+		assertEquals(4, selection.cell().x);
+		assertEquals(0, selection.cell().z);
+		assertEquals(true, selection.anchorPreferred());
+	}
+
+	@Test
+	public void anchorsOutsideTheOutwardHalfPlaneFallBackToTheNearestCell() {
+		// the junction sits behind the door wall: no anchored candidate exists,
+		// the plain rule decides and the preference flag stays false
+		RoadNetwork network = net(List.of(
+				new RoadCell(2, 0, "plains", 130, false),
+				new RoadCell(-1, 0, "plains", 124, false)));
+		Selection selection = DoorSigns.selectDoorRoadCell(network, 0, 0, 1, 0,
+				java.util.Set.of(RoadCell.packedXZ(-1, 0)), null);
+		assertEquals(2, selection.cell().x);
+		assertEquals(false, selection.anchorPreferred());
+	}
 }

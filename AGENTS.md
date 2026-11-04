@@ -439,24 +439,39 @@ Rules:
   `farm overlap cells` and `ground overlap written (units moved, blocks moved)`
   in `/vps stats` are the observation set.
 - **A house's dirt-path ground is a fixed-shape local structure in the solve,
-  and the house is fixed at its solved height (2026-11-01).** Every houses-pool
-  RIGID piece (`village/<style>/[zombie/]houses/*`) whose template holds
-  `dirt_path` on the y=0 GROUND layer joins the network as ONE flat unit per
-  piece (`StreetDecor#identifyHousePathGrounds` / `#addHousePathGrounds`, unit
-  key `RoadNetwork#housePathGroupKey`): a path column a road cell claims
-  becomes a ground-overlap cell (the unit above), a path column with no road
-  cell is ADDED as a solve cell so the street connects to the house through its
-  own walkway. Only y=0 counts - a dirt path one or two blocks up
-  (`taiga_medium_house_1`'s interior floor at y=2) is a floor, not a road
-  surface. Farms are included, but `addFarmGrounds` still owns their whole y=0
-  ground where it overlaps, so no cell is ever claimed twice. On T1.5
-  (`movable = true`) the unit may move as a whole and the owning building
-  component aligns to the path area's solved level in BOTH passes
-  (`T15Planner#desiredShiftForComponent`, replacing the main-door targets; the
-  same legal-interval decision, guards and median-wing clamp apply). On T5 the
-  unit pins at the house's real render level (the T5 fixture-base rule) and the
-  road is re-solved to the house instead. `house path cells (overlap N)` in the
-  `/vps stats` decor line is the observation set.
+  and the house is fixed at its solved height (2026-11-01; layer + connection
+  gate reworked 2026-11-04).** Every houses-pool RIGID piece
+  (`village/<style>/[zombie/]houses/*`) whose template holds `dirt_path` on the
+  GROUND layer joins the network (`StreetDecor#identifyHousePathGrounds` /
+  `#addHousePathGrounds`, unit key `RoadNetwork#housePathGroupKey`). The ground
+  layer is the one the `building_entrance` jigsaws stand on - the LOWEST
+  entrance template Y minus 1, y=0 without an entrance (`StreetDecor#
+  groundLayerOf`; `addFarmGrounds` uses the same rule for its whole ground).
+  y=0 is only the common case: the stepped pieces carry their walkway higher
+  (savanna_large_farm_2's terraced path network at y=1, taiga_medium_house_1's
+  exterior ground walkway along its east wall at y=2). **The 2026-11-01 note
+  calling taiga_medium_house_1's y=2 path an "interior floor" was wrong** - the
+  strip is open above (y=3+) and reaches the entrance column; a dirt path on
+  any OTHER layer is still a floor, not a road surface (snowy_fisher_cottage's
+  y=1 interior path, entrance y=1 -> walkway layer y=0, stays excluded). The
+  piece's path columns split into 4-connected areas and only an area with a
+  4-adjacency edge to the road network joins the solve (the area's own columns
+  count as cells): a path column a road cell claims becomes a ground-overlap
+  cell, a path column with no road cell is ADDED as a solve cell so the street
+  connects to the house through its own walkway. **A decorative area with no
+  road edge is dropped** (plains_meeting_point_4's scattered hall paths,
+  savanna_tannery_1's side strips): it rides the house without solve cells and
+  without taking over the alignment, which falls back to the main-door/junction
+  targets as before the 2026-11-01 feature. Farms are included, but
+  `addFarmGrounds` still owns their whole ground layer where it overlaps, so no
+  cell is ever claimed twice. On T1.5 (`movable = true`) the unit may move as a
+  whole and the owning building component aligns to the path area's solved
+  level in BOTH passes (`T15Planner#desiredShiftForComponent`, replacing the
+  main-door targets; the same legal-interval decision, guards and median-wing
+  clamp apply). On T5 the unit pins at the house's real render level (the T5
+  fixture-base rule) and the road is re-solved to the house instead.
+  `house path cells (overlap N, disconnected areas N / N cells, layers above
+  y0 N)` in the `/vps stats` decor line is the observation set.
 - **The polish never moves a physically fixed cell, but it DOES move a movable
   unit before placement (2026-10-15, reworked 2026-10-17).** A T5 decor-seat pin
   and a T5/phase-2 plaza pin are immovable: the free side takes the correction
@@ -680,7 +695,17 @@ Rules:
     selected cell is the nearest eligible cell on the door wall's outward side
     (`DoorSigns#selectDoorRoadCell`); it excludes seats and the protected
     `BuildingMask` columns/cells, so a hidden vanilla side street through a
-    house can no longer win. Junctions
+    house can no longer win. **Since 2026-11-04 the selector first prefers
+    candidates at or 4-adjacent to the component's street-junction anchors**
+    (`T15Planner#streetJunctionAnchors`: the non-RIGID junctions' source cells,
+    i.e. the vanilla street connection columns - the road the walkway actually
+    lands on, at the foot of long front stairs), so a road passing beneath an
+    elevated door front no longer wins the pick by being strictly nearer in XZ;
+    with no anchored candidate the plain nearest-cell rule decides unchanged.
+    The pick stays XZ-only with **no Y restriction** (user decision
+    2026-11-04): the house's height follows whichever road is selected.
+    `junction-preferred N` in the `/vps stats` buildings line counts the doors
+    whose pick the anchor set actually changed versus the plain rule. Junctions
     (`destProjection` not RIGID) are only the fallback for pieces without real
     doors (`T15Planner#desiredShiftFromJunctions`). No outward cell means
     `NO_FRONT_ROAD` and the building is not moved for that door (D4);

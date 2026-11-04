@@ -566,13 +566,25 @@ public final class T15Planner {
 			return true;
 		};
 		List<DoorSigns.DoorTarget> out = new ArrayList<>(main.length);
+		java.util.Set<Long> streetAnchors = streetJunctionAnchors(component, pieces);
 		for (int index : main) {
 			int[] door = doorArray[index];
 			int[] normal = doorNormal(component, door[0], door[1], entrances);
 			DoorSigns.Selection selection = DoorSigns.selectDoorRoadCell(network, door[0], door[1],
-					normal[0], normal[1], eligible);
+					normal[0], normal[1], streetAnchors, eligible);
 			if (countStats) {
 				VpsPipeline.DOOR_TARGET_BEHIND.addAndGet(selection.behindExcluded());
+				// The anchor count only means something when the anchor set actually
+				// changed the pick, so a plain-rule reference run decides the counter.
+				if (selection.anchorPreferred()) {
+					RoadCell plain = DoorSigns.selectDoorRoadCell(network, door[0], door[1],
+							normal[0], normal[1], eligible).cell();
+					RoadCell anchored = selection.cell();
+					if (plain == null || anchored == null
+							|| plain.x != anchored.x || plain.z != anchored.z) {
+						VpsPipeline.DOOR_TARGET_JUNCTION_PREFERRED.incrementAndGet();
+					}
+				}
 			}
 			RoadCell road = selection.cell();
 			int[] outStep = road != null ? DoorSigns.stepToward(road, door[0], door[1]) : null;
@@ -593,6 +605,33 @@ public final class T15Planner {
 			int floorY = door.length > 2 ? door[2] : component.baseWalkY;
 			out.add(new DoorSigns.DoorTarget(door[0], door[1], floorY,
 					normal[0], normal[1], outStep[0], outStep[1], road));
+		}
+		return out;
+	}
+
+	/**
+	 * The component's street-junction anchor columns (2026-11-04): the packed
+	 * XZ of every non-RIGID junction's source cell. Vanilla records the OTHER
+	 * piece's jigsaw there - for a building the street connector's column, i.e.
+	 * the road cell the house's own walkway lands on (the street at the foot of
+	 * long front stairs; {@code RoadCollector} seeds the mask from exactly these
+	 * connectors, so the column is a mask cell). The same filter as
+	 * {@link #buildDoorFronts} uses for the junction fallback.
+	 */
+	private static java.util.Set<Long> streetJunctionAnchors(BuildingComponents.Component component,
+			List<StructurePiece> pieces) {
+		java.util.Set<Long> out = new java.util.HashSet<>();
+		for (int idx : component.pieceIndices) {
+			StructurePiece piece = pieces.get(idx);
+			if (!(piece instanceof PoolElementStructurePiece pool)) {
+				continue;
+			}
+			for (JigsawJunction junction : pool.getJunctions()) {
+				if (junction.getDestProjection() == StructureTemplatePool.Projection.RIGID) {
+					continue;
+				}
+				out.add(RoadCell.packedXZ(junction.getSourceX(), junction.getSourceZ()));
+			}
 		}
 		return out;
 	}

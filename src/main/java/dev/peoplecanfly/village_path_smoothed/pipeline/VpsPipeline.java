@@ -157,6 +157,13 @@ public final class VpsPipeline {
 	/** Main doors with no eligible outward road cell (the building is not moved for them, D4). */
 	public static final AtomicLong NO_FRONT_ROAD = new AtomicLong();
 	/**
+	 * 2026-11-04: main doors whose road-cell pick the street-junction anchor set
+	 * (the vanilla street connection cells) actually changed versus the plain
+	 * nearest outward cell - the road beneath an elevated door front lost the
+	 * XZ pick it used to win.
+	 */
+	public static final AtomicLong DOOR_TARGET_JUNCTION_PREFERRED = new AtomicLong();
+	/**
 	 * 2026-11-03 (door audit 2026-11-01 §5.2): NO FRONT main doors whose half-plane
 	 * filter rejected road cells on the door column or behind the wall - the normal
 	 * points away from every road. Pure observation: a door reached through a
@@ -214,6 +221,20 @@ public final class VpsPipeline {
 	 * walkway and the house is fixed at the path area's solved height.
 	 */
 	public static final AtomicLong HOUSE_PATH_GROUND_CELLS = new AtomicLong();
+	/**
+	 * 2026-11-04: pieces whose dirt-path walkway layer sits above template y=0
+	 * (the {@code building_entrance} jigsaws stand one or two up - the stepped
+	 * pieces like savanna_large_farm_2 / taiga_medium_house_1).
+	 */
+	public static final AtomicLong HOUSE_PATH_LAYER_ABOVE_Y0 = new AtomicLong();
+	/**
+	 * 2026-11-04: house path areas with no 4-adjacency edge to the road network.
+	 * A decorative/disconnected path area rides the house without solve cells
+	 * and without taking over the alignment (the door/junction targets keep it).
+	 */
+	public static final AtomicLong HOUSE_PATH_DISCONNECTED_AREAS = new AtomicLong();
+	/** Path columns dropped with the disconnected areas. */
+	public static final AtomicLong HOUSE_PATH_DISCONNECTED_CELLS = new AtomicLong();
 	/** Overlap cells written as their structure ground instead of a road. */
 	public static final AtomicLong GROUND_OVERLAP_CELLS_WRITTEN = new AtomicLong();
 	/** Overlap units the writer actually shifted. */

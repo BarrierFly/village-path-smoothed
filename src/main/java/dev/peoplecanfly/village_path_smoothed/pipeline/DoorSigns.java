@@ -22,7 +22,11 @@ import java.util.function.IntPredicate;
  *   <li>the door's target is the nearest road cell OUTSIDE the building
  *       footprints and on the outward side of the door wall
  *       ({@link #selectDoorRoadCell}); seats and columns the writer would skip
- *       are excluded;</li>
+ *       are excluded. Since 2026-11-04 candidates at or beside the component's
+ *       street-junction anchors (the vanilla street connection cells) win over
+ *       a strictly nearer cell, so a road passing beneath an elevated door
+ *       front is not mistaken for the front road; the pick stays XZ-only, no
+ *       Y restriction (the house's height follows the selected road);</li>
  *   <li>the same target feeds the sign, the alignment and the railing
  *       exemption ({@link DoorTarget});</li>
  *   <li>no outward road cell means {@code NO FRONT}: the door still gets a sign
@@ -49,7 +53,7 @@ public final class DoorSigns {
 	}
 
 	/** Result of one filtered search: the selected cell plus the outward filter's rejection count. */
-	public record Selection(RoadCell cell, int behindExcluded) {
+	public record Selection(RoadCell cell, int behindExcluded, boolean anchorPreferred) {
 	}
 
 	/**
@@ -142,6 +146,34 @@ public final class DoorSigns {
 	 */
 	public static Selection selectDoorRoadCell(RoadNetwork net, int doorX, int doorZ,
 			int outDX, int outDZ, IntPredicate eligibleByIndex) {
+		return selectDoorRoadCell(net, doorX, doorZ, outDX, outDZ, null, eligibleByIndex);
+	}
+
+	/**
+	 * 2026-11-04: the same outward search with the component's street-junction
+	 * anchors. Vanilla records the street connection cell on every building
+	 * piece's {@code building_entrance} junction - the road the walkway actually
+	 * lands on (the street at the foot of long front stairs). Candidates at or
+	 * 4-adjacent to an anchor are preferred OVER a strictly nearer cell, so a
+	 * road passing beneath an elevated door front cannot win the XZ pick; the
+	 * house's height still follows whichever cell is selected (no Y restriction -
+	 * user decision 2026-11-04). Without any anchored candidate (or with no
+	 * anchors at all) the plain nearest-cell rule above decides unchanged.
+	 */
+	public static Selection selectDoorRoadCell(RoadNetwork net, int doorX, int doorZ,
+			int outDX, int outDZ, java.util.Set<Long> anchorColumns, IntPredicate eligibleByIndex) {
+		if (anchorColumns != null && !anchorColumns.isEmpty()) {
+			Selection anchored = search(net, doorX, doorZ, outDX, outDZ, anchorColumns, eligibleByIndex, true);
+			if (anchored.cell() != null) {
+				return anchored;
+			}
+		}
+		return search(net, doorX, doorZ, outDX, outDZ, null, eligibleByIndex, false);
+	}
+
+	private static Selection search(RoadNetwork net, int doorX, int doorZ,
+			int outDX, int outDZ, java.util.Set<Long> anchorColumns, IntPredicate eligibleByIndex,
+			boolean anchoredOnly) {
 		RoadCell best = null;
 		int bestDistance = Integer.MAX_VALUE;
 		boolean bestOnAxis = false;
@@ -159,6 +191,9 @@ public final class DoorSigns {
 				behind++;
 				continue;
 			}
+			if (anchoredOnly && !nearAnchor(cell.x, cell.z, anchorColumns)) {
+				continue;
+			}
 			int distance = Math.abs(dx) + Math.abs(dz);
 			boolean onAxis = dx == 0 || dz == 0;
 			long packed = RoadCell.packedXZ(cell.x, cell.z);
@@ -174,7 +209,19 @@ public final class DoorSigns {
 				bestPacked = packed;
 			}
 		}
-		return new Selection(best, behind);
+		return new Selection(best, behind, anchoredOnly && best != null);
+	}
+
+	/** True when the cell IS an anchor column or one of its 4 neighbours. */
+	private static boolean nearAnchor(int x, int z, java.util.Set<Long> anchorColumns) {
+		for (long anchor : anchorColumns) {
+			int ax = (int) (anchor >> 32);
+			int az = (int) anchor;
+			if (Math.abs(x - ax) + Math.abs(z - az) <= 1) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/**

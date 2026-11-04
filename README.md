@@ -73,6 +73,13 @@ the real door nearest the template's `building_entrance` jigsaw.
   not), and a double door keeps both leaves.
 - The selected road cell must lie outside every protected building footprint,
   must not be a decor seat, and must lie on the outward side of the door wall.
+  Among the outward cells, candidates at or beside the component's
+  **street-junction anchors** — the vanilla street connection columns, i.e.
+  the road the walkway actually lands on (at the foot of long front stairs) —
+  win over a strictly nearer cell, so a road passing beneath an elevated door
+  front is not mistaken for the front road. The pick is XZ-only: the house's
+  height follows whichever road is selected (`junction-preferred` in
+  `/vps stats`).
   If there is no such cell the component is not moved (`NO FRONT` on its debug
   sign when `debug.doorSigns` is enabled).
 - The shift moves the whole rigid component at once and its jigsaw junctions
@@ -150,15 +157,24 @@ observe this.
 
 ### House dirt-path grounds
 
-A houses-pool RIGID piece whose template holds `dirt_path` on the y=0 ground
-layer brings that path area into the road network solve like a plaza or a
-street piece: the columns of one piece form ONE fixed-shape flat unit
-(`house path cells` in `/vps stats`). A path column a road cell already claims
-becomes a ground-overlap cell (rendered like the farm ground above); a path
-column with no road cell is **added** as a solve cell, so the street connects
-to the house through its own walkway. Only the ground layer counts — a dirt
-path one or two blocks up (`taiga_medium_house_1`'s interior floor) is a
-floor, not a road surface.
+A houses-pool RIGID piece whose template holds `dirt_path` on its ground layer
+brings that path area into the road network solve like a plaza or a street
+piece: the columns of one piece form ONE fixed-shape flat unit (`house path
+cells` in `/vps stats`). The ground layer is the layer the piece's
+`building_entrance` jigsaws stand on — the lowest entrance template Y minus
+one. y=0 is only the common case: a stepped piece carries its walkway higher
+(savanna_large_farm_2's terraced paths at template y=1, taiga_medium_house_1's
+exterior ground walkway at y=2). A dirt path on any other layer is a floor,
+not a road surface (snowy_fisher_cottage's interior y=1 path stays excluded).
+
+The piece's path columns split into 4-connected areas, and only an area with
+a 4-adjacency edge to the road network joins the solve. A path column a road
+cell already claims becomes a ground-overlap cell (rendered like the farm
+ground above); a path column with no road cell is **added** as a solve cell,
+so the street connects to the house through its own walkway. A decorative
+area with no road edge (scattered hall paths, side strips) is dropped: it
+rides the house without solve cells and the building keeps its ordinary
+door/junction alignment (`disconnected areas` in `/vps stats`).
 
 At T1.5 the unit may move as a whole, and the owning building component
 aligns to the path area's solved level in BOTH alignment passes (instead of

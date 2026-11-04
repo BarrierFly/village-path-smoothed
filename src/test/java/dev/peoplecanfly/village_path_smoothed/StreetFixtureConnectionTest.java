@@ -7,6 +7,7 @@ package dev.peoplecanfly.village_path_smoothed;
 
 import dev.peoplecanfly.village_path_smoothed.pipeline.RoadCell;
 import dev.peoplecanfly.village_path_smoothed.pipeline.RoadNetwork;
+import dev.peoplecanfly.village_path_smoothed.pipeline.StreetDecor;
 
 import org.junit.Test;
 
@@ -93,5 +94,29 @@ public class StreetFixtureConnectionTest {
 		assertEquals(-2439, RoadCell.unpackX(key));
 		assertEquals(168, RoadCell.unpackY(key));
 		assertEquals(-2127, RoadCell.unpackZ(key));
+	}
+
+	@Test
+	public void housePathAreasSplitByFourAdjacency() {
+		// 2026-11-04 house-path gate: a piece's path columns split into 4-connected
+		// areas - a walkway and a detached decorative cell are two areas
+		Set<Long> columns = Set.of(column(0, 0), column(1, 0), column(2, 0), column(7, 7));
+		java.util.List<Set<Long>> areas = StreetDecor.splitXzAreas(columns);
+		assertEquals(2, areas.size());
+	}
+
+	@Test
+	public void aHousePathAreaNeedsARoadCellBesideOrInsideIt() {
+		RoadNetwork net = network(new int[][]{{3, 0, 64}});
+		// the walkway's outer column is 4-adjacent to the street road: it joins
+		assertEquals(true, StreetDecor.hasRoadEdge(net,
+				Set.of(column(0, 0), column(1, 0), column(2, 0))));
+		// the walkway column itself is the claimed road cell: it joins
+		assertEquals(true, StreetDecor.hasRoadEdge(net, Set.of(column(3, 0))));
+		// a decorative area one step further out has no edge: it is dropped
+		assertEquals(false, StreetDecor.hasRoadEdge(net,
+				Set.of(column(0, 2), column(1, 2))));
+		// a diagonal corner is not an edge
+		assertEquals(false, StreetDecor.hasRoadEdge(net, Set.of(column(4, 1))));
 	}
 }

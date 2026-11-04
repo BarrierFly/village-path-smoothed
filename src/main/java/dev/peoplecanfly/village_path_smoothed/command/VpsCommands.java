@@ -268,9 +268,9 @@ public final class VpsCommands {
 						+ "  defects    : writer overrides %d, nudged to the surface %d, refused %d (out of world %d), surface fallbacks %d, over-budget %d, edge drops > 1 block %d (worst %d half units)%n"
 						+ "  solve      : contradictions %d, step violations %d (worst %d), seam re-solves refused %d, polish moved %d (max delta %d half units, p90 %d, midpoint conflicts %d), water anchor deviations %d, villages without arms %d, solution cache hits %d%n"
 						+ "  suppression: vanilla road blocks dropped %d (passed through %d), writes %d, delta %d, yielded to buildings %d, zombie placements excluded %d%n"
-						+ "  buildings  : T1.5 applied %d (no-server %d), components %d, shifted %d, no-road %d, overlap guards %d, second align moved %d, floating %d, buried %d, re-solved after shift %d (T15 resolve delta cells %d, door targets changed %d), road cells yielded %d, main doors %d (no entrance %d, non-door lower halves skipped %d, normal ambiguous %d), door targets excluded seat/inside/behind %d/%d/%d, no front %d (normal mismatch %d), front fallback %d, door anchor offsets 0/1/2/3/4+ %d/%d/%d/%d/%d, door signs placed %d (no road %d), seam signs %d computed / %d placed (step violations %d, no-BE %d), base plane mismatch %d, baseY decor %d, align fallback %d, door dir mismatch %d%n"
+						+ "  buildings  : T1.5 applied %d (no-server %d), components %d, shifted %d, no-road %d, overlap guards %d, second align moved %d, floating %d, buried %d, re-solved after shift %d (T15 resolve delta cells %d, door targets changed %d), road cells yielded %d, main doors %d (no entrance %d, non-door lower halves skipped %d, normal ambiguous %d), door targets excluded seat/inside/behind %d/%d/%d (junction-preferred %d), no front %d (normal mismatch %d), front fallback %d, door anchor offsets 0/1/2/3/4+ %d/%d/%d/%d/%d, door signs placed %d (no road %d), seam signs %d computed / %d placed (step violations %d, no-BE %d), base plane mismatch %d, baseY decor %d, align fallback %d, door dir mismatch %d%n"
 							+ "  centres    : town-centre plaza cells %d (non-road cells skipped %d, air cells skipped %d), vanilla-rendered %d, groups %d (shifted %d, pieces %d), plaza guards %d, decor seats %d (written %d, decor pieces moved %d, probe dropped %d, write fallback %d, edge clamped %d)%n"
-						+ "  decor      : pieces %d (plan A excluded %d), actual blocks %d, base groups %d (cells %d), settled %d (clamped %d), protected writes skipped %d (pile %d), cells pinned %d, seat sync mismatches %d, road mismatches %d (worst %d, isolated pieces %d, isolated seats %d), base restored %d, fixture base cells %d, fixture overlap cells %d, farm overlap cells %d, house path cells %d (overlap %d), ground overlap written %d (units moved %d, blocks moved %d), resolve failed %d%n"
+						+ "  decor      : pieces %d (plan A excluded %d), actual blocks %d, base groups %d (cells %d), settled %d (clamped %d), protected writes skipped %d (pile %d), cells pinned %d, seat sync mismatches %d, road mismatches %d (worst %d, isolated pieces %d, isolated seats %d), base restored %d, fixture base cells %d, fixture overlap cells %d, farm overlap cells %d, house path cells %d (overlap %d, disconnected areas %d / %d cells, layers above y0 %d), ground overlap written %d (units moved %d, blocks moved %d), resolve failed %d%n"
 						+ "  model gap  : written surface vs real terrain: mean %s half units, worst %d, over threshold %d, cut below terrain %d, fill above %d%n"
 						+ "  misc       : floor-garbage probes %d, probe boundary switches %d, probe mismatch columns %d, y0 non-solid skipped %d, y0 scenery skipped %d, villager freeze: %s (brain ticks skipped: %d)",
 				solved,
@@ -357,6 +357,7 @@ public final class VpsCommands {
 				VpsPipeline.SEAT_TARGET_EXCLUDED.get(),
 				VpsPipeline.DOOR_TARGET_INSIDE_BUILDING.get(),
 				VpsPipeline.DOOR_TARGET_BEHIND.get(),
+				VpsPipeline.DOOR_TARGET_JUNCTION_PREFERRED.get(),
 				VpsPipeline.NO_FRONT_ROAD.get(),
 				VpsPipeline.DOOR_FRONT_NORMAL_MISMATCH.get(),
 				VpsPipeline.DOOR_FRONT_FALLBACK.get(),
@@ -410,6 +411,9 @@ public final class VpsCommands {
 				VpsPipeline.FARM_OVERLAP_CELLS.get(),
 				VpsPipeline.HOUSE_PATH_GROUND_CELLS.get(),
 				VpsPipeline.HOUSE_PATH_OVERLAP_CELLS.get(),
+				VpsPipeline.HOUSE_PATH_DISCONNECTED_AREAS.get(),
+				VpsPipeline.HOUSE_PATH_DISCONNECTED_CELLS.get(),
+				VpsPipeline.HOUSE_PATH_LAYER_ABOVE_Y0.get(),
 				VpsPipeline.GROUND_OVERLAP_CELLS_WRITTEN.get(),
 				VpsPipeline.GROUND_OVERLAP_MOVED_UNITS.get(),
 				VpsPipeline.GROUND_OVERLAP_BLOCKS_MOVED.get(),

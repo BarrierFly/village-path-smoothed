@@ -37,6 +37,7 @@ public final class VillagePathSmoothedConfig {
 	public Kerb kerb = new Kerb();
 	public Railing railing = new Railing();
 	public WaterCrossing waterCrossing = new WaterCrossing();
+	public HousePathGround housePathGround = new HousePathGround();
 	public Diagnostics diagnostics = new Diagnostics();
 	public Debug debug = new Debug();
 
@@ -236,6 +237,22 @@ public final class VillagePathSmoothedConfig {
 		 * that is the knowingly accepted Q04 behaviour, not a defect.
 		 */
 		public int distanceWhenUnsupported = 1;
+	}
+
+	/**
+	 * 2026-11-05: material rules for the dirt-path ground of the non-road
+	 * structures that joined the road solve (house walkways, farm grounds).
+	 * The solve is untouched; only the block the writer renders as the
+	 * structure ground changes.
+	 */
+	public static class HousePathGround {
+		/**
+		 * Write mud bricks instead of the vanilla dirt path for a ground-overlap
+		 * cell whose structure ground block IS a dirt path. Default off: the
+		 * vanilla dirt path stays, so the 2026-10-17 "do not retexture building
+		 * dirt paths" rule keeps holding unless this is switched on explicitly.
+		 */
+		public boolean mudBricks = false;
 	}
 
 	public static class Diagnostics {

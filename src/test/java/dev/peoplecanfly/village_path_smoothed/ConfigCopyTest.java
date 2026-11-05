@@ -65,6 +65,7 @@ public class ConfigCopyTest {
 		config.waterCrossing.enabled = false;
 		config.waterCrossing.distanceWhenSupported = 4;
 		config.waterCrossing.distanceWhenUnsupported = 6;
+		config.housePathGround.mudBricks = true;
 		config.diagnostics.logLevel = "DEBUG";
 		config.diagnostics.dumpRoadNetwork = true;
 		config.diagnostics.maxRoadCellsPerVillage = 1234;
@@ -87,6 +88,7 @@ public class ConfigCopyTest {
 		assertNotSame(source.kerb, copy.kerb);
 		assertNotSame(source.railing, copy.railing);
 		assertNotSame(source.waterCrossing, copy.waterCrossing);
+		assertNotSame(source.housePathGround, copy.housePathGround);
 		assertNotSame(source.diagnostics, copy.diagnostics);
 		assertNotSame(source.debug, copy.debug);
 
@@ -132,6 +134,8 @@ public class ConfigCopyTest {
 		assertFalse(copy.waterCrossing.enabled);
 		assertEquals(4, copy.waterCrossing.distanceWhenSupported);
 		assertEquals(6, copy.waterCrossing.distanceWhenUnsupported);
+
+		assertTrue(copy.housePathGround.mudBricks);
 
 		assertEquals("DEBUG", copy.diagnostics.logLevel);
 		assertTrue(copy.diagnostics.dumpRoadNetwork);

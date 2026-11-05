@@ -35,6 +35,8 @@
   "vps.config.roadSurfaceDetection.tooltip": "TEMPLATE Y0 SOLID takes the y0 street surface connected to the y1 street connectors; farmland, water and terracotta stay vanilla scenery. TEMPLATE Y0 ROAD MATERIAL takes only the style's own road block (connector cells still join).",
   "vps.config.includeTownCenters": "Include town-centre plazas",
   "vps.config.includeTownCenters.tooltip": "Only the plaza's road-material cells join the mask, so the fountain, bell and logs keep their vanilla blocks. Off leaves plazas entirely vanilla.",
+  "vps.config.housePathGround.mudBricks": "Structure dirt paths as mud bricks",
+  "vps.config.housePathGround.mudBricks.tooltip": "Writes mud bricks instead of the vanilla dirt path for a non-road structure's dirt-path ground that joined the road solve (house walkways, farm grounds). Off keeps the vanilla dirt path. Only affects chunks generated after saving.",
 
   "vps.config.kerb": "Kerbs (terrain above road)",
   "vps.config.kerb.tooltip": "Wraps the first side column where terrain rises beside the road, with a leaf railing on top of each run.",

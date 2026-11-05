@@ -14,8 +14,28 @@ public final class RoadWritePolicy {
 	public static final int UNWRITTEN = Integer.MIN_VALUE;
 	/** Sentinel for "no ceiling above the road" in the kerb/ceiling helpers. */
 	public static final int NO_CEILING = Integer.MIN_VALUE;
+	/** Vanilla dirt path, the ground block a house walkway / farm ground carries. */
+	public static final String DIRT_PATH_ID = "minecraft:dirt_path";
+	/** Mud bricks, the replacement material of {@code housePathGround.mudBricks}. */
+	public static final String MUD_BRICKS_ID = "minecraft:mud_bricks";
 
 	private RoadWritePolicy() {
+	}
+
+	/**
+	 * 2026-11-05: the block a ground-overlap cell renders as its structure
+	 * ground. With the opt-in conversion on ({@code housePathGround.mudBricks}),
+	 * a structure ground that IS a vanilla dirt path - a house walkway, a farm
+	 * ground - renders as mud bricks; every other ground block is untouched,
+	 * and with the option off this is the identity. Street seats keep their own
+	 * material regardless: they are the road itself, not a foreign structure.
+	 * Pure write-time material swap; the solve never sees it.
+	 *
+	 * @param groundBlockId the structure's own ground block id
+	 * @param mudBricks the config switch
+	 */
+	public static String structureGroundBlock(String groundBlockId, boolean mudBricks) {
+		return mudBricks && DIRT_PATH_ID.equals(groundBlockId) ? MUD_BRICKS_ID : groundBlockId;
 	}
 
 	/**

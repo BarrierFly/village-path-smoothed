@@ -237,6 +237,12 @@ public final class VpsPipeline {
 	public static final AtomicLong HOUSE_PATH_DISCONNECTED_CELLS = new AtomicLong();
 	/** Overlap cells written as their structure ground instead of a road. */
 	public static final AtomicLong GROUND_OVERLAP_CELLS_WRITTEN = new AtomicLong();
+	/**
+	 * 2026-11-05: ground-overlap cells whose structure ground is a vanilla dirt
+	 * path (house walkway, farm ground) written as mud bricks instead
+	 * ({@code housePathGround.mudBricks}, default off).
+	 */
+	public static final AtomicLong HOUSE_PATH_MUD_BRICK_CELLS = new AtomicLong();
 	/** Overlap units the writer actually shifted. */
 	public static final AtomicLong GROUND_OVERLAP_MOVED_UNITS = new AtomicLong();
 	/** Above-ground structure blocks moved with a shifted overlap surface. */

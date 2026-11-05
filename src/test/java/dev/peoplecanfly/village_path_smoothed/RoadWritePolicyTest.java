@@ -5,7 +5,9 @@
 
 package dev.peoplecanfly.village_path_smoothed;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
@@ -208,5 +210,24 @@ public class RoadWritePolicyTest {
 		assertFalse(RoadWritePolicy.singleLayerKerbSuppressed(false, true, false));
 		// a solid near cell always keeps the wall regardless of the far cell
 		assertFalse(RoadWritePolicy.singleLayerKerbSuppressed(true, true, true));
+	}
+
+	@Test
+	public void structureGroundSwapsOnlyADirtPathAndOnlyWhenOptedIn() {
+		// 2026-11-05: housePathGround.mudBricks. Default off is the identity -
+		// the 2026-10-17 "do not retexture building dirt paths" rule holds.
+		assertEquals(RoadWritePolicy.DIRT_PATH_ID,
+				RoadWritePolicy.structureGroundBlock(RoadWritePolicy.DIRT_PATH_ID, false));
+		assertEquals("minecraft:farmland",
+				RoadWritePolicy.structureGroundBlock("minecraft:farmland", false));
+		// Opt-in: exactly the vanilla dirt path converts, nothing else.
+		assertEquals(RoadWritePolicy.MUD_BRICKS_ID,
+				RoadWritePolicy.structureGroundBlock(RoadWritePolicy.DIRT_PATH_ID, true));
+		assertEquals("minecraft:farmland",
+				RoadWritePolicy.structureGroundBlock("minecraft:farmland", true));
+		assertEquals("minecraft:mud_bricks",
+				RoadWritePolicy.structureGroundBlock("minecraft:mud_bricks", true));
+		// An unresolvable ground id stays itself (the writer still refuses it).
+		assertNull(RoadWritePolicy.structureGroundBlock(null, true));
 	}
 }

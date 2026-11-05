@@ -302,6 +302,10 @@ public class VpsConfigScreen extends Screen {
 				() -> this.draft.roadSmoothing.includeTownCentersRoadMaterials,
 				value -> this.draft.roadSmoothing.includeTownCentersRoadMaterials = value,
 				() -> this.defaults.roadSmoothing.includeTownCentersRoadMaterials));
+		rows.add(new BoolOption("housePathGround.mudBricks",
+				() -> this.draft.housePathGround.mudBricks,
+				value -> this.draft.housePathGround.mudBricks = value,
+				() -> this.defaults.housePathGround.mudBricks));
 
 		rows.add(sectionHeader("vps.config.section.decoration"));
 		rows.add(new BoolOption("kerb",

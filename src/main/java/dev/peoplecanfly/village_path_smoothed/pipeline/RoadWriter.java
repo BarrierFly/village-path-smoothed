@@ -467,9 +467,18 @@ public final class RoadWriter {
 	 * source template's above-ground blocks (crops, the lamp base, ...) move by
 	 * the same whole-block delta, per the user's "non-ground blocks move with
 	 * the surface" decision.
+	 *
+	 * <p>2026-11-05: with {@code housePathGround.mudBricks} on, a ground that is
+	 * a vanilla dirt path (house walkway, farm ground) renders as mud bricks;
+	 * see {@link RoadWritePolicy#structureGroundBlock}. Default off.
 	 */
-	private static void writeGroundOverlapCell(RoadCell cell, VpsGenContext ctx, BuildingMask buildingMask) {
-		Block ground = VpsCompat.blockById(cell.groundBlock);
+	private static void writeGroundOverlapCell(RoadCell cell, VpsGenContext ctx, BuildingMask buildingMask,
+			VillagePathSmoothedConfig config) {
+		String groundId = RoadWritePolicy.structureGroundBlock(cell.groundBlock, config.housePathGround.mudBricks);
+		if (!groundId.equals(cell.groundBlock)) {
+			VpsPipeline.HOUSE_PATH_MUD_BRICK_CELLS.incrementAndGet();
+		}
+		Block ground = VpsCompat.blockById(groundId);
 		if (ground == null) {
 			return;
 		}
@@ -552,7 +561,7 @@ public final class RoadWriter {
 		// claimed column was suppressed, so the overlap surface has to be written
 		// here; the roads on both sides then meet the same flat unit.
 		if (cell.groundOverlap) {
-			writeGroundOverlapCell(cell, ctx, buildingMask);
+			writeGroundOverlapCell(cell, ctx, buildingMask, config);
 			return;
 		}
 

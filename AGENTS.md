@@ -472,7 +472,10 @@ Rules:
   clamp apply). On T5 the unit pins at the house's real render level (the T5
   fixture-base rule) and the road is re-solved to the house instead.
   `house path cells (overlap N, disconnected areas N / N cells, layers above
-  y0 N)` in the `/vps stats` decor line is the observation set.
+  y0 N, mud bricks N)` in the `/vps stats` decor line is the observation set;
+  the `mud bricks` slot counts the ground-overlap cells written as mud bricks
+  by the opt-in `housePathGround.mudBricks` (default OFF, see the road-surface
+  material bullet above).
 - **The polish never moves a physically fixed cell, but it DOES move a movable
   unit before placement (2026-10-15, reworked 2026-10-17).** A T5 decor-seat pin
   and a T5/phase-2 plaza pin are immovable: the free side takes the correction
@@ -908,6 +911,12 @@ Rules:
   `smooth_sandstone` road/slab are unchanged. Do not retexture the fill or any
   plaza/street-decor/building dirt path: `RoadMaterialTable` keeps separate
   `roadBlock` (surface) and `fillBlock` (support) materials for exactly this.
+  One documented opt-in exists since 2026-11-05: `housePathGround.mudBricks`
+  (default OFF) swaps a ground-overlap cell whose structure ground is a vanilla
+  `dirt_path` (house walkway, farm ground) to `mud_bricks` at write time
+  (`RoadWritePolicy#structureGroundBlock`, counted as `mud bricks` in the decor
+  stats line). The solve never sees the swap; with the flag off the rule above
+  holds unchanged.
 - Slabs are always **bottom** slabs; no stairs, no orientation states - road
   placement must stay rotation-independent.
 - Water-crossing cells carry the water surface as their PREFERRED height (their

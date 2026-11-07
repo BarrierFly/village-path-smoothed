@@ -379,7 +379,7 @@ public final class RoadWriter {
 	private static void writeSurfaceFallback(RoadNetwork net, RoadCell cell, VpsGenContext ctx,
 			VillagePathSmoothedConfig config, RoadMaterialTable table, int[][] shiftedComponents) {
 		if (cell.seat) {
-			writeSeatFallback(cell, ctx);
+			writeSeatFallback(cell, ctx, config);
 			return;
 		}
 		try {
@@ -412,21 +412,25 @@ public final class RoadWriter {
 	 * block wins here instead. Deliberately the simplest column: dirt fill, the
 	 * seat block at the solved height, no clear (the decor stands above it).
 	 */
-	private static void writeSeatFallback(RoadCell cell, VpsGenContext ctx) {
+	private static void writeSeatFallback(RoadCell cell, VpsGenContext ctx, VillagePathSmoothedConfig config) {
 		try {
 			int seatY = RoadWritePolicy.roadBlockY(cell.solvedP, false);
-			Block seatBlock = VpsCompat.blockById(cell.seatBlock);
+			String seatId = RoadWritePolicy.structureGroundBlock(cell.seatBlock, config.housePathGround.mudBricks);
+			boolean mudBricks = !seatId.equals(cell.seatBlock);
+			Block seatBlock = VpsCompat.blockById(seatId);
 			if (seatBlock == null) {
 				seatBlock = Blocks.GRASS_BLOCK;
+				mudBricks = false;
 			}
 			int groundTopY = ctx.groundSurfaceTopY(cell.x, cell.z, seatY);
 			for (int y = groundTopY - 1; y < seatY; y++) {
 				setBlockUnlessProtected(ctx, cell.x, y, cell.z, Blocks.DIRT.defaultBlockState(),
 						FEATURE_FILL_BLOCKS_SKIPPED);
 			}
-			if (!setBlockUnlessProtected(ctx, cell.x, seatY, cell.z, seatBlock.defaultBlockState(),
-					FEATURE_ROAD_BLOCKS_SKIPPED)) {
-				return;
+			boolean written = setBlockUnlessProtected(ctx, cell.x, seatY, cell.z, seatBlock.defaultBlockState(),
+					FEATURE_ROAD_BLOCKS_SKIPPED);
+			if (mudBricks && written) {
+				VpsPipeline.STRUCTURE_MUD_BRICK_CELLS.incrementAndGet();
 			}
 			SEAT_WRITE_FALLBACK.incrementAndGet();
 			VpsPipeline.ROAD_CELLS_WRITTEN.incrementAndGet();
@@ -475,9 +479,7 @@ public final class RoadWriter {
 	private static void writeGroundOverlapCell(RoadCell cell, VpsGenContext ctx, BuildingMask buildingMask,
 			VillagePathSmoothedConfig config) {
 		String groundId = RoadWritePolicy.structureGroundBlock(cell.groundBlock, config.housePathGround.mudBricks);
-		if (!groundId.equals(cell.groundBlock)) {
-			VpsPipeline.HOUSE_PATH_MUD_BRICK_CELLS.incrementAndGet();
-		}
+		boolean mudBricks = !groundId.equals(cell.groundBlock);
 		Block ground = VpsCompat.blockById(groundId);
 		if (ground == null) {
 			return;
@@ -485,6 +487,14 @@ public final class RoadWriter {
 		int targetY = RoadWritePolicy.roadBlockY(cell.solvedP, false);
 		if (targetY < ctx.getMinY() || targetY > ctx.getMaxY()
 				|| RoadWritePolicy.insideBuildingAt(buildingMask, cell.x, targetY, cell.z)) {
+			// Plan A keeps the building body intact, so this ground write is
+			// refused - but the column IS part of the solve and the piece
+			// renders its own vanilla dirt path there. The opt-in material swap
+			// still has to reach it (2026-11-06): replace exactly that block at
+			// the level the piece really renders, never the building body.
+			if (mudBricks) {
+				swapRenderedDirtPath(cell, ctx, buildingMask);
+			}
 			return;
 		}
 		int oldY = cell.groundOldBlockY;
@@ -524,8 +534,53 @@ public final class RoadWriter {
 					FEATURE_FILL_BLOCKS_SKIPPED);
 		}
 		setBlock(ctx, cell.x, targetY, cell.z, ground.defaultBlockState());
+		if (mudBricks) {
+			// counted only when the mud bricks are actually written; a refused
+			// write takes the swapRenderedDirtPath path below instead
+			VpsPipeline.STRUCTURE_MUD_BRICK_CELLS.incrementAndGet();
+		}
 		VpsPipeline.GROUND_OVERLAP_CELLS_WRITTEN.incrementAndGet();
 		VpsPipeline.ROAD_CELLS_WRITTEN.incrementAndGet();
+	}
+
+	/**
+	 * 2026-11-06: the opt-in mud-brick swap for a ground-overlap cell whose
+	 * ground write was refused by plan A. The column belongs to the solve, the
+	 * owning piece renders its own vanilla {@code dirt_path} there, and that
+	 * block is what the player sees - so the material rule has to reach it.
+	 * Only that exact block is replaced (never a building block, never terrain)
+	 * and the position is the level the piece really renders at: the recorded
+	 * vanilla ground Y, or the solved level when the piece does not move.
+	 */
+	private static void swapRenderedDirtPath(RoadCell cell, VpsGenContext ctx, BuildingMask buildingMask) {
+		int oldY = cell.groundOldBlockY;
+		if (oldY != RoadCell.GROUND_Y_UNKNOWN) {
+			trySwapDirtPathAt(ctx, cell.x, oldY, cell.z, buildingMask);
+		}
+		trySwapDirtPathAt(ctx, cell.x, RoadWritePolicy.roadBlockY(cell.solvedP, false), cell.z, buildingMask);
+	}
+
+	/**
+	 * Replaces exactly one vanilla {@code dirt_path} at (x, y, z) with mud
+	 * bricks, refusing a cell inside the protected building body. Counted once
+	 * per written block. Never clears, never fills, never moves geometry.
+	 */
+	private static void trySwapDirtPathAt(VpsGenContext ctx, int x, int y, int z, BuildingMask buildingMask) {
+		if (y < ctx.getMinY() || y > ctx.getMaxY()
+				|| RoadWritePolicy.insideBuildingAt(buildingMask, x, y, z)) {
+			return;
+		}
+		BlockState state;
+		try {
+			state = ctx.blockState(x, y, z);
+		} catch (Throwable t) {
+			return; // an unreadable column costs the swap, never the village
+		}
+		if (!state.is(Blocks.DIRT_PATH)) {
+			return;
+		}
+		setBlock(ctx, x, y, z, Blocks.MUD_BRICKS.defaultBlockState());
+		VpsPipeline.STRUCTURE_MUD_BRICK_CELLS.incrementAndGet();
 	}
 
 	private static boolean moveGroundBlock(VpsGenContext ctx, RoadCell cell, BuildingMask buildingMask,
@@ -579,6 +634,15 @@ public final class RoadWriter {
 		// never writes a road block, a fill or a clear on it - the clear would
 		// destroy the fountain, the bell and the well rim riding on the platform.
 		if (cell.plaza) {
+			// 2026-11-06: a town-centre piece is RIGID - vanilla renders its
+			// surface and the writer never writes a road block on it - so the
+			// opt-in material swap reads the plaza's own render level and
+			// replaces exactly a vanilla dirt path. The well, fountain and every
+			// other material stay untouched.
+			if (config.housePathGround.mudBricks) {
+				trySwapDirtPathAt(ctx, x, RoadWritePolicy.roadBlockY(cell.plazaVanillaP, false), z, buildingMask);
+				trySwapDirtPathAt(ctx, x, RoadWritePolicy.roadBlockY(cell.solvedP, false), z, buildingMask);
+			}
 			PLAZA_CELLS_VANILLA.incrementAndGet();
 			RoadMaterialTable.StyleMaterials plazaMaterials = table.forStyle(cell.style);
 			applyKerbsAndRailings(net, cell, ctx, config, plazaMaterials,
@@ -596,17 +660,26 @@ public final class RoadWriter {
 		if (cell.seat) {
 			SEATS_WRITTEN.incrementAndGet();
 			int seatY = RoadWritePolicy.roadBlockY(cell.solvedP, false);
-			Block seatBlock = VpsCompat.blockById(cell.seatBlock);
+			// 2026-11-06: a seat's own final_state base is a structure dirt path
+			// when it renders dirt_path; the writer is the renderer here, so the
+			// opt-in material rule applies directly.
+			String seatId = RoadWritePolicy.structureGroundBlock(cell.seatBlock, config.housePathGround.mudBricks);
+			boolean mudBricks = !seatId.equals(cell.seatBlock);
+			Block seatBlock = VpsCompat.blockById(seatId);
 			if (seatBlock == null) {
 				seatBlock = Blocks.GRASS_BLOCK;
+				mudBricks = false;
 			}
 			int groundTopY = ctx.groundSurfaceTopY(x, z, seatY);
 			for (int y = groundTopY - 1; y < seatY; y++) {
 				setBlockUnlessProtected(ctx, x, y, z, Blocks.DIRT.defaultBlockState(),
 						FEATURE_FILL_BLOCKS_SKIPPED);
 			}
-			setBlockUnlessProtected(ctx, x, seatY, z, seatBlock.defaultBlockState(),
+			boolean seatWritten = setBlockUnlessProtected(ctx, x, seatY, z, seatBlock.defaultBlockState(),
 					FEATURE_ROAD_BLOCKS_SKIPPED);
+			if (mudBricks && seatWritten) {
+				VpsPipeline.STRUCTURE_MUD_BRICK_CELLS.incrementAndGet();
+			}
 			int oldSeatY = RoadWritePolicy.roadBlockY(cell.baseP, false);
 			for (int y = seatY + 1; y <= oldSeatY; y++) {
 				// Only the old seat material may be cleared above a moved seat;

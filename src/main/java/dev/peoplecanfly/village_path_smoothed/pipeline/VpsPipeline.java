@@ -238,11 +238,14 @@ public final class VpsPipeline {
 	/** Overlap cells written as their structure ground instead of a road. */
 	public static final AtomicLong GROUND_OVERLAP_CELLS_WRITTEN = new AtomicLong();
 	/**
-	 * 2026-11-05: ground-overlap cells whose structure ground is a vanilla dirt
-	 * path (house walkway, farm ground) written as mud bricks instead
-	 * ({@code housePathGround.mudBricks}, default off).
+	 * 2026-11-05/06: solve-owned structure dirt paths rendered as mud bricks
+	 * instead of the vanilla dirt path ({@code housePathGround.mudBricks},
+	 * default off). Covers the three cell kinds that belong to the road solve -
+	 * a ground overlap (house walkway, farm ground, street fixture base), a
+	 * street seat's {@code final_state} base and a town-centre plaza surface.
+	 * Columns outside the solve are never counted and never touched.
 	 */
-	public static final AtomicLong HOUSE_PATH_MUD_BRICK_CELLS = new AtomicLong();
+	public static final AtomicLong STRUCTURE_MUD_BRICK_CELLS = new AtomicLong();
 	/** Overlap units the writer actually shifted. */
 	public static final AtomicLong GROUND_OVERLAP_MOVED_UNITS = new AtomicLong();
 	/** Above-ground structure blocks moved with a shifted overlap surface. */

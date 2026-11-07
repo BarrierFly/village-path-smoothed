@@ -14,8 +14,8 @@ public final class RoadWritePolicy {
 	public static final int UNWRITTEN = Integer.MIN_VALUE;
 	/** Sentinel for "no ceiling above the road" in the kerb/ceiling helpers. */
 	public static final int NO_CEILING = Integer.MIN_VALUE;
-	/** Vanilla dirt path, the ground block a house walkway / farm ground carries. */
-	public static final String DIRT_PATH_ID = "minecraft:dirt_path";
+	/** Vanilla dirt path, compared WITHOUT the namespace prefix (seat ids carry none). */
+	public static final String DIRT_PATH_ID = "dirt_path";
 	/** Mud bricks, the replacement material of {@code housePathGround.mudBricks}. */
 	public static final String MUD_BRICKS_ID = "minecraft:mud_bricks";
 
@@ -23,19 +23,28 @@ public final class RoadWritePolicy {
 	}
 
 	/**
-	 * 2026-11-05: the block a ground-overlap cell renders as its structure
-	 * ground. With the opt-in conversion on ({@code housePathGround.mudBricks}),
-	 * a structure ground that IS a vanilla dirt path - a house walkway, a farm
-	 * ground - renders as mud bricks; every other ground block is untouched,
-	 * and with the option off this is the identity. Street seats keep their own
-	 * material regardless: they are the road itself, not a foreign structure.
-	 * Pure write-time material swap; the solve never sees it.
+	 * 2026-11-05/06: the block a solve-owned structure dirt path renders as,
+	 * with the opt-in conversion on ({@code housePathGround.mudBricks}). Only
+	 * the dirt-path ground of a structure column that IS part of the road solve
+	 * converts: a structure ground overlap (house walkway, farm ground, street
+	 * fixture base), a street seat's {@code final_state} base and a town-centre
+	 * plaza surface. Every other block - and every column outside the solve -
+	 * stays untouched, and with the option off this is the identity.
 	 *
-	 * @param groundBlockId the structure's own ground block id
+	 * <p>The id may carry the {@code minecraft:} prefix (structure grounds do)
+	 * or not (seat {@code final_state} ids do); the dirt-path test ignores it.
+	 * A {@code null} id stays {@code null} - the caller still refuses to
+	 * resolve it.
+	 *
+	 * @param blockId the block id the structure renders there
 	 * @param mudBricks the config switch
 	 */
-	public static String structureGroundBlock(String groundBlockId, boolean mudBricks) {
-		return mudBricks && DIRT_PATH_ID.equals(groundBlockId) ? MUD_BRICKS_ID : groundBlockId;
+	public static String structureGroundBlock(String blockId, boolean mudBricks) {
+		if (!mudBricks || blockId == null) {
+			return blockId;
+		}
+		String unprefixed = blockId.startsWith("minecraft:") ? blockId.substring("minecraft:".length()) : blockId;
+		return DIRT_PATH_ID.equals(unprefixed) ? MUD_BRICKS_ID : blockId;
 	}
 
 	/**

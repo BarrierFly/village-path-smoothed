@@ -304,7 +304,7 @@ mod 在结构开始处检测模板路径里的 `/zombie/`，在求解前直接�
 | `roadSmoothing.roadSurfaceDetection` | `TEMPLATE_Y0_SOLID` | 街面判定规则：`TEMPLATE_Y0_SOLID` = 与街道 jigsaw 连接点连通的 y0 表面（农田/水/陶瓦保持原版）；`TEMPLATE_Y0_ROAD_MATERIAL` = 仅该风格自己的路块（连接点格仍加入）。 |
 | `roadSmoothing.maxFillLayers` | `3` | 路高于地面时的最大连续填方层数；超过则该格改为桥面（`< 0` = 不限）。只作用于写入端：它决定已定高度的路如何输出（垫方 vs 桥面），从不影响求解。 |
 | `roadSmoothing.maxClearLayers` | `4` | 路低于地面时向上清方的最大层数；超过则该格成隧道并生成顶板（`< 0` = 不限）。只作用于写入端，同 `maxFillLayers`。默认 4 让上限成顶与照明可见。 |
-| `housePathGround.mudBricks` | `false` | 把纳入路网求解的非道路结构土径地面（房屋步道、农田地面等）写入为泥砖而不是原版土径。求解不受影响，只改渲染的地面方块。 |
+| `housePathGround.mudBricks` | `false` | 把纳入路网求解的结构列上的土径写入为泥砖而不是原版土径：结构地面重叠格（房屋步道、农田地面、街件底座）、街件座椅的 final_state 底座、村庄中心广场表面。未进入求解的列保持原版。求解不受影响，只改渲染的方块。 |
 | `kerb.minDropHeight` | `1` | "侧向地形高出路面 N+1 整格"触发包边（行走面按半格比较）。 |
 | `kerb.replaceableBlocks` | `["#minecraft:dirt"]` | 旧/兼容列表；包边的逐层触发与替换现已用碰撞/液体判据、不再限制材质，但仍跳过所有非地形装饰。 |
 | `waterCrossing.enabled` | `true` | 脚手架桥；关闭则水面路段保持原版。 |

@@ -36,7 +36,7 @@
   "vps.config.includeTownCenters": "纳入村庄中心广场",
   "vps.config.includeTownCenters.tooltip": "只有广场的铺路格加入掩膜，水井、钟与木头保持原版方块。关闭后广场完全保持原版。",
   "vps.config.housePathGround.mudBricks": "结构土径换泥砖",
-  "vps.config.housePathGround.mudBricks.tooltip": "纳入路网求解的非道路结构土径地面（房屋步道、农田地面等），写入时改用泥砖而不是原版土径。默认关闭，保持原版土径。只影响保存之后新生成的区块。",
+  "vps.config.housePathGround.mudBricks.tooltip": "把纳入路网求解的结构列上的土径改用泥砖渲染：结构地面重叠格（房屋步道、农田地面、街件底座）、街件座椅底座、村庄中心广场表面。未进入求解的列保持原版土径。默认关闭。只影响保存之后新生成的区块。",
 
   "vps.config.kerb": "路肩包边（地形高于路面）",
   "vps.config.kerb.tooltip": "在道路两侧地形抬升处包住第一列，并在每段顶端放一层树叶。",

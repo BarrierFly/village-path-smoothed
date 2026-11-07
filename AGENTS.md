@@ -473,9 +473,9 @@ Rules:
   fixture-base rule) and the road is re-solved to the house instead.
   `house path cells (overlap N, disconnected areas N / N cells, layers above
   y0 N, mud bricks N)` in the `/vps stats` decor line is the observation set;
-  the `mud bricks` slot counts the ground-overlap cells written as mud bricks
-  by the opt-in `housePathGround.mudBricks` (default OFF, see the road-surface
-  material bullet above).
+  the `mud bricks` slot counts every solve-owned structure dirt path rendered
+  as mud bricks by the opt-in `housePathGround.mudBricks` (default OFF; see the
+  road-surface material bullet above for the three cell kinds).
 - **The polish never moves a physically fixed cell, but it DOES move a movable
   unit before placement (2026-10-15, reworked 2026-10-17).** A T5 decor-seat pin
   and a T5/phase-2 plaza pin are immovable: the free side takes the correction
@@ -912,11 +912,28 @@ Rules:
   plaza/street-decor/building dirt path: `RoadMaterialTable` keeps separate
   `roadBlock` (surface) and `fillBlock` (support) materials for exactly this.
   One documented opt-in exists since 2026-11-05: `housePathGround.mudBricks`
-  (default OFF) swaps a ground-overlap cell whose structure ground is a vanilla
-  `dirt_path` (house walkway, farm ground) to `mud_bricks` at write time
+  (default OFF) swaps the vanilla `dirt_path` of a structure column that IS
+  part of the road solve to `mud_bricks` at write time
   (`RoadWritePolicy#structureGroundBlock`, counted as `mud bricks` in the decor
-  stats line). The solve never sees the swap; with the flag off the rule above
-  holds unchanged.
+  stats line). Exactly three cell kinds are covered - a **structure ground
+  overlap** (house walkway, farm ground, street fixture base), a **street
+  seat's `final_state` base** and a **town-centre plaza surface**. The ground
+  overlap needs two write paths because plan A refuses a ground write that
+  lands inside a building body while the piece's own vanilla block stays
+  visible: the normal path writes the swapped block, and
+  `RoadWriter#swapRenderedDirtPath` replaces exactly the rendered `dirt_path`
+  for a refused one (the recorded vanilla ground Y, then the solved level).
+  A plaza is RIGID, so vanilla renders its surface and
+  `RoadWriter#swapRenderedDirtPath` runs at `plazaVanillaP` / `solvedP`; a seat
+  is rendered by the writer, so the seat branch resolves the block through
+  `structureGroundBlock` directly. Every
+  swap reads the real block, replaces only a `dirt_path`, and refuses a
+  protected building cell - no clear, no fill, no geometry change.
+  **A column outside the solve is never touched** (user decision 2026-11-06:
+  strictly the solve cells, not every dirt path in the village - a walkway
+  area with no 4-adjacency edge to the road net stays vanilla). Seat
+  `final_state` ids carry no `minecraft:` prefix; the helper ignores it. The
+  solve never sees the swap; with the flag off the rule above holds unchanged.
 - Slabs are always **bottom** slabs; no stairs, no orientation states - road
   placement must stay rotation-independent.
 - Water-crossing cells carry the water surface as their PREFERRED height (their

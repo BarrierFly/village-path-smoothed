@@ -240,15 +240,17 @@ public final class VillagePathSmoothedConfig {
 	}
 
 	/**
-	 * 2026-11-05: material rules for the dirt-path ground of the non-road
-	 * structures that joined the road solve (house walkways, farm grounds).
-	 * The solve is untouched; only the block the writer renders as the
-	 * structure ground changes.
+	 * 2026-11-05/06: material rules for the dirt paths of structure columns
+	 * that are part of the road solve. The solve is untouched; only the block
+	 * the writer renders changes.
 	 */
 	public static class HousePathGround {
 		/**
-		 * Write mud bricks instead of the vanilla dirt path for a ground-overlap
-		 * cell whose structure ground block IS a dirt path. Default off: the
+		 * Render mud bricks instead of the vanilla dirt path for a dirt path on a
+		 * structure column that is part of the road solve: a structure ground
+		 * overlap (house walkway, farm ground, street fixture base), a street
+		 * seat's {@code final_state} base and a town-centre plaza surface. A
+		 * column outside the solve keeps its vanilla block. Default off: the
 		 * vanilla dirt path stays, so the 2026-10-17 "do not retexture building
 		 * dirt paths" rule keeps holding unless this is switched on explicitly.
 		 */

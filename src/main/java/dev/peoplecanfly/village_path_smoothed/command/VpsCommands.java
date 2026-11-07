@@ -414,7 +414,7 @@ public final class VpsCommands {
 				VpsPipeline.HOUSE_PATH_DISCONNECTED_AREAS.get(),
 				VpsPipeline.HOUSE_PATH_DISCONNECTED_CELLS.get(),
 				VpsPipeline.HOUSE_PATH_LAYER_ABOVE_Y0.get(),
-				VpsPipeline.HOUSE_PATH_MUD_BRICK_CELLS.get(),
+				VpsPipeline.STRUCTURE_MUD_BRICK_CELLS.get(),
 				VpsPipeline.GROUND_OVERLAP_CELLS_WRITTEN.get(),
 				VpsPipeline.GROUND_OVERLAP_MOVED_UNITS.get(),
 				VpsPipeline.GROUND_OVERLAP_BLOCKS_MOVED.get(),

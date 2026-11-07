@@ -214,15 +214,19 @@ public class RoadWritePolicyTest {
 
 	@Test
 	public void structureGroundSwapsOnlyADirtPathAndOnlyWhenOptedIn() {
-		// 2026-11-05: housePathGround.mudBricks. Default off is the identity -
+		// 2026-11-05/06: housePathGround.mudBricks. Default off is the identity -
 		// the 2026-10-17 "do not retexture building dirt paths" rule holds.
 		assertEquals(RoadWritePolicy.DIRT_PATH_ID,
 				RoadWritePolicy.structureGroundBlock(RoadWritePolicy.DIRT_PATH_ID, false));
 		assertEquals("minecraft:farmland",
 				RoadWritePolicy.structureGroundBlock("minecraft:farmland", false));
-		// Opt-in: exactly the vanilla dirt path converts, nothing else.
+		// Opt-in: exactly the vanilla dirt path converts, nothing else. Both
+		// spellings are covered - a structure ground carries the minecraft:
+		// prefix, a seat final_state id does not.
 		assertEquals(RoadWritePolicy.MUD_BRICKS_ID,
 				RoadWritePolicy.structureGroundBlock(RoadWritePolicy.DIRT_PATH_ID, true));
+		assertEquals(RoadWritePolicy.MUD_BRICKS_ID,
+				RoadWritePolicy.structureGroundBlock("minecraft:dirt_path", true));
 		assertEquals("minecraft:farmland",
 				RoadWritePolicy.structureGroundBlock("minecraft:farmland", true));
 		assertEquals("minecraft:mud_bricks",

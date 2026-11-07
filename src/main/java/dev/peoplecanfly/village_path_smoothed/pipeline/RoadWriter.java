@@ -493,7 +493,7 @@ public final class RoadWriter {
 			// still has to reach it (2026-11-06): replace exactly that block at
 			// the level the piece really renders, never the building body.
 			if (mudBricks) {
-				swapRenderedDirtPath(cell, ctx, buildingMask);
+				swapRenderedDirtPath(cell, ctx);
 			}
 			return;
 		}
@@ -548,37 +548,79 @@ public final class RoadWriter {
 	 * ground write was refused by plan A. The column belongs to the solve, the
 	 * owning piece renders its own vanilla {@code dirt_path} there, and that
 	 * block is what the player sees - so the material rule has to reach it.
-	 * Only that exact block is replaced (never a building block, never terrain)
-	 * and the position is the level the piece really renders at: the recorded
-	 * vanilla ground Y, or the solved level when the piece does not move.
+	 *
+	 * <p>Two levels are consulted because the recorded {@code groundOldBlockY}
+	 * can lag a building move: {@link StreetDecor#identifyHousePathGrounds}
+	 * records it before the T1.5 second alignment pass still moves components,
+	 * so the record may point a whole block below the rendered path (measured
+	 * in game 2026-11-06: {@code 781,82,793} holds {@code dirt} while
+	 * {@code 781,83,793} holds the {@code dirt_path}). {@link
+	 * #trySwapDirtPathAt} therefore also accepts the support-block case and
+	 * looks one layer up, so the recorded level and the solved level both work.
 	 */
-	private static void swapRenderedDirtPath(RoadCell cell, VpsGenContext ctx, BuildingMask buildingMask) {
+	private static void swapRenderedDirtPath(RoadCell cell, VpsGenContext ctx) {
 		int oldY = cell.groundOldBlockY;
 		if (oldY != RoadCell.GROUND_Y_UNKNOWN) {
-			trySwapDirtPathAt(ctx, cell.x, oldY, cell.z, buildingMask);
+			trySwapDirtPathAt(ctx, cell.x, oldY, cell.z);
 		}
-		trySwapDirtPathAt(ctx, cell.x, RoadWritePolicy.roadBlockY(cell.solvedP, false), cell.z, buildingMask);
+		trySwapDirtPathAt(ctx, cell.x, RoadWritePolicy.roadBlockY(cell.solvedP, false), cell.z);
 	}
 
 	/**
-	 * Replaces exactly one vanilla {@code dirt_path} at (x, y, z) with mud
-	 * bricks, refusing a cell inside the protected building body. Counted once
-	 * per written block. Never clears, never fills, never moves geometry.
+	 * Replaces a vanilla {@code dirt_path} at (x, y, z) - or immediately above
+	 * it when (x, y, z) is the path's support block - with mud bricks. Counted
+	 * once per written block. Never clears, never fills, never moves geometry.
+	 *
+	 * <p>Deliberately NO building-mask test (2026-11-06). Plan A's
+	 * {@code insideBuilding} yield protects the building body from geometric
+	 * writes - road block, support fill, clear - and is untouched by this
+	 * swap. A house's dooryard path IS a template block, so
+	 * {@code BuildingComponents#isBuildingBlock} puts it inside
+	 * {@code buildingMask}; testing the mask here skipped every dooryard path
+	 * (measured: all sampled ground-overlap cells reported {@code
+	 * inBuilding=true}, {@code mud bricks 0} with the option on). The guard
+	 * below is the real one: only a vanilla {@code dirt_path} converts, so a
+	 * wall, plank or stone block in the same column is never replaced.
+	 *
+	 * <p>Vanilla uses {@code dirt_path} as a ground surface, but it CAN be an
+	 * interior floor (snowy_fisher_cottage's y=1 path, see AGENTS.md). The
+	 * one-layer probe cannot reach such a floor from above: it only looks at
+	 * {@code y+1}, and only when {@code y} itself is a bare support block -
+	 * a plank, brick or cobble floor never qualifies. No original village
+	 * template stacks two {@code dirt_path} in one column.
 	 */
-	private static void trySwapDirtPathAt(VpsGenContext ctx, int x, int y, int z, BuildingMask buildingMask) {
-		if (y < ctx.getMinY() || y > ctx.getMaxY()
-				|| RoadWritePolicy.insideBuildingAt(buildingMask, x, y, z)) {
+	private static void trySwapDirtPathAt(VpsGenContext ctx, int x, int y, int z) {
+		BlockState state = readBlock(ctx, x, y, z);
+		if (state != null && state.is(Blocks.DIRT_PATH)) {
+			replaceWithMudBricks(ctx, x, y, z);
 			return;
 		}
-		BlockState state;
+		// A walkway path whose recorded level is its support block: the path
+		// itself sits one layer up. Only a bare terrain/support block qualifies,
+		// so this can never reach through a wall or a built floor.
+		if (state != null && (state.is(Blocks.DIRT) || state.is(Blocks.GRASS_BLOCK)
+				|| state.is(Blocks.COARSE_DIRT) || state.is(Blocks.ROOTED_DIRT)
+				|| state.is(Blocks.PODZOL) || state.is(Blocks.STONE))) {
+			BlockState above = readBlock(ctx, x, y + 1, z);
+			if (above != null && above.is(Blocks.DIRT_PATH)) {
+				replaceWithMudBricks(ctx, x, y + 1, z);
+			}
+		}
+	}
+
+	/** Reads one block inside the world bounds; null when unreadable or out of bounds. */
+	private static BlockState readBlock(VpsGenContext ctx, int x, int y, int z) {
+		if (y < ctx.getMinY() || y > ctx.getMaxY()) {
+			return null;
+		}
 		try {
-			state = ctx.blockState(x, y, z);
+			return ctx.blockState(x, y, z);
 		} catch (Throwable t) {
-			return; // an unreadable column costs the swap, never the village
+			return null; // an unreadable column costs the swap, never the village
 		}
-		if (!state.is(Blocks.DIRT_PATH)) {
-			return;
-		}
+	}
+
+	private static void replaceWithMudBricks(VpsGenContext ctx, int x, int y, int z) {
 		setBlock(ctx, x, y, z, Blocks.MUD_BRICKS.defaultBlockState());
 		VpsPipeline.STRUCTURE_MUD_BRICK_CELLS.incrementAndGet();
 	}
@@ -640,8 +682,8 @@ public final class RoadWriter {
 			// replaces exactly a vanilla dirt path. The well, fountain and every
 			// other material stay untouched.
 			if (config.housePathGround.mudBricks) {
-				trySwapDirtPathAt(ctx, x, RoadWritePolicy.roadBlockY(cell.plazaVanillaP, false), z, buildingMask);
-				trySwapDirtPathAt(ctx, x, RoadWritePolicy.roadBlockY(cell.solvedP, false), z, buildingMask);
+				trySwapDirtPathAt(ctx, x, RoadWritePolicy.roadBlockY(cell.plazaVanillaP, false), z);
+				trySwapDirtPathAt(ctx, x, RoadWritePolicy.roadBlockY(cell.solvedP, false), z);
 			}
 			PLAZA_CELLS_VANILLA.incrementAndGet();
 			RoadMaterialTable.StyleMaterials plazaMaterials = table.forStyle(cell.style);

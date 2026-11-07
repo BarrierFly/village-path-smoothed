@@ -358,6 +358,25 @@ public final class T15Planner {
 			for (int idx : component.pieceIndices) {
 				pieces.get(idx).move(0, chosen, 0);
 			}
+			// 2026-11-06: the house dirt-path records were collected BEFORE this
+			// pass (identifyHousePathGrounds runs at the first re-solve), so a
+			// component moved here leaves cell.groundOldBlockY pointing at the
+			// pre-move position. Keep the recorded vanilla Y in step: only the
+			// record moves, baseP/solvedP stay frozen (the solve is already done).
+			//
+			// This is a correctness/consistency sync, NOT a coverage fix. The
+			// writer's two consumers were already tolerant of the stale value:
+			// swapRenderedDirtPath probes both groundOldBlockY and the solved
+			// level, and trySwapDirtPathAt climbs one layer from a bare support
+			// block. Measured on the same seed with and without this call the
+			// written blocks are identical (44 swaps either way). Keep it so the
+			// record matches the piece: writeGroundOverlapCell's dy (the only
+			// place that uses it for geometry) would otherwise silently shift a
+			// ground unit by the wrong amount as soon as a cell reaches that
+			// branch instead of the refused one.
+			for (int idx : component.pieceIndices) {
+				syncHousePathGroundY(finalNetwork, idx, chosen);
+			}
 			VpsPipeline.SECOND_ALIGN_MOVED.incrementAndGet();
 		}
 		// only the ADDITIONAL move is propagated; the first pass already synced
@@ -1162,6 +1181,42 @@ public final class T15Planner {
 	 * (even a 1x1 hay pile) could pin the whole component at the vanilla
 	 * position - the alignment then lost by the slope's 1-2 blocks.
 	 */
+	/**
+	 * 2026-11-06: keeps the recorded vanilla ground Y of one piece's house
+	 * dirt-path cells in step with a vertical move. The records are collected
+	 * by {@link StreetDecor#identifyHousePathGrounds} at the FIRST re-solve,
+	 * while the second alignment pass can still move the component.
+	 *
+	 * <p><b>This is consistency, not coverage.</b> The writer's two readers were
+	 * already tolerant of the stale value: {@code swapRenderedDirtPath} probes
+	 * both {@code groundOldBlockY} and the solved level, and
+	 * {@code trySwapDirtPathAt} climbs one layer from a bare support block.
+	 * Measured on one seed with and without this call, the written blocks are
+	 * identical (44 swaps either way). The reason to keep it is
+	 * {@code writeGroundOverlapCell}'s {@code dy}: that branch is the only one
+	 * that uses the record for geometry, and a stale value would shift a ground
+	 * unit by the wrong amount the moment a cell reaches it instead of the
+	 * refused one.
+	 *
+	 * <p>Only {@code groundOldBlockY} follows the move. {@code baseP} and
+	 * {@code solvedP} are deliberately untouched - the solve is already frozen
+	 * by this point, and re-anchoring them would invalidate it.
+	 */
+	private static void syncHousePathGroundY(RoadNetwork network, int pieceIndex, int dy) {
+		if (network == null || dy == 0) {
+			return;
+		}
+		long key = RoadNetwork.housePathGroupKey(pieceIndex);
+		for (RoadCell cell : network.cells) {
+			if (cell.groundGroupKey != key || cell.groundGroupKey == Long.MIN_VALUE) {
+				continue;
+			}
+			if (cell.groundOldBlockY != RoadCell.GROUND_Y_UNKNOWN) {
+				cell.groundOldBlockY += dy;
+			}
+		}
+	}
+
 	private static int resolveOverlap(List<StructurePiece> pieces, BuildingComponents.Component component, int dy) {
 		int candidate = dy;
 		while (candidate != 0 && overlaps(pieces, component, candidate)) {

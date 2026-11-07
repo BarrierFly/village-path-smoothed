@@ -926,12 +926,36 @@ Rules:
   A plaza is RIGID, so vanilla renders its surface and
   `RoadWriter#swapRenderedDirtPath` runs at `plazaVanillaP` / `solvedP`; a seat
   is rendered by the writer, so the seat branch resolves the block through
-  `structureGroundBlock` directly. Every
-  swap reads the real block, replaces only a `dirt_path`, and refuses a
-  protected building cell - no clear, no fill, no geometry change.
-  **A column outside the solve is never touched** (user decision 2026-11-06:
-  strictly the solve cells, not every dirt path in the village - a walkway
-  area with no 4-adjacency edge to the road net stays vanilla). Seat
+  `structureGroundBlock` directly.
+  **The swap deliberately does NOT consult the building mask (2026-11-06).**
+  Plan A's `insideBuilding` yield protects the building BODY from geometric
+  writes (road block, fill, clear) and is untouched; a `dirt_path -> mud_bricks`
+  replacement changes no block count and no geometry. A house's dooryard path
+  IS a template block, so `BuildingComponents#isBuildingBlock` puts it in
+  `buildingMask` - testing the mask here skipped every dooryard path (measured:
+  all sampled ground-overlap cells reported `inBuilding=true`, `mud bricks 0`
+  with the option on). The guard is the predicate alone: only a vanilla
+  `dirt_path` converts, so a wall, plank or stone block in the same column can
+  never be replaced. The swap does no clear, no fill and no geometry change.
+  **`groundOldBlockY` follows a second-pass move (2026-11-06) - for
+  consistency, not coverage.** The recorded ground Y comes from
+  `StreetDecor#identifyHousePathGrounds`, which runs BEFORE
+  `T15Planner`'s second alignment pass can still move components, so the record
+  used to lag a move by whole blocks (measured: `781,82,793` held `dirt` while
+  `781,83,793` held the path). `T15Planner#syncHousePathGroundY` now adds the
+  chosen dy to every house-path cell's `groundOldBlockY` right after the move;
+  `baseP`/`solvedP` stay frozen (the solve is done). **Do not claim this
+  improves swap coverage:** `swapRenderedDirtPath` already probes both the
+  recorded Y and the solved level, and `trySwapDirtPathAt` climbs one layer
+  from a bare support block, so measured output is byte-identical with and
+  without the sync (44 swaps both ways). It exists for
+  `writeGroundOverlapCell`'s `dy` - the only reader that uses the record for
+  geometry - and as a belt-and-braces fallback the support-block climb stays.
+  Original village templates never stack two `dirt_path` in one column, so the
+  probe cannot reach a second path. **A column outside the solve is never
+  touched** (user decision
+  2026-11-06: strictly the solve cells, not every dirt path in the village - a
+  walkway area with no 4-adjacency edge to the road net stays vanilla). Seat
   `final_state` ids carry no `minecraft:` prefix; the helper ignores it. The
   solve never sees the swap; with the flag off the rule above holds unchanged.
 - Slabs are always **bottom** slabs; no stairs, no orientation states - road

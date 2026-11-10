@@ -1108,11 +1108,23 @@ zero gate, and print the two upgrade-decision frequencies.
 
 `RoadPolishTest` and `RoadMaskIntegrityTest` pin the two invariants the bench
 cannot state on its own: the profile is legal by construction, and a failed probe
-or a split mask never silently costs a column.
+or a split mask never silently costs a column. `PlacementPolicyTest` covers the
+suppress/pass-through matrix (added 2026-11-11: this file's claim that the class
+was unit tested had been false since the class was introduced, so a regression in
+the per-block hot path was invisible).
 
 If you are on Windows use `gradlew.bat`. Pass `--no-daemon` (or
 `--console=plain`) so a lingering daemon does not hold the console open after
 the build reports success.
+
+**Six nodes in parallel can exhaust the daemon heap (measured 2026-11-11).**
+`buildAndGather` with the default worker count made the Gradle daemon disappear
+twice mid-run (`The message received from the daemon indicates that the daemon
+has disappeared`), each time after one or two nodes had finished, with
+`org.gradle.jvmargs=-Xmx4G` and 6 preprocess nodes plus Minecraft jars in
+memory at once. `--max-workers=1` ran all six nodes plus `buildAndGather`
+through to `BUILD SUCCESSFUL` in ~6 minutes. Use it when a full build is needed
+on this machine, and do not read a partially written log as a green build.
 
 **Compiling green is not delivery.** `javac` treats a mixin handler as a plain
 private method and performs no descriptor check against the target, and the

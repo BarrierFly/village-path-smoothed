@@ -478,7 +478,9 @@ public final class RoadWriter {
 				VpsPipeline.STRUCTURE_MUD_BRICK_CELLS.incrementAndGet();
 			}
 			SEAT_WRITE_FALLBACK.incrementAndGet();
-			VpsPipeline.ROAD_CELLS_WRITTEN.incrementAndGet();
+			if (written) {
+				VpsPipeline.ROAD_CELLS_WRITTEN.incrementAndGet();
+			}
 		} catch (Throwable t) {
 			VillagePathSmoothed.LOGGER.debug("[VPS] seat fallback failed at {} {}", cell.x, cell.z, t);
 		}
@@ -799,7 +801,9 @@ public final class RoadWriter {
 				setBlockUnlessProtected(ctx, x, y, z, Blocks.AIR.defaultBlockState(),
 						FEATURE_CLEAR_BLOCKS_SKIPPED);
 			}
-			VpsPipeline.ROAD_CELLS_WRITTEN.incrementAndGet();
+			if (seatWritten) {
+				VpsPipeline.ROAD_CELLS_WRITTEN.incrementAndGet();
+			}
 			return;
 		}
 

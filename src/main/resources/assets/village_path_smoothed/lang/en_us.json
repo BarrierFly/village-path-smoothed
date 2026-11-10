@@ -16,6 +16,7 @@
   "vps.config.scopeHint": "Takes effect for worlds and chunks generated after saving; existing roads stay as they are.",
   "vps.config.invalidHint": "A field is red: fix it, or press its Default button to save.",
   "vps.config.invalidSave": "Not saved: a field is still invalid.",
+  "vps.config.saveFailed": "Could not write the config file; nothing was changed.",
 
   "vps.config.enabled": "Enabled by default for new worlds",
   "vps.config.enabled.tooltip": "Seed value for worlds without their own switch. Every world keeps its own setting in <world>/village_path_smoothed.json, changed in game with /vps world on|off.",

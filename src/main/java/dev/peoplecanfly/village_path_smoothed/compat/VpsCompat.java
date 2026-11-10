@@ -72,17 +72,32 @@ public final class VpsCompat {
 		//#endif
 	}
 
-	/** Resolves a "minecraft:foo" block id; returns null when unknown. */
+	/**
+	 * Resolves a "minecraft:foo" block id; returns null when unknown.
+	 *
+	 * <p>2026-11-10 audit H-1: {@code BuiltInRegistries.BLOCK} is a
+	 * {@code DefaultedRegistry} whose default is {@code air}. Its
+	 * {@code get}/{@code getValue} return {@code Blocks.AIR} for an unknown id
+	 * and NEVER null in any supported version, so the old
+	 * {@code block != null ? block : fallback} guards were dead code and a typo
+	 * ("minecraft:cobblstone") silently wrote air for kerbs, fill, seats and
+	 * structure grounds. {@code getOptional} is overridden in
+	 * {@code DefaultedMappedRegistry} to bypass the default, so it is the only
+	 * version-stable way to tell "unknown" from an explicit {@code air}.
+	 */
 	public static Block blockById(String id) {
+		if (id == null || id.isBlank()) {
+			return null;
+		}
 		try {
 			//#if MC >= 12111
-			//$$ return BuiltInRegistries.BLOCK.getValue(net.minecraft.resources.Identifier.parse(id));
+			//$$ return BuiltInRegistries.BLOCK.getOptional(net.minecraft.resources.Identifier.parse(id)).orElse(null);
 			//#elseif MC >= 12109
-			//$$ return BuiltInRegistries.BLOCK.getValue(net.minecraft.resources.ResourceLocation.parse(id));
+			//$$ return BuiltInRegistries.BLOCK.getOptional(net.minecraft.resources.ResourceLocation.parse(id)).orElse(null);
 			//#elseif MC >= 12101
-			//$$ return BuiltInRegistries.BLOCK.get(net.minecraft.resources.ResourceLocation.parse(id));
+			//$$ return BuiltInRegistries.BLOCK.getOptional(net.minecraft.resources.ResourceLocation.parse(id)).orElse(null);
 			//#else
-			return BuiltInRegistries.BLOCK.get(new net.minecraft.resources.ResourceLocation(id));
+			return BuiltInRegistries.BLOCK.getOptional(new net.minecraft.resources.ResourceLocation(id)).orElse(null);
 			//#endif
 		} catch (Exception e) {
 			return null;

@@ -16,6 +16,7 @@
   "vps.config.scopeHint": "只对保存之后新生成的世界和区块生效；已生成的道路不会改变。",
   "vps.config.invalidHint": "有输入框标红：改正它，或按该项的「默认」按钮后才能保存。",
   "vps.config.invalidSave": "未保存：仍有非法输入。",
+  "vps.config.saveFailed": "无法写入配置文件；本次未做任何改动。",
 
   "vps.config.enabled": "默认对新世界启用",
   "vps.config.enabled.tooltip": "只作为没有独立开关的世界的初始值。每个世界自己的设置存在 <世界目录>/village_path_smoothed.json，可在游戏内用 /vps world on|off 切换。",

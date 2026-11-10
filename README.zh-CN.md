@@ -288,6 +288,7 @@ mod 在结构开始处检测模板路径里的 `/zombie/`，在求解前直接�
 | 选项 | 默认值 | 含义 |
 |---|---|---|
 | `enabled`（全局） | `true` | 仅作播种默认值：创建世界时没动过创建界面开关的世界以此起步。每个世界自己的开关存在 `<世界>/village_path_smoothed.json` 并覆盖它；游戏内用 `/vps world on\|off` 切换。 |
+| `roadSmoothing.enabled` | `true` | 改写本身的总开关。`false` = 不建路网掩膜、不压制原版路面、不写入，村庄完全按原版生成（与 tooltip 承诺一致）；它在压制上下文开启之前读取，不是写入端的模式开关。 |
 | `roadSmoothing.objective` | `SMOOTH_FIRST` | `SMOOTH_FIRST` 按断崖惩罚 > 总台阶数 > 地形偏差排序；`MIN_DEVIATION` 把偏差与台阶数加权合并；`SHORTEST_CATCHUP` 贴地并在合法台阶内尽快追上；`HYBRID` 混合两者（`hybridWeightDeviation`）。 |
 | `roadSmoothing.roadShapeStage` | `T1_5` | `T1_5` 在结构拼装期求解剖面并平移建筑；`T5` 是旧的落位期求解，不平移建筑（回退 / A-B 对比用）。 |
 | `roadSmoothing.maxBuildingShift` | `0` | 建筑组件竖向平移上限（格）（`0` = 不限，仅受世界高度钳制）。 |

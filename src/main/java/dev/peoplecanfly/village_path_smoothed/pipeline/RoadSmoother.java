@@ -80,17 +80,6 @@ public final class RoadSmoother {
 	 */
 	private static final int STATE_BUDGET = 15_625;
 
-	/**
-	 * Cap on the polish pass's projection sweeps (fix plan v4 A-1). The sweep only
-	 * runs for cells whose already-fixed neighbours disagree, and it converges -
-	 * but cyclic projection carries information one hop per sweep, so the cap has
-	 * to cover the network's diameter (a few hundred for a large village). Each
-	 * sweep is linear in the edge count and the loop exits as soon as nothing
-	 * moves, so the cap is a worst-case bound, not a cost. Whatever survives it is
-	 * reported as a residual step violation, never silently.
-	 */
-	private static final int PROJECTION_SWEEPS = 512;
-
 public record SolveParams(
 		Objective objective,
 		int hybridWeightScaled,
@@ -121,8 +110,8 @@ public record SolveParams(
 	 * @param polish what the A-1 polish pass had to do to make the profile legal
 	 */
 	public record SolveStats(int candidateContradictions, int residualViolations, int worstStep,
-			int waterAnchorDeviations, int phase3Refusals, PolishStats polish) {
-		public static final SolveStats EMPTY = new SolveStats(0, 0, 0, 0, 0, PolishStats.EMPTY);
+			int waterAnchorDeviations, int phase3Refusals, int freeFreeResiduals, PolishStats polish) {
+		public static final SolveStats EMPTY = new SolveStats(0, 0, 0, 0, 0, 0, PolishStats.EMPTY);
 
 		/** Cells the polish pass had to move (fix plan v4 A-1, decision N3-a). */
 		public int polishMoved() {
@@ -143,6 +132,18 @@ public record SolveParams(
 		public int polishConflicts() {
 			return polish.conflictingNeighbours();
 		}
+
+		/**
+		 * 2026-11-10 audit D-1: residual {@code |dP| > 1} edges whose BOTH
+		 * endpoints are free cells (neither is a physically immovable pin). The
+		 * documented "a free<->free residual is impossible by construction" only
+		 * holds at a fixed point of the projection; the sweep cap can truncate it,
+		 * and this counter makes such a truncation visible instead of letting
+		 * {@code polish conflicts} report 0.
+		 */
+		public int freeFreeResiduals() {
+			return freeFreeResiduals;
+		}
 	}
 
 	/** What the polish pass did (fix plan v4 A-1, decision N3-a). */
@@ -157,6 +158,7 @@ public record SolveParams(
 		int worstStep;
 		int waterAnchorDeviations;
 		int phase3Refusals;
+		int freeFreeResiduals;
 		int polishMoved;
 		int polishMaxDelta;
 		int polishDeltaP90;
@@ -164,7 +166,8 @@ public record SolveParams(
 
 		SolveStats toStats() {
 			return new SolveStats(candidateContradictions, residualViolations, worstStep, waterAnchorDeviations,
-					phase3Refusals, new PolishStats(polishMoved, polishMaxDelta, polishDeltaP90, polishConflicts));
+					phase3Refusals, freeFreeResiduals,
+					new PolishStats(polishMoved, polishMaxDelta, polishDeltaP90, polishConflicts));
 		}
 	}
 
@@ -287,6 +290,14 @@ public record SolveParams(
 				if (d > 1) {
 					stats.residualViolations++;
 					stats.worstStep = Math.max(stats.worstStep, d);
+					// 2026-11-10 audit D-1: `polish conflicts` counts cells, and a
+					// truncating projection sweep can leave a residual edge with a
+					// zero conflict count. Both free endpoints means the corridor is
+					// supposed to have made this edge legal, so it is the one class
+					// that can only come from the sweep cap / an empty corridor.
+					if (!pinnedCells.get(i) && !pinnedCells.get(j)) {
+						stats.freeFreeResiduals++;
+					}
 				}
 			}
 		}
@@ -308,9 +319,17 @@ public record SolveParams(
 	// polish pass (fix plan v4 A-1, decision N3-a)
 	// ------------------------------------------------------------------
 
+	/** Compact a boxed list into an int array. */
+	private static int[] toArray(List<Integer> values) {
+		int[] out = new int[values.size()];
+		for (int i = 0; i < out.length; i++) {
+			out[i] = values.get(i);
+		}
+		return out;
+	}
+
 	/**
-	 * Makes the profile legal by construction, walking outwards from one seed per
-	 * 4-connected component.
+	 * Makes the profile legal (fix plan v4 A-1, N3-a).
 	 *
 	 * <p>Why it is needed at all: the block pipeline optimises arms by exact DP and
 	 * junctions by ICM, and six structural defects leave residual edges with
@@ -318,27 +337,14 @@ public record SolveParams(
 	 * legal on any graph - so that residual is a property of the pipeline, not of
 	 * the terrain, and one post-pass removes all of them.
 	 *
-	 * <p>Construction: fix the seed, then BFS. When a cell is reached, every edge
-	 * to an already-fixed neighbour is satisfied by clamping the cell into that
-	 * neighbour's [v-1, v+1]; each edge therefore has exactly one later endpoint,
-	 * which is legal by construction. The pinned cells are fixed beforehand AND
-	 * act as wave sources, and the seed is clamped like any other cell when it
-	 * already has fixed neighbours - otherwise a pinned wall could freeze whole
-	 * pockets at their DP values (dead-seed finding, 2026-10-16).
-	 *
-	 * <p>One case escapes that argument: a cell whose two already-fixed neighbours
-	 * disagree by 2 or more has <em>no</em> legal value (lo > hi), because both
-	 * ends of those edges are frozen by then. Those cells are counted
-	 * ({@link PolishStats#conflictingNeighbours()}) and handed to a projection
-	 * sweep, the textbook repair for difference constraints: the feasible set
-	 * {|Pu - Pv| <= 1} is convex (an intersection of slabs), cyclic projection
-	 * onto a violated slab converges, and projecting both endpoints half the
-	 * excess makes that edge legal within the sweep on the integer lattice.
-	 *
-	 * <p>Why the seed is the component's centre: v3 measured 234 violating edges
-	 * when starting from a network end against 0 from the centre, a 28x
-	 * difference. An end seed sits on vanilla terrain, so the error pours inwards
-	 * from there.
+	 * <p>2026-11-10: the pre-2026-10-17 text above {@link #toArray} still described
+	 * "walk outwards from the component centre by BFS". That implementation is
+	 * gone; the current construction is: flatten every unit (movable plaza group /
+	 * bare-seat component), propagate 1-Lipschitz lower/upper envelopes out of all
+	 * fixed seeds, clamp every free cell into {@code [L,U]}, then run a bounded
+	 * coordinate projection inside the corridor and let the units answer. Only
+	 * {@link #legaliseFreeCells} may be described as "clamp into the neighbours'
+	 * [v-1, v+1]"; the centre-seed BFS and its 28x measurement no longer apply.
 	 *
 	 * <p>Decision N3-a: the result is adopted unconditionally, so one cell may be
 	 * dragged several whole blocks. That is what "no drop larger than half a block"
@@ -354,14 +360,6 @@ public record SolveParams(
 	 * silently legalising it would be the "quietly break the no-cut promise" the
 	 * plan forbids.
 	 */
-	private static int[] toArray(List<Integer> values) {
-		int[] out = new int[values.size()];
-		for (int i = 0; i < out.length; i++) {
-			out[i] = values.get(i);
-		}
-		return out;
-	}
-
 	private static PolishStats polish(RoadNetwork net, boolean allowCut, BitSet pinnedCells) {
 		int n = net.cells.size();
 		if (n == 0) {
@@ -401,9 +399,11 @@ public record SolveParams(
 		}
 		// A unit may have moved in the last round above; reconcile the pair
 		// distances once more and assign the free cells around the final levels.
-		// The corridor construction is what makes every free<->free edge legal
-		// without a cyclic repair loop, and what leaves only a physical
-		// immovable<->immovable pinch visible.
+		// The corridor plus the projection fixed point is what makes a
+		// free<->free edge legal without a cyclic repair loop (2026-11-10 audit
+		// D-1: the sweep cap can truncate the projection, so this is "legal once
+		// converged", not "impossible by construction"); the residual visible to
+		// the final verification is counted as `free<->free residuals`.
 		coordinateUnits(net, units, unitConflicts);
 		conflicts = legaliseFreeCells(net, units, pinnedCells, allowCut) + unitConflicts[0];
 
@@ -2021,10 +2021,12 @@ public record SolveParams(
 				cellCosts[i][v] = cost.cellCost(cell, candidates[i][v]);
 			}
 		}
-		long[][][] trans = new long[Math.max(0, n - 1)][][];
-		for (int i = 0; i < n - 1; i++) {
-			trans[i] = cost.transitionMatrix(candidates[i], candidates[i + 1], soft);
-		}
+		// 2026-11-10 audit E-1: the transition cost is computed inline instead of
+		// materialising a long[n-1][(2w+1)][(2w+1)] matrix. That matrix was the only
+		// unbounded allocation here (the arm DP's STATE_BUDGET constrains states per
+		// slice, which for a 1-D ICM run is a no-op), and every entry was read
+		// exactly once. transitionCost is a pure function of the two values, so the
+		// result is bit-identical to the matrix version.
 		long[] dp = new long[candidates[0].length];
 		System.arraycopy(cellCosts[0], 0, dp, 0, dp.length);
 		int[][] back = new int[n][];
@@ -2039,7 +2041,7 @@ public record SolveParams(
 					if (dp[u] >= Long.MAX_VALUE / 2) {
 						continue; // unreachable in a hard pass
 					}
-					long c = dp[u] + trans[i - 1][u][v];
+					long c = dp[u] + cost.transitionCost(candidates[i - 1][u], candidates[i][v], soft);
 					if (c < best) {
 						best = c;
 						bestU = u;
@@ -2273,19 +2275,18 @@ public record SolveParams(
 			return out;
 		}
 
-		long[][] transitionMatrix(int[] valuesA, int[] valuesB, boolean soft) {
-			long[][] out = new long[valuesA.length][valuesB.length];
-			for (int a = 0; a < valuesA.length; a++) {
-				for (int b = 0; b < valuesB.length; b++) {
-					int delta = Math.abs(valuesA[a] - valuesB[b]);
-					if (!soft && delta > 1) {
-						out[a][b] = Long.MAX_VALUE / 4;
-					} else {
-						out[a][b] = edgeCost(valuesA[a], valuesB[b]);
-					}
-				}
+		/**
+		 * One DP transition cost. {@code optimizeRun} calls this instead of
+		 * materialising a whole matrix, so a long ICM run does not allocate an
+		 * {@code n x (2w+1)^2} array (audit E-1). The arm DP keeps
+		 * {@link #edgeCostMatrix}, which is a different (non-soft) shape.
+		 */
+		long transitionCost(int a, int b, boolean soft) {
+			int delta = Math.abs(a - b);
+			if (!soft && delta > 1) {
+				return Long.MAX_VALUE / 4;
 			}
-			return out;
+			return edgeCost(a, b);
 		}
 
 		private long edgeCost(int a, int b) {

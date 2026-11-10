@@ -322,8 +322,15 @@ public final class RoadCollector {
 				continue;
 			}
 			pieceCount++;
-			collectPiece(poolPiece, singleElement, location, style, townCentre, pieceIndex, templateManager, ctx, config,
-					cellsByPos, seats, plazaFootprint, streetScenery, allSeatColumns, decorPools);
+			try {
+				collectPiece(poolPiece, singleElement, location, style, townCentre, pieceIndex, templateManager, ctx, config,
+						cellsByPos, seats, plazaFootprint, streetScenery, allSeatColumns, decorPools);
+			} catch (Throwable t) {
+				// 2026-11-10 audit G-4: one bad piece costs its own cells, never the
+				// whole village (an Error here used to escape collect() entirely and
+				// leave every street vanilla - the opposite of "one failure, one cell").
+				VillagePathSmoothed.LOGGER.warn("[VPS] could not read street template {}; its cells stay vanilla", location, t);
+			}
 		}
 
 		// Decor seats join the mask AFTER the road cells and WIN a shared column
@@ -516,8 +523,11 @@ public final class RoadCollector {
 		StructureTemplate template;
 		try {
 			template = VpsCompat.loadTemplate(templateManager, location);
-		} catch (Exception e) {
-			VillagePathSmoothed.LOGGER.warn("[VPS] could not load street template {}", location, e);
+		} catch (Throwable t) {
+			// 2026-11-10 audit G-4: an Error here (a version/class-loading drift)
+			// used to escape the whole collect and hand the entire village back to
+			// vanilla. A single unreadable piece must cost only its own cells.
+			VillagePathSmoothed.LOGGER.warn("[VPS] could not load street template {}", location, t);
 			return;
 		}
 		List<StructureTemplate.Palette> palettes = ((StructureTemplateVpsAccess) template).village_path_smoothed$getPalettes();
@@ -901,13 +911,24 @@ public final class RoadCollector {
 	private static Pattern patternFor(VillagePathSmoothedConfig config) {
 		String source = config.roadSmoothing.roadPiecesRegex;
 		Pattern pattern = cachedPattern;
-		if (pattern == null || !source.equals(cachedPatternSource)) {
-			pattern = Pattern.compile(source);
-			cachedPatternSource = source;
-			cachedPattern = pattern;
+		// 2026-11-10 audit G-3: the two volatile fields used to be written
+		// separately, so a concurrent `/vps config reload` could be observed with the
+		// new source and the OLD pattern (or vice versa) and a village would be
+		// matched with the wrong regex. A single immutable holder makes the pair
+		// update atomically.
+		PatternCache cache = CACHE;
+		if (cache != null && source.equals(cache.source)) {
+			return cache.pattern;
 		}
-		return pattern;
+		Pattern compiled = Pattern.compile(source);
+		CACHE = new PatternCache(source, compiled);
+		return compiled;
 	}
+
+	private record PatternCache(String source, Pattern pattern) {
+	}
+
+	private static volatile PatternCache CACHE;
 
 	public static boolean hasCustomRegex(VillagePathSmoothedConfig config) {
 		// Fix plan analysis 2026-10-15 (section 4.2): this used to compare against

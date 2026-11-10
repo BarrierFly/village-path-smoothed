@@ -222,7 +222,21 @@ public final class RoadWriter {
 	 * source block go down WATERLOGGED instead of silently displacing the water.
 	 */
 	public static final AtomicLong WATERLOGGED_PLACEMENTS = new AtomicLong();
-	private static volatile boolean warnedClampedWrites;
+	/**
+	 * 2026-11-10 audit A-2: a plaza or fixture-base cell whose write threw. The
+	 * normal path renders those by their own rigid pieces, so the per-cell
+	 * fallback must NOT pave them with a road block - it yields and counts here.
+	 */
+	public static final AtomicLong PLAZA_OR_FIXTURE_FALLBACK_REFUSED = new AtomicLong();
+	/**
+	 * 2026-11-10 audit A-4: a ground-overlap cell whose write threw. Nothing is
+	 * written (the source structure ground decides the column), so this is the
+	 * only trace that the column may be a hole; a non-zero count means the solve
+	 * vs writes reconciliation cannot be trusted for that village.
+	 */
+	public static final AtomicLong GROUND_OVERLAP_WRITE_FAILED = new AtomicLong();
+	private static final AtomicLong GROUND_OVERLAP_FAILED_WARNED = new AtomicLong();
+	private static final AtomicLong GROUND_GROUND_ID_WARNED = new AtomicLong();
 	private static volatile boolean warnedFallbackReanchors;
 
 	private RoadWriter() {
@@ -273,8 +287,20 @@ public final class RoadWriter {
 				// unconditional surface pin with the same guarded nudge every other
 				// fallback uses: it is the only height that is trustworthy at write
 				// time, and it is only used when it cannot step.
-				if (!cell.groundOverlap) {
-					writeSurfaceFallback(net, cell, ctx, config, table, shiftedComponents);
+				//
+				// 2026-11-10 audit A-2/A-3/A-4: every cell kind that must NOT get a
+				// road block has to be excluded HERE as well - the normal-path early
+				// returns are bypassed when they throw. A plaza/fixture/ground cell
+				// stays counted and observable instead of being paved over, and the
+				// fallback write also honours the building mask.
+				if (cell.groundOverlap) {
+					GROUND_OVERLAP_WRITE_FAILED.incrementAndGet();
+					warnGroundOverlapFailed(cell);
+				} else if (cell.plaza || cell.fixtureBase) {
+					PLAZA_OR_FIXTURE_FALLBACK_REFUSED.incrementAndGet();
+				} else {
+					writeSurfaceFallback(net, cell, ctx, config, table, shiftedComponents,
+							buildingMask);
 				}
 			}
 		}
@@ -317,8 +343,9 @@ public final class RoadWriter {
 			if (block == null) {
 				continue;
 			}
-			setBlock(ctx, x, y, z, block.defaultBlockState());
-			DECOR_BASE_RESTORED.incrementAndGet();
+			if (setBlock(ctx, x, y, z, block.defaultBlockState())) {
+				DECOR_BASE_RESTORED.incrementAndGet();
+			}
 		}
 	}
 
@@ -375,9 +402,15 @@ public final class RoadWriter {
 	 * so a cell whose write threw cannot become a step against its neighbours
 	 * either. It is refused (and counted) when the nudge is not legal, which is
 	 * the one case where a claimed column has no road block at all.
+	 *
+	 * <p>2026-11-10 audit A-3: the write also has to honour plan A. The normal
+	 * path returns before writing when the road block would land inside the
+	 * building body; a thrown cell used to skip that gate and could pave a house
+	 * interior.
 	 */
 	private static void writeSurfaceFallback(RoadNetwork net, RoadCell cell, VpsGenContext ctx,
-			VillagePathSmoothedConfig config, RoadMaterialTable table, int[][] shiftedComponents) {
+			VillagePathSmoothedConfig config, RoadMaterialTable table, int[][] shiftedComponents,
+			BuildingMask buildingMask) {
 		if (cell.seat) {
 			writeSeatFallback(cell, ctx, config);
 			return;
@@ -393,13 +426,25 @@ public final class RoadWriter {
 				return;
 			}
 			Block road = table.forStyle(cell.style).roadBlock;
-			if (!setBlockUnlessProtected(ctx, cell.x,
-					RoadWritePolicy.roadBlockY(column.walkSurface2(), column.slab()), cell.z,
+			int writeY = RoadWritePolicy.roadBlockY(column.walkSurface2(), column.slab());
+			if (config.roadSmoothing.protectBuildings
+					&& RoadWritePolicy.insideBuildingAt(buildingMask, cell.x, writeY, cell.z)) {
+				// Plan A wins here too (audit A-3): no road block through a
+				// building body or its protected interior.
+				BUILDING_CELLS_SKIPPED.incrementAndGet();
+				return;
+			}
+			if (!setBlockUnlessProtected(ctx, cell.x, writeY, cell.z,
 					road.defaultBlockState(), FEATURE_ROAD_BLOCKS_SKIPPED)) {
 				return;
 			}
 			VpsPipeline.SURFACE_FALLBACK_WRITES.incrementAndGet();
 			NUDGED_WRITES.incrementAndGet();
+			// 2026-11-10 audit B-1: a fallback DOES write a road block, so it also
+			// counts as a written cell. Without this the `/vps stats` reconciliation
+			// `delta = suppressed - written` overstated the hole count by exactly
+			// the fallback count, and the seat/ground fallbacks already count it.
+			VpsPipeline.ROAD_CELLS_WRITTEN.incrementAndGet();
 		} catch (Throwable t) {
 			VillagePathSmoothed.LOGGER.debug("[VPS] surface fallback failed at {} {}", cell.x, cell.z, t);
 		}
@@ -482,6 +527,9 @@ public final class RoadWriter {
 		boolean mudBricks = !groundId.equals(cell.groundBlock);
 		Block ground = VpsCompat.blockById(groundId);
 		if (ground == null) {
+			// 2026-11-10 audit A-4: silence here left an invisible hole. The
+			// vanilla-rendered ground stays as generated; count and warn once.
+			warnGroundBlockUnresolved(cell, groundId);
 			return;
 		}
 		int targetY = RoadWritePolicy.roadBlockY(cell.solvedP, false);
@@ -533,7 +581,11 @@ public final class RoadWriter {
 			setBlockUnlessProtected(ctx, cell.x, y, cell.z, Blocks.DIRT.defaultBlockState(),
 					FEATURE_FILL_BLOCKS_SKIPPED);
 		}
-		setBlock(ctx, cell.x, targetY, cell.z, ground.defaultBlockState());
+		// 2026-11-10 audit B-4: only count a ground block the world accepted.
+		boolean groundWritten = setBlock(ctx, cell.x, targetY, cell.z, ground.defaultBlockState());
+		if (!groundWritten) {
+			return;
+		}
 		if (mudBricks) {
 			// counted only when the mud bricks are actually written; a refused
 			// write takes the swapRenderedDirtPath path below instead
@@ -621,8 +673,9 @@ public final class RoadWriter {
 	}
 
 	private static void replaceWithMudBricks(VpsGenContext ctx, int x, int y, int z) {
-		setBlock(ctx, x, y, z, Blocks.MUD_BRICKS.defaultBlockState());
-		VpsPipeline.STRUCTURE_MUD_BRICK_CELLS.incrementAndGet();
+		if (setBlock(ctx, x, y, z, Blocks.MUD_BRICKS.defaultBlockState())) {
+			VpsPipeline.STRUCTURE_MUD_BRICK_CELLS.incrementAndGet();
+		}
 	}
 
 	private static boolean moveGroundBlock(VpsGenContext ctx, RoadCell cell, BuildingMask buildingMask,
@@ -640,7 +693,10 @@ public final class RoadWriter {
 		if (state.isAir()) {
 			return false;
 		}
-		setBlock(ctx, cell.x, newY, cell.z, state);
+		// 2026-11-10 audit B-4: only report a move when both writes landed.
+		if (!setBlock(ctx, cell.x, newY, cell.z, state)) {
+			return false;
+		}
 		setBlock(ctx, cell.x, oldY, cell.z, Blocks.AIR.defaultBlockState());
 		VpsPipeline.GROUND_OVERLAP_BLOCKS_MOVED.incrementAndGet();
 		return true;
@@ -686,10 +742,18 @@ public final class RoadWriter {
 				trySwapDirtPathAt(ctx, x, RoadWritePolicy.roadBlockY(cell.solvedP, false), z);
 			}
 			PLAZA_CELLS_VANILLA.incrementAndGet();
-			RoadMaterialTable.StyleMaterials plazaMaterials = table.forStyle(cell.style);
-			applyKerbsAndRailings(net, cell, ctx, config, plazaMaterials,
-					RoadWritePolicy.roadTopBlockY(cell.solvedP), cell.solvedP, sideFacts, countedEdgeColumns,
-					buildingMask, doorFronts, RoadWritePolicy.NO_CEILING);
+			try {
+				RoadMaterialTable.StyleMaterials plazaMaterials = table.forStyle(cell.style);
+				applyKerbsAndRailings(net, cell, ctx, config, plazaMaterials,
+						RoadWritePolicy.roadTopBlockY(cell.solvedP), cell.solvedP, sideFacts, countedEdgeColumns,
+						buildingMask, doorFronts, RoadWritePolicy.NO_CEILING);
+			} catch (Throwable t) {
+				// 2026-11-10 audit A-2 (root fix): the plaza's edge dressing is
+				// cosmetic, exactly like the ceiling-end wrap and the kerb end cap.
+				// Letting it escape routed the cell into the road-block fallback,
+				// which paved over the rigid platform the fountain/well rides on.
+				VillagePathSmoothed.LOGGER.debug("[VPS] plaza edge details failed at {} {}", x, z, t);
+			}
 			return;
 		}
 
@@ -811,12 +875,17 @@ public final class RoadWriter {
 				: profileWalkSurface2;
 		if (crossing) {
 			if (scaffold) {
+				// 2026-11-10 audit B-2: the crossing predicate is exactly
+				// `waterAtWt || waterBelow`, and the written surface of a scaffold is
+				// raised to the water surface, so the scaffold block always sits at
+				// wt. The old three-way split therefore partitioned into
+				// water-self / water-below only and the "dry" slot could never fire.
+				// It has been removed from /vps stats instead of printing a
+				// permanently-zero column.
 				if (waterAtWt) {
 					VpsPipeline.SCAFFOLD_WATER_SELF.incrementAndGet();
-				} else if (waterBelow) {
-					VpsPipeline.SCAFFOLD_WATER_BELOW.incrementAndGet();
 				} else {
-					VpsPipeline.SCAFFOLD_DRY.incrementAndGet();
+					VpsPipeline.SCAFFOLD_WATER_BELOW.incrementAndGet();
 				}
 			} else {
 				WATER_BRIDGE_CELLS.incrementAndGet();
@@ -855,6 +924,12 @@ public final class RoadWriter {
 		}
 
 		int ceilingBottomY = RoadWritePolicy.NO_CEILING;
+		// 2026-11-10 audit B-1/B-4: `ROAD_CELLS_WRITTEN` is the other half of the
+		// `/vps stats` reconciliation `delta = suppressed - written`, so it counts
+		// a road cell only when its walk-surface block was really accepted by the
+		// world (a protected decoration or a refused write leaves a gap, which the
+		// delta is supposed to show).
+		boolean surfaceWritten = false;
 		if (config.roadSmoothing.enabled) {
 			// The walk surface and the support fill are separate materials now:
 			// the non-desert surface is mud bricks, while the fill below it stays
@@ -873,7 +948,7 @@ public final class RoadWriter {
 				BlockState roadState = slab
 						? materials.slabBlock.defaultBlockState()
 						: roadBlock.defaultBlockState();
-				setWaterloggableBlockUnlessProtected(ctx, x, roadTopBlockY, z, roadState,
+				surfaceWritten = setWaterloggableBlockUnlessProtected(ctx, x, roadTopBlockY, z, roadState,
 						FEATURE_ROAD_BLOCKS_SKIPPED);
 			} else if (scaffold) {
 				// Pure scaffold deck (user decision 2026-10-15): the scaffold IS
@@ -886,6 +961,7 @@ public final class RoadWriter {
 				// which is the knowingly accepted Q04 behaviour.
 				if (placeScaffolding(ctx, x, z, roadTopBlockY, isWater(ctx, x, roadTopBlockY, z), config)) {
 					VpsPipeline.SCAFFOLDS_PLACED.incrementAndGet();
+					surfaceWritten = true;
 				}
 			} else {
 				// Support below the walk surface, down to the ground the downward
@@ -909,7 +985,7 @@ public final class RoadWriter {
 				BlockState roadState = slab
 						? materials.slabBlock.defaultBlockState()
 						: roadBlock.defaultBlockState();
-				setWaterloggableBlockUnlessProtected(ctx, x, roadTopBlockY, z, roadState,
+				surfaceWritten = setWaterloggableBlockUnlessProtected(ctx, x, roadTopBlockY, z, roadState,
 						FEATURE_ROAD_BLOCKS_SKIPPED);
 			}
 			// User decision 2026-10-17: the clear end is re-read from the real
@@ -959,7 +1035,9 @@ public final class RoadWriter {
 				}
 			}
 		}
-		VpsPipeline.ROAD_CELLS_WRITTEN.incrementAndGet();
+		if (surfaceWritten) {
+			VpsPipeline.ROAD_CELLS_WRITTEN.incrementAndGet();
+		}
 
 		// ---- kerbs and railings on side edges (5.5)
 		applyKerbsAndRailings(net, cell, ctx, config, materials, roadTopBlockY, writtenWalkSurface2,
@@ -1001,14 +1079,14 @@ public final class RoadWriter {
 		boolean capFormed = RoadWritePolicy.capFormedCeiling(clearTop, highestBlockY, maxClearLayers, ceilingBottomY);
 		boolean protectedBlock = RoadWritePolicy.insideBuildingAt(buildingMask, x, ceilingBottomY, z);
 		if (capFormed && middle) {
-			if (!protectedBlock) {
-				setBlock(ctx, x, ceilingBottomY, z, Blocks.GLOWSTONE.defaultBlockState());
+			if (!protectedBlock
+					&& setBlock(ctx, x, ceilingBottomY, z, Blocks.GLOWSTONE.defaultBlockState())) {
 				CEILING_GLOWSTONE_PLACED.incrementAndGet();
 			}
 			return; // the glowstone IS the one ceiling layer
 		}
-		if (!protectedBlock) {
-			setBlock(ctx, x, ceilingBottomY, z, materials.kerbBlock.defaultBlockState());
+		if (!protectedBlock
+				&& setBlock(ctx, x, ceilingBottomY, z, materials.kerbBlock.defaultBlockState())) {
 			ROOF_LINED_BLOCKS.incrementAndGet();
 		}
 		if (!capFormed && middle) {
@@ -1111,11 +1189,13 @@ public final class RoadWriter {
 				runWrapped = false;
 				continue;
 			}
-			setBlock(ctx, cell.x, y, cell.z, materials.kerbBlock.defaultBlockState());
+			// 2026-11-10 audit B-4: keep CEILING_END_BLOCKS honest.
+			if (setBlock(ctx, cell.x, y, cell.z, materials.kerbBlock.defaultBlockState())) {
+				CEILING_END_BLOCKS.incrementAndGet();
+			}
 			last = y;
 			runWrapped = true;
 			placed = true;
-			CEILING_END_BLOCKS.incrementAndGet();
 		}
 		if (runWrapped) {
 			placeKerbRailing(ctx, cell.x, cell.z, last + 1, buildingMask, doorFronts, skipRailingsAtDoors, materials);
@@ -1181,7 +1261,11 @@ public final class RoadWriter {
 		// configured fillMaterial still overrides it.
 		Block fillBlock = materials.fillBlock;
 		if (!"STYLE_ROAD".equals(config.roadSmoothing.fillMaterial)) {
-			Block configured = VpsCompat.blockById(config.roadSmoothing.fillMaterial);
+			// 2026-11-10 audit H-8: RoadMaterialTable.resolve lowercases the id, this
+			// path did not, so "MINECRAFT:dirt" was judged unknown and silently kept
+			// the style fill. Locale.ROOT keeps it locale-independent.
+			String id = config.roadSmoothing.fillMaterial;
+			Block configured = id == null ? null : VpsCompat.blockById(id.trim().toLowerCase(java.util.Locale.ROOT));
 			if (configured != null) {
 				fillBlock = configured;
 			}
@@ -1250,6 +1334,34 @@ public final class RoadWriter {
 	}
 
 	/**
+	 * 2026-11-10 audit A-4: a ground-overlap column whose write threw leaves no
+	 * block at all (the vanilla ground was suppressed). Warn once per process so
+	 * the hole is discoverable; the counter carries the volume.
+	 */
+	private static void warnGroundOverlapFailed(RoadCell cell) {
+		if (GROUND_OVERLAP_FAILED_WARNED.incrementAndGet() > 4) {
+			return;
+		}
+		VillagePathSmoothed.LOGGER.warn("[VPS] structure ground at {} {} {} could not be written; the vanilla block was already suppressed, so the column stays empty",
+				cell.x, cell.groundOldBlockY, cell.z);
+	}
+
+	/**
+	 * 2026-11-10 audit A-4: an unparseable or unknown ground id used to return
+	 * silently, and (before H-1) a well-formed unknown id returned AIR, so the
+	 * column was cleared and then counted as written. Both paths now count and
+	 * warn once, leaving the vanilla-rendered ground untouched.
+	 */
+	private static void warnGroundBlockUnresolved(RoadCell cell, String groundId) {
+		VpsPipeline.GROUND_OVERLAP_RESOLVE_FAILED.incrementAndGet();
+		if (GROUND_GROUND_ID_WARNED.incrementAndGet() > 4) {
+			return;
+		}
+		VillagePathSmoothed.LOGGER.warn("[VPS] structure ground block id '{}' at {} {} cannot be resolved; left the column as generated",
+				groundId, cell.x, cell.z);
+	}
+
+	/**
 	 * Fix plan v4 R2-3: the model-vs-real deviation of one written cell.
 	 *
 	 * <p>The solver's {@code baseP} is the <b>noise model</b>, not the world: the
@@ -1284,8 +1396,11 @@ public final class RoadWriter {
 		if (DEVIATION_WARNED.compareAndSet(false, true)) {
 			VillagePathSmoothed.LOGGER.warn("[VPS] village at {}: road cell {} is {} half units ({} blocks) from the real terrain, past surfaceDeviationWarnBlocks={}. The solver works on the noise model - it runs before the village has any terrain, so carvers and terrain adaptation are invisible to it - so a non-zero deviation is expected. It is reported here and NOT corrected: the road still follows the solution.",
 					village, cell.x + " " + cell.z, dev, dev / 2.0, config.roadSmoothing.surfaceDeviationWarnBlocks);
-		} else if (dev > worst) {
-			// keep the worst known number visible without warning per cell
+		} else if (dev >= worst) {
+			// 2026-11-10 audit P3: this used to read `dev > worst`, which is dead
+			// code because `worst` is the post-update maximum and therefore always
+			// >= dev. `>=` records a NEW worst (dev == worst means this cell set it).
+			// Keep the worst known number visible without warning per cell.
 			VillagePathSmoothed.LOGGER.debug("[VPS] village at {}: worst model-vs-terrain deviation so far {} half units at cell {} {}",
 					village, worst, cell.x, cell.z);
 		}
@@ -1552,8 +1667,11 @@ public final class RoadWriter {
 					continue;
 				}
 				runTopY = y;
-				setBlock(ctx, x, y, z, materials.kerbBlock.defaultBlockState());
-				placed = true;
+				// 2026-11-10 audit B-4: `placed` means "a block was really put
+				// into the world", so a write the level refused must not count a
+				// kerb. runTopY still tracks the terrain top (the run shape is a
+				// function of the probe, not of the write result).
+				placed |= setBlock(ctx, x, y, z, materials.kerbBlock.defaultBlockState());
 				runWrapped = true;
 				topWrittenY = y;
 				continue;
@@ -1704,8 +1822,7 @@ public final class RoadWriter {
 						continue;
 					}
 					runTopY = y;
-					setBlock(ctx, outX, y, outZ, materials.kerbBlock.defaultBlockState());
-					placed = true;
+					placed |= setBlock(ctx, outX, y, outZ, materials.kerbBlock.defaultBlockState());
 					runWrapped = true;
 					continue;
 				}
@@ -1775,8 +1892,9 @@ public final class RoadWriter {
 		if (leaves.hasProperty(LeavesBlock.PERSISTENT)) {
 			leaves = leaves.setValue(LeavesBlock.PERSISTENT, true);
 		}
-		setWaterloggableBlock(ctx, x, walkSurfaceY, z, leaves);
-		VpsPipeline.RAILINGS_PLACED.incrementAndGet();
+		if (setWaterloggableBlock(ctx, x, walkSurfaceY, z, leaves)) {
+			VpsPipeline.RAILINGS_PLACED.incrementAndGet();
+		}
 	}
 
 	/**
@@ -1786,12 +1904,17 @@ public final class RoadWriter {
 	 * water it was placed into). Full road blocks (dirt path, sandstone) are not
 	 * waterloggable and never route through here.
 	 */
-	private static void setWaterloggableBlock(VpsGenContext ctx, int x, int y, int z, BlockState state) {
+	private static boolean setWaterloggableBlock(VpsGenContext ctx, int x, int y, int z, BlockState state) {
+		boolean waterlogged = false;
 		if (state.hasProperty(BlockStateProperties.WATERLOGGED) && isWater(ctx, x, y, z)) {
 			state = state.setValue(BlockStateProperties.WATERLOGGED, true);
+			waterlogged = true;
+		}
+		boolean written = setBlock(ctx, x, y, z, state);
+		if (written && waterlogged) {
 			VpsPipeline.WATERLOGGED_PLACEMENTS.incrementAndGet();
 		}
-		setBlock(ctx, x, y, z, state);
+		return written;
 	}
 
 	/**
@@ -1835,10 +1958,10 @@ public final class RoadWriter {
 				.setValue(ScaffoldingBlock.DISTANCE, distance)
 				.setValue(ScaffoldingBlock.BOTTOM, bottom)
 				.setValue(ScaffoldingBlock.WATERLOGGED, waterlogged);
-		setBlock(ctx, x, scaffoldY, z, state);
-		return true;
+		// 2026-11-10 audit B-4: report the world's answer, so SCAFFOLDS_PLACED stays
+		// honest if the level refuses the block.
+		return setBlock(ctx, x, scaffoldY, z, state);
 	}
-
 	/** True when the column has water at this exact Y (block or fluid state). */
 	private static boolean isWater(VpsGenContext ctx, int x, int y, int z) {
 		if (ctx.blockState(x, y, z).is(Blocks.WATER)) {
@@ -2030,8 +2153,11 @@ public final class RoadWriter {
 			skipped.incrementAndGet();
 			return false;
 		}
-		setBlock(ctx, x, y, z, state);
-		return true;
+		// 2026-11-10 audit B-4: propagate the world's own answer, so a write the
+		// level refused (outside the world-gen write radius) is not counted as
+		// placed. Latent today because every target is pre-filtered, but the
+		// counter semantics were wrong.
+		return setBlock(ctx, x, y, z, state);
 	}
 
 	/** {@link #setBlockUnlessProtected} for waterloggable road slabs. */
@@ -2049,14 +2175,14 @@ public final class RoadWriter {
 			skipped.incrementAndGet();
 			return false;
 		}
-		setWaterloggableBlock(ctx, x, y, z, state);
-		return true;
+		return setWaterloggableBlock(ctx, x, y, z, state);
 	}
 
-	private static void setBlock(VpsGenContext ctx, int x, int y, int z, BlockState state) {
+	/** @return true when the world accepted the block (audit B-4). */
+	private static boolean setBlock(VpsGenContext ctx, int x, int y, int z, BlockState state) {
 		if (y < ctx.getMinY() || y > ctx.getMaxY()) {
-			return;
+			return false;
 		}
-		ctx.level.setBlock(new BlockPos(x, y, z), state, WRITE_FLAGS);
+		return ctx.level.setBlock(new BlockPos(x, y, z), state, WRITE_FLAGS);
 	}
 }

@@ -57,6 +57,14 @@ public final class VpsPipeline {
 	public static final AtomicLong SCAFFOLDS_PLACED = new AtomicLong();
 	public static final AtomicLong SCAFFOLD_WATER_SELF = new AtomicLong();
 	public static final AtomicLong SCAFFOLD_WATER_BELOW = new AtomicLong();
+	/**
+	 * 2026-11-10 audit B-2: unreachable by construction (a crossing is
+	 * {@code waterAtWt || waterBelow} and the written scaffold sits at the water
+	 * surface), so it is no longer printed in {@code /vps stats}. Kept as a field
+	 * so an old caller cannot break; do not wire it back into the stats line
+	 * without also making the predicate able to produce a dry crossing.
+	 */
+	@Deprecated
 	public static final AtomicLong SCAFFOLD_DRY = new AtomicLong();
 	/** User decision 2026-10-15: slabs and leaf railings placed into water go down waterlogged. */
 	public static final AtomicLong WATERLOGGED_PLACEMENTS = new AtomicLong();
@@ -95,6 +103,14 @@ public final class VpsPipeline {
 	public static final AtomicLong SOLVE_WORST_STEP = new AtomicLong();
 	/** Fix plan v4 A2: arms whose phase-3 seam re-solve was refused for state budget. */
 	public static final AtomicLong SOLVE_PHASE3_REFUSALS = new AtomicLong();
+	/**
+	 * 2026-11-10 audit D-1: residual {@code |dP| > 1} edges with BOTH endpoints
+	 * free (neither is a physically immovable pin). The corridor construction
+	 * makes such an edge legal at a fixed point; a non-zero value therefore means
+	 * the bounded projection was truncated (or a corridor was empty) and is the
+	 * one residual class AGENTS.md used to call impossible.
+	 */
+	public static final AtomicLong SOLVE_FREE_FREE_RESIDUALS = new AtomicLong();
 	// Fix plan v4 A-1 / decision N3-a: what the polish pass had to do to make the
 	// profile legal. ROAD_POLISH_MAX_DELTA is the visible price of "no drop larger
 	// than half a block": a single cell can be dragged several whole blocks.
@@ -183,6 +199,14 @@ public final class VpsPipeline {
 	public static final AtomicLong STREET_DECOR_BLOCKS = new AtomicLong();
 	/** Road cells pinned to a multi-block decor's full base footprint (T5). */
 	public static final AtomicLong STREET_DECOR_PINNED_CELLS = new AtomicLong();
+	/**
+	 * 2026-11-10 audit C-1: 1x1 RIGID decor pieces on a seat column that
+	 * {@code StreetDecor#identify} did NOT recognise, so the T5 pin used the
+	 * piece's own {@code minY + groundLevelDelta} instead of a resolved
+	 * {@code baseWalkY}. Observation only - a non-zero count says the identify
+	 * path dropped a piece (usual cause: the template could not be loaded).
+	 */
+	public static final AtomicLong SEAT_DECOR_PIN_FALLBACK = new AtomicLong();
 	/** Multi-block decor whose seat/footprint level still disagrees after the second alignment. */
 	public static final AtomicLong DECOR_SEAT_SYNC_MISMATCH = new AtomicLong();
 	// Audit 2026-10-21 (fixture connections and connected base footprint):
@@ -238,6 +262,14 @@ public final class VpsPipeline {
 	/** Overlap cells written as their structure ground instead of a road. */
 	public static final AtomicLong GROUND_OVERLAP_CELLS_WRITTEN = new AtomicLong();
 	/**
+	 * 2026-11-10 audit A-4: a ground-overlap cell whose ground block id could not
+	 * be resolved (unknown/unparseable). The column is left as vanilla generated
+	 * it; before this counter both the silent return and the old
+	 * {@code blockById}-returns-AIR behaviour hid the hole from the solve/write
+	 * reconciliation.
+	 */
+	public static final AtomicLong GROUND_OVERLAP_RESOLVE_FAILED = new AtomicLong();
+	/**
 	 * 2026-11-05/06: solve-owned structure dirt paths rendered as mud bricks
 	 * instead of the vanilla dirt path ({@code housePathGround.mudBricks},
 	 * default off). Covers the three cell kinds that belong to the road solve -
@@ -287,18 +319,38 @@ public final class VpsPipeline {
 	 * shift used" now holds across instances, and the duplicate per-instance T5
 	 * re-solves (three for the diagnosed village) disappear.
 	 *
-	 * <p>Bounded LRU: a solution carries a road network (up to the 20k-cell
-	 * cap), so 16 entries is a few MB at worst. Cleared by {@code /vps config
-	 * reload} because a solution is a function of the config.
+	 * <p>Bounded LRU. 2026-11-10 audit H-4: 16 was too small - a large village's
+	 * chunk-by-chunk placement can evict its own entry mid-village, and the next
+	 * chunk then runs a fresh T5 solve against pieces T1.5 already moved. 64
+	 * keeps a session's normal working set while still bounding memory. Cleared
+	 * by {@code /vps config reload} because a solution is a function of the config.
 	 */
-	private static final int SOLUTION_CACHE_LIMIT = 16;
+	private static final int SOLUTION_CACHE_LIMIT = 64;
 	private static final java.util.LinkedHashMap<CacheKey, VpsVillageSolution> SOLUTION_CACHE =
-			new java.util.LinkedHashMap<>(32, 0.75f, true) {
+			new java.util.LinkedHashMap<>(64, 0.75f, true) {
 				@Override
 				protected boolean removeEldestEntry(java.util.Map.Entry<CacheKey, VpsVillageSolution> eldest) {
 					return size() > SOLUTION_CACHE_LIMIT;
 				}
 			};
+
+	/**
+	 * 2026-11-10 audit H-4(a): one solve per village. {@code synchronized (start)}
+	 * only serialises threads holding the SAME StructureStart instance, but a
+	 * village spans many chunks and each may meet a fresh instance, so two
+	 * workers could both miss and both run the solve. This per-key monitor makes
+	 * the check-solve-publish sequence atomic; the reference count stops a waiter
+	 * from receiving a monitor that is about to be dropped.
+	 */
+	private static final java.util.Map<CacheKey, int[]> SOLVE_LOCKS = new java.util.HashMap<>();
+
+	/**
+	 * 2026-11-10 audit H-4(c): bumped by {@link #clearSolutionCache}. A solution
+	 * resolved under an older generation is not reused, so a reloaded config
+	 * cannot mix two networks in one village.
+	 */
+	private static final java.util.concurrent.atomic.AtomicLong CONFIG_GENERATION =
+			new java.util.concurrent.atomic.AtomicLong();
 
 	/**
 	 * Cache key: dimension id, the Structure INSTANCE (identity is stable within
@@ -322,23 +374,69 @@ public final class VpsPipeline {
 		//#endif
 	}
 
-	private static VpsVillageSolution cachedSolution(String dimension, StructureStart start) {
-		synchronized (SOLUTION_CACHE) {
-			return SOLUTION_CACHE.get(cacheKey(dimension, start));
-		}
-	}
-
-	private static void cacheSolution(String dimension, StructureStart start, VpsVillageSolution solution) {
-		synchronized (SOLUTION_CACHE) {
-			SOLUTION_CACHE.put(cacheKey(dimension, start), solution);
-		}
-	}
-
 	/** Clears the anchor-keyed solution cache; called when the config (and with it every solution) goes stale. */
 	public static void clearSolutionCache() {
 		synchronized (SOLUTION_CACHE) {
 			SOLUTION_CACHE.clear();
 		}
+		// 2026-11-10 audit H-4(c): a solution already attached to a live
+		// StructureStart is not in the cache, so clearing the map alone would let
+		// the rest of that village keep writing the pre-reload network.
+		CONFIG_GENERATION.incrementAndGet();
+	}
+
+	/**
+	 * Runs {@code solve} with the per-village lock held, re-checking the cache
+	 * inside it so exactly one thread solves a given village (audit H-4(a)).
+	 */
+	private static VpsVillageSolution solveOnce(CacheKey key, java.util.function.Supplier<VpsVillageSolution> solve) {
+		int[] ref;
+		synchronized (SOLVE_LOCKS) {
+			ref = SOLVE_LOCKS.computeIfAbsent(key, ignored -> new int[1]);
+			ref[0]++;
+		}
+		try {
+			synchronized (ref) {
+				VpsVillageSolution existing = cachedSolution(key);
+				if (existing != null) {
+					SOLUTION_CACHE_HITS.incrementAndGet();
+					return existing;
+				}
+				VpsVillageSolution solved = solve.get();
+				cacheSolution(key, solved);
+				return solved;
+			}
+		} finally {
+			synchronized (SOLVE_LOCKS) {
+				if (--ref[0] == 0) {
+					SOLVE_LOCKS.remove(key);
+				}
+			}
+		}
+	}
+
+	private static VpsVillageSolution cachedSolution(CacheKey key) {
+		synchronized (SOLUTION_CACHE) {
+			return SOLUTION_CACHE.get(key);
+		}
+	}
+
+	private static VpsVillageSolution cachedSolution(String dimension, StructureStart start) {
+		return cachedSolution(cacheKey(dimension, start));
+	}
+
+	private static void cacheSolution(CacheKey key, VpsVillageSolution solution) {
+		if (solution == null) {
+			return;
+		}
+		solution.configGeneration = CONFIG_GENERATION.get();
+		synchronized (SOLUTION_CACHE) {
+			SOLUTION_CACHE.put(key, solution);
+		}
+	}
+
+	private static void cacheSolution(String dimension, StructureStart start, VpsVillageSolution solution) {
+		cacheSolution(cacheKey(dimension, start), solution);
 	}
 
 	public static void onStructurePlacementHead(
@@ -367,6 +465,14 @@ public final class VpsPipeline {
 		// stale mask live on a reused world-gen thread. The caller already wraps
 		// this hook in its own try/catch, so there is nothing to add here.
 		VpsPlacementContext.pop();
+		// 2026-11-10 audit A-1 (second half): a solution can still be attached to
+		// the start (T1.5 ran before the switch was flipped, or the config was
+		// reloaded mid-village). The master switch must win over it, otherwise the
+		// writer would emit kerbs/railings/seats against a road surface it no
+		// longer writes.
+		if (!config.roadSmoothing.enabled) {
+			return;
+		}
 		if (solution == null || solution.network.cells.isEmpty()) {
 			return;
 		}
@@ -403,6 +509,18 @@ public final class VpsPipeline {
 		if (server == null || !VpsWorldSettings.isEnabled(server)) {
 			return null;
 		}
+		// 2026-11-10 audit A-1: the master switch is a PRECONDITION of the
+		// suppression context, not a writer mode. Without this gate the mask is
+		// still built, the context is still pushed, MixinGravityProcessor drops
+		// the vanilla road layer - and the writer's `if (enabled)` block skips
+		// every road block, so the world got an empty road surface with isolated
+		// kerbs while the lang tooltip promised "exactly like vanilla". With the
+		// gate nothing is masked, nothing is suppressed and the village generates
+		// vanilla. The writer additionally refuses to run on a stale solution
+		// (see onStructurePlacedInChunk), e.g. when the switch flips mid-village.
+		if (!config.roadSmoothing.enabled) {
+			return null;
+		}
 		if (RoadCollector.isZombieVillage(start)) {
 			// User decision: zombie villages are excluded as a whole. Returning
 			// null means no mask, no y0 suppression and no writer, so the vanilla
@@ -419,20 +537,29 @@ public final class VpsPipeline {
 		// StructureStart is final: cast through Object so the compiler accepts the mixin duck interface
 		StructureStartVpsAccess access = (StructureStartVpsAccess) (Object) start;
 		VpsVillageSolution solution = access.village_path_smoothed$getSolution();
+		// 2026-11-10 audit H-4(c): a solution attached before a config reload is
+		// stale - its network was solved with the old config. Drop it and re-solve.
+		if (solution != null && solution.configGeneration != CONFIG_GENERATION.get()) {
+			solution = null;
+			access.village_path_smoothed$setSolution(null);
+		}
 		if (solution == null) {
 			synchronized (start) {
 				solution = access.village_path_smoothed$getSolution();
+				if (solution != null && solution.configGeneration != CONFIG_GENERATION.get()) {
+					solution = null;
+					access.village_path_smoothed$setSolution(null);
+				}
 				if (solution == null) {
 					// F10: another instance of this village may have solved it already
 					// (the T1.5 pass, or the first chunk that reached the T5 solve).
-					solution = dimensionKey != null ? cachedSolution(dimensionKey, start) : null;
-					if (solution != null) {
-						SOLUTION_CACHE_HITS.incrementAndGet();
+					if (dimensionKey != null) {
+						CacheKey key = cacheKey(dimensionKey, start);
+						solution = solveOnce(key, () -> solveVillage(start, level, generator, chunkPos, config));
 					} else {
+						// no dimension id (no server resolved): the instance field is the
+						// only place to keep it, and no cross-instance sharing is possible
 						solution = solveVillage(start, level, generator, chunkPos, config);
-						if (dimensionKey != null) {
-							cacheSolution(dimensionKey, start, solution);
-						}
 					}
 					access.village_path_smoothed$setSolution(solution);
 				}
@@ -488,6 +615,9 @@ public final class VpsPipeline {
 		}
 		VpsVillageSolution solution = T15Planner.plan(start, generator, randomState, templateManager, chunkPos, heightAccessor, config,
 				server.registryAccess());
+		// 2026-11-10 audit H-4(c): stamp the config generation even when there is
+		// no dimension id to publish under, so a later reload marks it stale too.
+		solution.configGeneration = CONFIG_GENERATION.get();
 		access.village_path_smoothed$setSolution(solution);
 		// F10: publish the T1.5 solution under the anchor key, so every later
 		// StructureStart instance of the same village (deserialized per chunk)
@@ -576,8 +706,14 @@ public final class VpsPipeline {
 						|| box.minZ() != cell.z || box.maxZ() != cell.z) {
 					continue;
 				}
+				// 2026-11-10 audit C-1: never the bare bbox.minY. JigsawPlacement and
+				// Beardifier align a RIGID piece to bbox.minY + getGroundLevelDelta()
+				// (that is what StreetDecor#baseWalkY uses), and the delta is 1 for
+				// every vanilla street decor. The bare minY pinned these seats one
+				// whole block low, dragging the road with them.
 				cell.plazaPinned = true;
-				cell.plazaPinP = 2 * box.minY();
+				cell.plazaPinP = 2 * (box.minY() + pool.getGroundLevelDelta());
+				SEAT_DECOR_PIN_FALLBACK.incrementAndGet();
 				pinned++;
 				break;
 			}
@@ -768,6 +904,7 @@ public final class VpsPipeline {
 		ROAD_POLISH_MAX_DELTA.accumulateAndGet(stats.polishMaxDelta(), Math::max);
 		ROAD_POLISH_DELTA_P90.accumulateAndGet(stats.polishDeltaP90(), Math::max);
 		ROAD_POLISH_CONFLICTS.addAndGet(stats.polishConflicts());
+		SOLVE_FREE_FREE_RESIDUALS.addAndGet(stats.freeFreeResiduals());
 		WATER_ANCHOR_DEVIATIONS.addAndGet(stats.waterAnchorDeviations());
 	}
 

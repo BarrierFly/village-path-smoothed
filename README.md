@@ -419,6 +419,7 @@ File: `config/village_path_smoothed.json`, reloaded with `/vps config reload`
 | Option | Default | Meaning |
 |---|---|---|
 | `enabled` (global) | `true` | Seed default only: worlds created while the create-screen toggle was untouched start with this. Every world's own switch lives in `<world>/village_path_smoothed.json` and overrides it; change in game with `/vps world on\|off`. |
+| `roadSmoothing.enabled` | `true` | Master switch for the rewrite itself. `false` means no road mask, no vanilla suppression and no writer, i.e. the village generates exactly like vanilla (the same semantics the tooltip promises); it is read before the suppression context opens, never as a writer mode. |
 | `roadSmoothing.objective` | `SMOOTH_FIRST` | `SMOOTH_FIRST` ranks cliff penalty > total steps > deviation from the terrain; `MIN_DEVIATION` weighs deviation and steps together; `SHORTEST_CATCHUP` hugs the terrain and catches up as fast as legal steps allow; `HYBRID` blends both (`hybridWeightDeviation`). |
 | `roadSmoothing.roadShapeStage` | `T1_5` | `T1_5` solves the profile and shifts buildings during structure assembly; `T5` is the legacy feature-placement solve with no building move (fallback / A-B comparison). |
 | `roadSmoothing.maxBuildingShift` | `0` | Cap on the building component vertical shift in blocks (`0` = unlimited, only the world height clamps). |

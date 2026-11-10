@@ -7,6 +7,7 @@ package dev.peoplecanfly.village_path_smoothed.pipeline;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import dev.peoplecanfly.village_path_smoothed.JsonFile;
 import dev.peoplecanfly.village_path_smoothed.VillagePathSmoothed;
 import dev.peoplecanfly.village_path_smoothed.VillagePathSmoothedConfig;
 import net.minecraft.server.MinecraftServer;
@@ -165,7 +166,11 @@ public final class VpsWorldSettings {
 					return settings;
 				}
 			} catch (Exception e) {
-				VillagePathSmoothed.LOGGER.error("[VPS] failed to read {}, using defaults", path, e);
+				// 2026-11-10 audit H-3: this file is the world's only authority for
+				// the enable switch; quarantine it rather than overwrite it below.
+				Path quarantined = JsonFile.quarantine(path);
+				VillagePathSmoothed.LOGGER.error("[VPS] failed to read {} (kept as {}), using defaults",
+						path, quarantined, e);
 			}
 		}
 		VpsWorldSettings settings = new VpsWorldSettings();
@@ -176,8 +181,7 @@ public final class VpsWorldSettings {
 
 	private static void write(Path path, VpsWorldSettings settings) {
 		try {
-			Files.createDirectories(path.getParent());
-			Files.writeString(path, GSON.toJson(settings), StandardCharsets.UTF_8);
+			JsonFile.writeAtomically(path, GSON.toJson(settings));
 		} catch (IOException e) {
 			VillagePathSmoothed.LOGGER.error("[VPS] failed to write {}", path, e);
 		}

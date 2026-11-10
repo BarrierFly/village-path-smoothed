@@ -94,7 +94,10 @@ public final class RoadMaterialTable {
 		if (id == null) {
 			return fallback;
 		}
-		Block block = VpsCompat.blockById(id.trim().toLowerCase());
+		// 2026-11-10 audit H-1: blockById now returns null for an unknown id, so
+		// this fallback is live again (the lang tooltip promises it). Locale.ROOT
+		// because toLowerCase() otherwise depends on the client's default locale.
+		Block block = VpsCompat.blockById(id.trim().toLowerCase(java.util.Locale.ROOT));
 		return block != null ? block : fallback;
 	}
 

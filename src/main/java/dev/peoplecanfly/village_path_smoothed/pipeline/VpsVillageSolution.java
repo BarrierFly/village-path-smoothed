@@ -26,6 +26,13 @@ public final class VpsVillageSolution {
 	public boolean t15Applied;
 	/** Diagnostic guard runs once per structure, at the first feature-placement write. */
 	public boolean guardChecked;
+	/**
+	 * 2026-11-10 audit H-4(c): the config generation this solution was solved
+	 * under. A {@code /vps config reload} (or a ModMenu save) bumps the global
+	 * generation, so an already-attached solution from the previous config is
+	 * recognisably stale and gets re-solved instead of half-writing a village.
+	 */
+	public long configGeneration;
 	/** Moved RIGID component footprints {minX,maxX,minZ,maxZ,baseY(shifted)}; empty when nothing moved. */
 	public int[][] shiftedComponents = new int[0][];
 	/**

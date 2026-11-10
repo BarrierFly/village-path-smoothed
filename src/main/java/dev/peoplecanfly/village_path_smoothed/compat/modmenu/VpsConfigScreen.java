@@ -525,8 +525,15 @@ public class VpsConfigScreen extends Screen {
 			this.rebuildWidgets();
 			return;
 		}
+		// 2026-11-10 audit H-9: write the draft to disk FIRST, then install it. The
+		// old order replaced the live instance first, so a failed write left memory
+		// ahead of the disk and the change vanished on restart.
+		if (!VillagePathSmoothedConfig.write(this.draft)) {
+			this.status = Component.translatable("vps.config.saveFailed").withStyle(ChatFormatting.RED);
+			this.rebuildWidgets();
+			return;
+		}
 		VillagePathSmoothedConfig.replace(this.draft);
-		VillagePathSmoothedConfig.save();
 		// A solution is a function of the config, so the anchor-keyed cache must not
 		// keep serving networks solved with the pre-save settings (the same reason
 		// /vps config reload clears it).

@@ -147,14 +147,15 @@ public final class T15Planner {
 		solution.t15Applied = true;
 		VpsPipeline.VILLAGES_SOLVED.incrementAndGet();
 
-		if (!config.roadSmoothing.enabled) {
-			solution.buildingMask = BuildingComponents.protectedMask(start.getPieces(),
-					BuildingComponents.scanTemplates(start.getPieces(), templateManager), decor.protectedPieceIndices);
-			solution.decorBlocks = decor.blocks;
-			solution.decorBaseBlocks = decor.baseBlocks;
-			return solution;
-		}
-
+		// 2026-11-10 audit A-1: there used to be an `if (!enabled) { ... return
+		// solution; }` branch here that set t15Applied, skipped the solve and still
+		// returned a non-empty network. It was unreachable (VpsPipeline gates T1.5
+		// on the same flag before calling plan) AND defective: had it ever run, the
+		// suppression context would have opened on an unsolved mask with the writer
+		// skipping every road block - exactly the "empty road + isolated kerbs"
+		// defect. The master switch is a precondition of the placement context
+		// (VpsPipeline#prepare), never an alternate pipeline mode. Do not
+		// reintroduce an "off" branch here.
 		List<StructurePiece> pieces = start.getPieces();
 		// RIGID 1x1 decor pieces (lamps) standing on a mask seat ride the seat's
 		// solved level instead of aligning on their own (plan 2026-10-16).

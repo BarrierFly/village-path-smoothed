@@ -126,6 +126,46 @@ Rules:
   is centred on `baseP`, and the cost model reads `cell.baseP`. Re-anchoring
   any of those on a synthetic profile reintroduces the "solver chases a
   profile with its own drops" failure the revert removed (S2/S3).
+- **The master switch is a precondition of the placement context, never a
+  writer mode (audit 2026-11-10, A-1).** `VpsPipeline#prepare` returns null when
+  `roadSmoothing.enabled` is false, exactly like a disabled world, so no mask is
+  built, `MixinGravityProcessor` never suppresses and the village generates
+  vanilla. `onStructurePlacedInChunk` re-checks the flag before writing, because
+  a solution may already be attached (T1.5 ran, then the switch flipped or the
+  config reloaded). Never implement "off" inside `RoadWriter`: its
+  `if (enabled)` block covers only the road/fill/clear/ceiling writes while the
+  kerb/railing call and `ROAD_CELLS_WRITTEN` sit outside it, which is precisely
+  how "empty road surface + isolated kerbs" shipped while the tooltip promised
+  "off = exactly vanilla".
+- **A solution is a function of the config generation (audit 2026-11-10, H-4).**
+  `VpsPipeline#clearSolutionCache` bumps `CONFIG_GENERATION`; a solution
+  attached to a live `StructureStart` from an older generation is dropped and
+  re-solved. `solveOnce` holds one monitor per (dimension, structure, anchor)
+  across the cache miss and the solve, so two workers cannot both run the
+  multi-second solve for the same village.
+- **A per-cell write failure never falls back onto a plaza, a fixture base or a
+  building body (audit 2026-11-10, A-2/A-3).** `RoadWriter.write`'s catch
+  excludes `groundOverlap`/`plaza`/`fixtureBase` outright (counted) and the
+  surface fallback checks `BuildingMask` at the height it is about to write.
+  `writeGroundOverlapCell` counts an unresolved ground id instead of returning
+  silently, and a fallback that DOES write a road block increments
+  `ROAD_CELLS_WRITTEN` (the delta reconciliation must not hide it). The plaza's
+  own edge dressing is wrapped in its own try/catch, like the ceiling-end wrap.
+- **`VpsCompat#blockById` uses `getOptional`, not `get`/`getValue` (audit
+  2026-11-10, H-1).** `BuiltInRegistries.BLOCK` is a `DefaultedRegistry` whose
+  default is air, so `get`/`getValue` return AIR for an unknown id and never
+  null - every `block != null ? block : fallback` guard was dead, and a typo'd
+  material id wrote air. `getOptional` is overridden in `DefaultedMappedRegistry`
+  to bypass the default, which is the only version-stable way to tell "unknown"
+  from an explicit air.
+- **A config file can never NPE the writer after suppression (audit 2026-11-10,
+  H-2/H-3).** `VillagePathSmoothedConfig#withDefaults` fills a null subtree or
+  null enum from a pristine default on `load`/`replace`/`copyOf` (Gson writes a
+  JSON null over a field initialiser, and an unknown enum name deserialises to
+  null). Both config files are written through `JsonFile#writeAtomically`
+  (temp file + `ATOMIC_MOVE`), and an unreadable file is quarantined as
+  `<name>.corrupt-<millis>` instead of overwritten - the per-world switch file is
+  that world's only authority.
 - **SMOOTH_FIRST ranks total step count ABOVE deviation.** Cliff penalty on
   top, total step count in the middle, deviation from terrain at the bottom
   (fix plan v2 R1 / N3 - the review-4 swap is reverted). The candidate band is
@@ -143,9 +183,14 @@ Rules:
   cells are assigned by a feasible corridor: from every fixed seed `s`,
   `L(v)=max(s-dist)` and `U(v)=min(s+dist)` are 1-Lipschitz envelopes, floors
   are lower seeds, and a bounded projection inside `[L,U]` removes the rest. A
-  free<->free residual is therefore impossible by construction; only an
-  immovable<->immovable pinch keeps one, and it is counted. **N3-a: the result
-  is adopted unconditionally** and every moved cell is counted
+  free<->free residual is legal at a FIXED POINT of that projection, but the
+  sweep cap (`min(1024, max(64, n))`) can truncate it, so it is not impossible
+  by construction (audit 2026-11-10, D-1: the bench's 13/20 figures came from
+  the pre-corridor polish and were never re-measured on HEAD). `free<->free
+  residuals` in `/vps stats` (`SOLVE_FREE_FREE_RESIDUALS`) counts that class
+  directly; an immovable<->immovable pinch is the other, and `midpoint
+  conflicts` counts cells, not edges, so the two numbers are not interchangeable.
+  **N3-a: the result is adopted unconditionally** and every moved cell is counted
   (`ROAD_POLISH_MOVED` / `MAX_DELTA` / `DELTA_P90`), never hidden. Do not
   reintroduce a "freeze the outliers" variant: it reinstates a known cliff and
   invalidates the metric the pass exists to make zero. With
@@ -485,10 +530,12 @@ Rules:
   it, and `T15Planner` renders the adjusted level. Do not freeze phase-1 plaza
   groups again - that is the `PLAZA PIN` seam sign.
 - **Acceptance after G2 (four-item confirmation §6.3, 2026-10-16).** With pin
-  edges counted, every free<->free edge is legal by construction now; the only
-  residues left are between physically immovable pins (a T5 decor seat /
-  phase-2 plaza pair) or a floor-limited no-cut/water cell, and each is counted
-  and visible (the solver's count equals an independent edge walk). The bench's
+  edges counted, every free<->free edge is legal once the corridor projection
+  reaches its fixed point (a truncated sweep can still leave one; the
+  `free<->free residuals` counter is what makes that visible - do not claim
+  impossibility); the other residues are between physically immovable pins (a T5
+  decor seat / phase-2 plaza pair) or a floor-limited no-cut/water cell, and each
+  is counted and visible (the solver's count equals an independent edge walk). The bench's
   plaza/seat scenarios and `RoadPolishTest` pin the three 2026-10-17 failures:
   two movable plaza groups must meet through their shared road cell, adjacent
   bare seats must share one even level, and an ordinary road cycle must leave no
@@ -516,7 +563,9 @@ Rules:
   after the road cells of their own chunk. Debug visibility beats fidelity (user
   decision 2026-10-16): the sign replaces whatever occupies the target cell and
   may float, so EVERY main door gets its sign; `door signs placed / no road` in
-  `/vps stats` now means main doors without an eligible front. The water-seat
+  `/vps stats` means main doors with no road cell ANYWHERE in the network
+  (`DOOR_SIGNS_WITHOUT_ROAD`, audit G-1 2026-11-10), while `no front` is the
+  different `NO_FRONT_ROAD` (an eligible outward cell was missing). The water-seat
   base rules are deliberately untouched by it.
 - **Debug seam signs are opt-in, default off (user request 2026-10-16, gated
   2026-10-17).** `debug.seamSigns` must be true; both the sign list and the

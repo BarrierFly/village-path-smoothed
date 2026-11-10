@@ -173,4 +173,43 @@ public class ConfigCopyTest {
 			VillagePathSmoothedConfig.replace(original);
 		}
 	}
+
+	/**
+	 * 2026-11-10 audit H-2: a hand-edited file can install a null subtree (Gson
+	 * writes a JSON null over the field initialiser) or a null enum (an unknown
+	 * name deserialises to null). Both used to NPE outside every per-cell guard -
+	 * after the vanilla road layer was already suppressed.
+	 */
+	@Test
+	public void withDefaultsFillsNullSubtreesAndUnknownEnums() {
+		VillagePathSmoothedConfig parsed = new com.google.gson.Gson()
+				.fromJson("{\"kerb\":null,\"railing\":{\"leavesByStyle\":null},"
+						+ "\"roadSmoothing\":{\"objective\":\"NO_SUCH_OBJECTIVE\",\"fillMaterial\":null},"
+						+ "\"debug\":null}", VillagePathSmoothedConfig.class);
+		assertNotNull(parsed);
+		assertTrue(parsed.kerb == null);
+		assertTrue(parsed.roadSmoothing.objective == null);
+
+		VillagePathSmoothedConfig normalized = VillagePathSmoothedConfig.withDefaults(parsed);
+
+		assertNotNull(normalized.kerb);
+		assertNotNull(normalized.kerb.blockByStyle);
+		assertNotNull(normalized.railing.leavesByStyle);
+		assertNotNull(normalized.roadSmoothing.fillMaterial);
+		assertNotNull(normalized.debug);
+		assertEquals(VillagePathSmoothedConfig.Objective.SMOOTH_FIRST, normalized.roadSmoothing.objective);
+		// A value that parsed is never replaced.
+		assertEquals(new VillagePathSmoothedConfig().roadSmoothing.maxFillLayers,
+				normalized.roadSmoothing.maxFillLayers);
+	}
+
+	@Test
+	public void withDefaultsKeepsAParsedValueAndHandlesNull() {
+		assertNotNull(VillagePathSmoothedConfig.withDefaults(null));
+		VillagePathSmoothedConfig config = new VillagePathSmoothedConfig();
+		config.roadSmoothing.maxFillLayers = 9;
+		VillagePathSmoothedConfig same = VillagePathSmoothedConfig.withDefaults(config);
+		assertEquals(9, same.roadSmoothing.maxFillLayers);
+		assertNotNull(same.kerb);
+	}
 }

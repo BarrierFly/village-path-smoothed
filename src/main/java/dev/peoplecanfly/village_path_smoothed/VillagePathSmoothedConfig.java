@@ -337,36 +337,125 @@ public final class VillagePathSmoothedConfig {
 			return new VillagePathSmoothedConfig();
 		}
 		VillagePathSmoothedConfig copy = GSON.fromJson(GSON.toJson(source), VillagePathSmoothedConfig.class);
-		return copy != null ? copy : new VillagePathSmoothedConfig();
+		return withDefaults(copy != null ? copy : new VillagePathSmoothedConfig());
 	}
 
 	/** Installs a (draft) config as the live one; the caller still has to {@link #save()} it. */
 	public static synchronized void replace(VillagePathSmoothedConfig replacement) {
-		instance = replacement != null ? replacement : new VillagePathSmoothedConfig();
+		instance = withDefaults(replacement != null ? replacement : new VillagePathSmoothedConfig());
 	}
 
 	public static synchronized void load() {
 		Path path = getConfigPath();
+		boolean writeNeeded = !Files.exists(path);
 		try {
 			if (Files.exists(path)) {
-				instance = GSON.fromJson(Files.readString(path, StandardCharsets.UTF_8), VillagePathSmoothedConfig.class);
+				instance = withDefaults(GSON.fromJson(Files.readString(path, StandardCharsets.UTF_8), VillagePathSmoothedConfig.class));
 			}
 		} catch (Exception e) {
-			VillagePathSmoothed.LOGGER.error("[VPS] Failed to read config {}, using defaults", path, e);
+			// 2026-11-10 audit H-3: keep the unreadable file for inspection instead
+			// of silently overwriting it with defaults on the next save.
+			Path quarantined = JsonFile.quarantine(path);
+			VillagePathSmoothed.LOGGER.error("[VPS] Failed to read config {} (kept as {}), using defaults",
+					path, quarantined, e);
+			instance = null;
+			writeNeeded = true;
 		}
 		if (instance == null) {
 			instance = new VillagePathSmoothedConfig();
 		}
-		save();
+		if (writeNeeded) {
+			save();
+		}
 	}
 
-	public static synchronized void save() {
+	public static synchronized boolean save() {
+		return write(get());
+	}
+
+	/**
+	 * Writes {@code config} to disk without installing it. The ModMenu screen uses
+	 * this so a failed write leaves the live instance untouched (audit H-9).
+	 */
+	public static synchronized boolean write(VillagePathSmoothedConfig config) {
 		try {
 			Path path = getConfigPath();
-			Files.createDirectories(path.getParent());
-			Files.writeString(path, GSON.toJson(get()), StandardCharsets.UTF_8);
+			JsonFile.writeAtomically(path, GSON.toJson(config != null ? config : new VillagePathSmoothedConfig()));
+			return true;
 		} catch (IOException e) {
 			VillagePathSmoothed.LOGGER.error("[VPS] Failed to write config", e);
+			return false;
 		}
+	}
+
+	/**
+	 * 2026-11-10 audit H-2: a hand-edited file can install a {@code null} subtree
+	 * (Gson's reflective reader writes a JSON null over the field initialiser) or
+	 * a {@code null} enum (an unknown enum name deserialises to null). Both used
+	 * to NPE outside every per-cell guard - after the vanilla road layer was
+	 * already suppressed - turning a config typo into a village-shaped field of
+	 * holes. Fill only the holes; a value that parsed is never replaced.
+	 *
+	 * <p>Primitives are safe: Gson skips a JSON null for them, so their field
+	 * initialisers survive.
+	 */
+	static VillagePathSmoothedConfig withDefaults(VillagePathSmoothedConfig parsed) {
+		VillagePathSmoothedConfig defaults = new VillagePathSmoothedConfig();
+		if (parsed == null) {
+			return defaults;
+		}
+		if (parsed.roadSmoothing == null) {
+			parsed.roadSmoothing = defaults.roadSmoothing;
+		} else {
+			if (parsed.roadSmoothing.objective == null) {
+				parsed.roadSmoothing.objective = defaults.roadSmoothing.objective;
+			}
+			if (parsed.roadSmoothing.roadShapeStage == null) {
+				parsed.roadSmoothing.roadShapeStage = defaults.roadSmoothing.roadShapeStage;
+			}
+			if (parsed.roadSmoothing.probeCaliber == null) {
+				parsed.roadSmoothing.probeCaliber = defaults.roadSmoothing.probeCaliber;
+			}
+			if (parsed.roadSmoothing.roadSurfaceDetection == null) {
+				parsed.roadSmoothing.roadSurfaceDetection = defaults.roadSmoothing.roadSurfaceDetection;
+			}
+			if (parsed.roadSmoothing.roadPiecesRegex == null) {
+				parsed.roadSmoothing.roadPiecesRegex = defaults.roadSmoothing.roadPiecesRegex;
+			}
+			if (parsed.roadSmoothing.fillMaterial == null) {
+				parsed.roadSmoothing.fillMaterial = defaults.roadSmoothing.fillMaterial;
+			}
+			if (parsed.roadSmoothing.beardKernel == null) {
+				parsed.roadSmoothing.beardKernel = defaults.roadSmoothing.beardKernel;
+			}
+		}
+		if (parsed.kerb == null) {
+			parsed.kerb = defaults.kerb;
+		} else {
+			if (parsed.kerb.blockByStyle == null) {
+				parsed.kerb.blockByStyle = defaults.kerb.blockByStyle;
+			}
+			if (parsed.kerb.replaceableBlocks == null) {
+				parsed.kerb.replaceableBlocks = defaults.kerb.replaceableBlocks;
+			}
+		}
+		if (parsed.railing == null) {
+			parsed.railing = defaults.railing;
+		} else if (parsed.railing.leavesByStyle == null) {
+			parsed.railing.leavesByStyle = defaults.railing.leavesByStyle;
+		}
+		if (parsed.waterCrossing == null) {
+			parsed.waterCrossing = defaults.waterCrossing;
+		}
+		if (parsed.housePathGround == null) {
+			parsed.housePathGround = defaults.housePathGround;
+		}
+		if (parsed.diagnostics == null) {
+			parsed.diagnostics = defaults.diagnostics;
+		}
+		if (parsed.debug == null) {
+			parsed.debug = defaults.debug;
+		}
+		return parsed;
 	}
 }
